@@ -1,0 +1,11 @@
+name: Feature request
+description: Suggest a tool, scope or integration
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes: {label: Problem / use case}
+    validations: {required: true}
+  - type: textarea
+    id: idea
+    attributes: {label: Proposed solution, description: "Tool/toolset, required access level, dry_run behavior if it writes."}

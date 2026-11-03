@@ -1,0 +1,105 @@
+# hermcp systemd unit — template (NOT installed by the code).
+#
+# Install:
+#   cp deploy/hermcp.service.template /etc/systemd/system/hermcp.service
+#   # create %h/.hermes/plugins/hermcp/.env (see comments below)
+#   systemctl daemon-reload
+#   systemctl enable --now hermcp
+#
+# Every non-obvious choice is explained inline. House style follows
+# /etc/systemd/system/hermes-gateway.service and hermes-dashboard.service on
+# this host (Type=simple, User=root, Restart=always, RestartSec=5, journal
+# logging, WantedBy=multi-user.target).
+
+[Unit]
+Description=hermcp - Hermes Remote MCP server (Streamable HTTP at /mcp)
+# Bind is 127.0.0.1 (loopback) so no network is required to listen, but the
+# server calls the Hermes gateway API on 127.0.0.1:8642 and may be reached
+# through the Pangolin tunnel, so ordering after the gateway is sensible.
+After=network-online.target
+Wants=network-online.target
+After=hermes-gateway.service
+Wants=hermes-gateway.service
+# Match house style: never give up restarting on repeated failures.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# WorkingDirectory is the *plugins* dir (not the package dir) so that
+# `python -m hermcp` resolves the `hermcp` package. `python -m` puts the CWD
+# at sys.path[0]; the package lives at %h/.hermes/plugins/hermcp/.
+WorkingDirectory=%h/.hermes/plugins
+
+# Redundant safety: make the import work even if the CWD assumption changes.
+Environment="PYTHONPATH=%h/.hermes/plugins"
+
+# Run with the Hermes venv interpreter (mcp 2.0.0 / fastapi / starlette /
+# uvicorn are all present there). Do NOT use the system python — it lacks the
+# mcp/uvicorn deps. `serve` reads HERMCP_HOST/HERMCP_PORT/HERMCP_PUBLIC_URL/
+# HERMCP_ALLOWED_HOSTS/HERMCP_TRUST_PROXY from env (overrides the .env file).
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python -m hermcp serve
+
+# Config + secrets live in .env next to the package (settings.py reads the same
+# file directly, so env and .env stay consistent). The leading '-' means
+# "don't fail the unit if the file is missing" — for public exposure the file
+# MUST exist and define HERMCP_PUBLIC_URL + HERMCP_ALLOWED_HOSTS (see
+# docs/deployment.md), otherwise the Host allowlist rejects public traffic.
+EnvironmentFile=-%h/.hermes/plugins/hermcp/.env
+
+# pathlib.Path.home() needs HOME; HERMES_HOME pins data to %h/.hermes so
+# keys.json/audit.jsonl land in %h/.hermes/plugin-data/hermcp/.
+Environment="HOME=%h"
+Environment="HERMES_HOME=%h/.hermes"
+# Standard PATH so subprocess `hermes` calls (hermes_call adapter fallback)
+# resolve /usr/local/bin/hermes without relying on the systemd default.
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# Restart=on-failure (not always): a clean shutdown (SIGTERM from `systemctl stop`) must
+# stay stopped. Exit 75 = EX_TEMPFAIL = "another hermcp instance already owns the lock/port".
+# RestartPreventExitStatus=75 keeps systemd from loops when a standalone instance (started by
+# hand or by the gateway) is still serving — the unit then stays failed with a readable
+# message instead of fighting over the port. Migrate with: hermes hermcp stop
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=75
+StandardOutput=journal
+StandardError=journal
+
+# ---- hardening --------------------------------------------------------------
+# NoNewPrivileges: the process may not gain privileges via setuid/caps. Safe —
+# hermcp runs as root but never needs to escalate.
+NoNewPrivileges=yes
+
+# ProtectSystem=full makes /usr, /boot and /etc read-only. /root (and thus
+# ~/.hermes) stays writable, which is exactly what we want: hermcp READS
+# ~/.hermes (config, plugins, skills) and WRITES only its data dir. full (not
+# strict) is chosen so we don't have to whitelist every read path.
+ProtectSystem=full
+
+# Belt-and-suspenders: pin the single writable data directory even under
+# ProtectSystem=full. If someone later flips this to ProtectSystem=strict,
+# this line is what keeps keys.json / audit.jsonl writable.
+ReadWritePaths=%h/.hermes/plugin-data/hermcp
+
+# PrivateTmp: hermcp gets a private /tmp and /var/tmp. It uses neither, so
+# this only shrinks the attack surface.
+PrivateTmp=yes
+
+# Deliberately NOT setting ProtectHome=read-only: hermcp must write
+# %h/.hermes/plugin-data/hermcp and read %h/.hermes. ProtectHome would
+# make /root read-only and break key/audit writes. Leave it default (unset).
+# ProtectSystem=full already covers the system dirs that matter.
+
+# ---- startup health gate ----------------------------------------------------
+# systemd has no native HEALTHCHECK (that's Docker); a startup health gate is
+# the systemd idiom. Wait up to ~30s for GET /health to return 2xx, then exit
+# non-zero if it never does. On failure Restart=always retries the unit.
+# Port must match HERMCP_PORT (default 9230). For continuous monitoring, point
+# Uptime-Kuma / netwatch at GET http://127.0.0.1:9230/health on this host.
+ExecStartPost=/bin/sh -c 'P=${HERMCP_PORT:-9230}; for i in $(seq 1 30); do curl -fsS --max-time 2 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && exit 0; sleep 1; done; echo "hermcp did not become healthy on :$P" >&2; exit 1'
+
+[Install]
+WantedBy=multi-user.target

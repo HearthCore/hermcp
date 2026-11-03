@@ -1,0 +1,12 @@
+name: hermcp
+label: H.E.R.MCP
+manifest_version: 1
+version: 0.1.0
+kind: standalone
+description: >
+  Remote MCP server exposing the Hermes control surface (config, sessions, models,
+  cron, kanban, ...) with per-key scopes. Registers only the `hermes hermcp` CLI
+  command; the server runs as its own process (`python -m hermcp serve`).
+author: HearthCore
+platforms:
+  - linux

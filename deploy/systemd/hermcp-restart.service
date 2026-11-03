@@ -1,0 +1,14 @@
+[Unit]
+Description=Restart hermcp.service after a Hermes update (only if the stamp is a new build)
+# Restart-loop guard: at most 3 runs per 10 min; past that the unit stays failed and is logged.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+# Debounce: give the update time to finish after the stamp was written.
+ExecStartPre=/bin/sleep 60
+ExecStart=%h/.hermes/plugins/hermcp/deploy/systemd/hermcp-restart.sh
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal

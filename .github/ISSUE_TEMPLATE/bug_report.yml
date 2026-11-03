@@ -1,0 +1,17 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes: {label: What happened, description: "What did you do, what did you expect, what happened instead?"}
+    validations: {required: true}
+  - type: textarea
+    id: repro
+    attributes: {label: Steps to reproduce, description: "Tool name/arguments, key scopes (never paste the key itself)."}
+  - type: input
+    id: versions
+    attributes: {label: Versions, description: "hermcp commit, Hermes version (`hermes --version`), Python"}
+  - type: textarea
+    id: logs
+    attributes: {label: Logs, description: "`hermes hermcp doctor` output; REDACT tokens, hostnames and paths you consider private.", render: text}

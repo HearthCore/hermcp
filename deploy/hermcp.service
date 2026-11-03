@@ -1,0 +1,69 @@
+# hermcp systemd unit - finalized from deploy/hermcp.service.template.
+#
+# Install (preferred):  hermes hermcp install-service [--enable-now]
+# By hand:
+#   cp deploy/hermcp.service /etc/systemd/system/hermcp.service
+#   # create %h/.hermes/plugins/hermcp/.env (0600, see README "Install")
+#   systemctl daemon-reload && systemctl enable --now hermcp
+#
+# The unit must live OUTSIDE the Hermes gateway's process tree: gateway_restart would
+# otherwise SIGTERM hermcp together with the gateway and could never report the result.
+# House style follows hermes-gateway.service / hermes-dashboard.service (Type=simple,
+# User=root, journal logging, WantedBy=multi-user.target).
+
+[Unit]
+Description=hermcp - Hermes Remote MCP server (Streamable HTTP at /mcp)
+# Loopback bind needs no network, but the server calls the gateway api_server on
+# 127.0.0.1:8642 and is reached through the Pangolin tunnel: order after both.
+After=network-online.target hermes-gateway.service
+Wants=network-online.target hermes-gateway.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# WorkingDirectory is the *plugins* dir so `python -m hermcp` resolves the package
+# %h/.hermes/plugins/hermcp (python -m puts the CWD first on sys.path).
+WorkingDirectory=%h/.hermes/plugins
+Environment="PYTHONPATH=%h/.hermes/plugins"
+
+# Hermes venv interpreter: mcp (OAuth server SDK), starlette and uvicorn are only there.
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python -m hermcp serve
+
+# Config lives in .env next to the package (settings.py reads the same file; process env
+# wins). For public exposure it MUST define HERMCP_PUBLIC_URL and HERMCP_ALLOWED_HOSTS.
+EnvironmentFile=-%h/.hermes/plugins/hermcp/.env
+Environment="HOME=%h"
+Environment="HERMES_HOME=%h/.hermes"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# on-failure, not always: `systemctl stop` stays stopped. Exit 75 (EX_TEMPFAIL) means
+# "another hermcp instance already owns the lock/port"; RestartPreventExitStatus=75 parks
+# the unit with a readable message instead of flapping. Migrate with: hermes hermcp stop
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=75
+StandardOutput=journal
+StandardError=journal
+
+# ---- hardening ---------------------------------------------------------------
+NoNewPrivileges=yes
+# full (not strict): /usr, /boot, /etc read-only; %h/.hermes stays writable, which hermcp
+# needs for plugin-data/ (keys, audit, oauth store, serve.lock) and for Hermes config writes.
+ProtectSystem=full
+# Pins the writable data dir should someone tighten this to ProtectSystem=strict. The "-"
+# keeps a first start (dir not created yet) from failing with 226/NAMESPACE.
+ReadWritePaths=-%h/.hermes/plugin-data/hermcp
+PrivateTmp=yes
+# Deliberately no ProtectHome: hermcp reads and writes under %h/.hermes.
+
+# ---- startup health gate -------------------------------------------------------
+# Wait up to ~30 s for GET /health, else fail the start (on-failure then retries it, except
+# exit 75). Port must match HERMCP_PORT (default 9230). Monitor continuously with
+# Uptime-Kuma on http://127.0.0.1:9230/health.
+ExecStartPost=/bin/sh -c 'P=${HERMCP_PORT:-9230}; for i in $(seq 1 30); do curl -fsS --max-time 2 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && exit 0; sleep 1; done; echo "hermcp did not become healthy on :$P" >&2; exit 1'
+
+[Install]
+WantedBy=multi-user.target

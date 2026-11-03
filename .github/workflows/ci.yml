@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Hermes Agent's own lockfile currently resolves for Python 3.14 only
+        # (`uv sync` refuses other interpreters). Add versions here once upstream supports them.
+        python-version: ["3.14"]
+    steps:
+      # The tests import the plugin as the package `hermcp` next to Hermes' own modules,
+      # so the checkout directory must be named `hermcp`.
+      - uses: actions/checkout@v4
+        with:
+          path: hermcp
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+      - uses: astral-sh/setup-uv@v5
+      - name: Install Hermes Agent (provides starlette, uvicorn, mcp, ...) and test deps
+        working-directory: hermes-agent
+        run: |
+          uv sync --extra mcp --python ${{ matrix.python-version }}
+          uv pip install pytest pyyaml ruamel.yaml
+      - name: Run tests
+        run: hermes-agent/.venv/bin/python -m pytest hermcp/tests -q -p no:cacheprovider

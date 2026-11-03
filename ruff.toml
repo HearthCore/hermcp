@@ -1,0 +1,7 @@
+target-version = "py311"
+line-length = 140
+
+[lint]
+select = ["E", "F"]
+# E702 (semicolons) is used deliberately for compact one-liners; E501 is not enforced.
+ignore = ["E702", "E501", "E701", "E741"]
