@@ -97,6 +97,13 @@ python -m hermcp status                   # who serves, which role, unit state, 
 `hermes hermcp <cmd>` works too once the plugin is enabled in Hermes
 (`hermes plugins enable hermcp`), which registers the CLI but never starts a server.
 
+## Setup with an agent
+
+Start your coding agent (Claude Code, Codex, Cursor, ...) inside this folder and say
+"set up hermcp": it loads [`AGENTS.md`](AGENTS.md) and walks you through preflight, install,
+keys, client setup and verification. Claude Code reads it via `CLAUDE.md`, which only points there.
+Secrets stay with you — the agent is instructed to hand you every command that prints a key.
+
 ## Keys and scopes
 
 Keys are `hmcp_<id>_<secret>`, shown **once**; only an HMAC-SHA256 hash with a per-key salt
