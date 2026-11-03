@@ -219,15 +219,15 @@ WantedBy=multi-user.target
 - **`NoNewPrivileges=yes`**: hermcp never needs to escalate (setuid/caps), so
   forbidding it removes a whole class of privesc. No downside.
 - **`ProtectSystem=full`**: makes `/usr`, `/boot`, `/etc` read-only but leaves
-  `/root` writable — exactly the split needed. hermcp *reads* `~/.hermes`
+  the home directory writable — exactly the split needed. hermcp *reads* `~/.hermes`
   (config, plugins, skills) and *writes* only `~/.hermes/plugin-data/hermcp`
   (`settings.py:data_dir()`, `keys.py`, `audit.py` all target that dir). `full`
-  (not `strict`) avoids having to whitelist every read path under `/root`.
+  (not `strict`) avoids having to whitelist every read path under the home directory.
 - **`ReadWritePaths=~/.hermes/plugin-data/hermcp`**: belt-and-suspenders so
   key/audit writes survive even if someone later flips to `ProtectSystem=strict`.
 - **`PrivateTmp=yes`**: hermcp uses neither `/tmp` nor `/var/tmp`; this only
   shrinks the surface.
-- **Deliberately NOT setting `ProtectHome=read-only`**: it would make `/root`
+- **Deliberately NOT setting `ProtectHome=read-only`**: it would make the home directory
   read-only and break the key/audit writes. Left at its default (unset).
 - **`ExecStartPost` curl gate**: systemd has no Docker-style HEALTHCHECK; a
   startup health gate is the systemd idiom. It retries `GET

@@ -73,7 +73,7 @@ StandardError=journal
 # hermcp runs as root but never needs to escalate.
 NoNewPrivileges=yes
 
-# ProtectSystem=full makes /usr, /boot and /etc read-only. /root (and thus
+# ProtectSystem=full makes /usr, /boot and /etc read-only. The home directory (and thus
 # ~/.hermes) stays writable, which is exactly what we want: hermcp READS
 # ~/.hermes (config, plugins, skills) and WRITES only its data dir. full (not
 # strict) is chosen so we don't have to whitelist every read path.
@@ -90,7 +90,7 @@ PrivateTmp=yes
 
 # Deliberately NOT setting ProtectHome=read-only: hermcp must write
 # %h/.hermes/plugin-data/hermcp and read %h/.hermes. ProtectHome would
-# make /root read-only and break key/audit writes. Leave it default (unset).
+# make the home directory read-only and break key/audit writes. Leave it default (unset).
 # ProtectSystem=full already covers the system dirs that matter.
 
 # ---- startup health gate ----------------------------------------------------

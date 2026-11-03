@@ -11,7 +11,7 @@ operate Hermes from Claude.ai (incl. voice), Claude Desktop, Codex, Cursor, Gemi
 
 - Code lives in `~/.hermes/plugins/hermcp/`. Runtime data lives in
   `~/.hermes/plugin-data/hermcp/` (key store, OAuth store, audit log). Resolve paths via
-  `HERMES_HOME` (default `~/.hermes`), never hardcode `/root`.
+  `HERMES_HOME` (default `~/.hermes`), never hardcode a home path.
 - **Never modify the Hermes core** (`/usr/local/lib/hermes-agent/**`). Read it, import it,
   don't patch it.
 - **Never edit `~/.hermes/config.yaml` directly** during development/tests. All config
