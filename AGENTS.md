@@ -248,7 +248,8 @@ Steps (each needs the human's go-ahead):
    `plugins.enabled`. It never starts a server.
 2. The **owner** restarts the gateway (`hermes gateway restart`, from an external shell). You do not do
    this yourself. The bridge starts with the first inbound gateway message.
-3. Verify: `... -m hermcp doctor` shows `approvals bridge [<profile>]` rows, and the tool
+3. Verify: `... -m hermcp doctor` shows `approvals bridge [<profile>]` rows (one shared line in
+   multiplex mode — see below), and the tool
    `approvals_bridge_status` (needs a key with the `approvals` scope) reports whether it is up.
 
 ### Multiplex vs separate gateways

@@ -104,19 +104,32 @@ def orchestration_overview(ctx, skills=True, plugins_exact=False):
     if ctx.principal.scopes.approvals and not (ctx.restricted and "default" in names):
         pending = {}
         from ..adapters.served import reachable
-        from ..bridge import call as bridge_call, socket_path
+        from ..bridge import call as bridge_call, entries_for_profile, resolve as bridge_resolve, socket_path
+        from ..settings import hermes_home
         for n in names:
             if reachable(n, info) is not True:
                 continue
             try:
-                resp = bridge_call(socket_path(profile_home(n)), {"op": "list", "key_id": ctx.principal.id})
-                pending[n] = len(resp.get("pending", [])) if resp.get("ok") else f"error: {resp.get('error')}"
+                # Same resolver as the approvals tools: on a multiplex gateway every profile answers
+                # on the launch home's shared socket, which lists ALL profiles' approvals.
+                target = bridge_resolve(n, own_socket=socket_path(profile_home(n)), root_home=hermes_home(),
+                                        known_profiles=names)
+                resp = bridge_call(target.socket, {"op": "list", "key_id": ctx.principal.id})
+                if not resp.get("ok"):
+                    pending[n] = f"error: {resp.get('error')}"
+                    continue
+                entries = resp.get("pending", [])
+                if target.shared:      # one socket, every profile's approvals: count only this profile's
+                    entries = entries_for_profile(entries, n)
+                pending[n] = len(entries)
             except Exception as exc:  # noqa: BLE001
                 pending[n] = f"unavailable: {type(exc).__name__}"
         meta.note_source("socket")
         out["approvals_pending"] = pending
     else:
-        out["approvals_pending"] = "not visible: key lacks the approvals scope or is bound to the default profile (shared bridge)"
+        out["approvals_pending"] = ("not visible: key lacks the approvals scope, or it is a profile-restricted key bound to "
+                                    "the launch home (default), whose socket is shared with every profile in multiplex mode; "
+                                    "approvals_pending returns such a key its own rows")
     try:
         from .inbox import runs_active
         r = runs_active(ctx)

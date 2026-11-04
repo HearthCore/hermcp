@@ -79,6 +79,15 @@ def profile_of_session_key(session_key: Any) -> str | None:
     return None if (not ns or "~" in ns) else ns
 
 
+def entries_for_profile(entries: list[dict[str, Any]], profile: str) -> list[dict[str, Any]]:
+    """The entries of a shared socket's queue that belong to *profile* (the namespace rule above).
+
+    The single place the namespace rule is applied to a whole queue, so a listing
+    (`approvals_pending`) and a count (`orchestration_overview`) can never disagree.
+    """
+    return [e for e in entries if profile_of_session_key(e.get("session_key")) == profile]
+
+
 def runtime_status(home: Path) -> dict[str, Any] | None:
     """``<home>/gateway_state.json`` as a dict, or None when it is absent or unreadable."""
     try:

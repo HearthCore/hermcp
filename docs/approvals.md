@@ -272,7 +272,7 @@ executes a command inside that profile's agent context.
 
 ---
 
-## 7. Multiplex vs separate gateways (the shipped bridge)
+## 6. Multiplex vs separate gateways (the shipped bridge)
 
 The bridge (`bridge.py`) supports both gateway layouts; nothing about them is configurable in
 hermcp, they are detected per call (`bridge.resolve()`).
@@ -319,7 +319,7 @@ doctor — deleting the file by hand is safe.
 
 ---
 
-## 8. Sources
+## 7. Sources
 
 Code (read-only, `/usr/local/lib/hermes-agent`):
 - `tools/approval.py` — `_gateway_queues` `:122`, `_gateway_notify_cbs` `:123`,

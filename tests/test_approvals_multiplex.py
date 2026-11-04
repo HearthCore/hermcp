@@ -553,3 +553,72 @@ def test_the_profile_still_fails_closed_without_a_home_or_a_namespace(mhome, mon
     rows = events(mhome)
     assert rows and rows[0]["profile"] is None
     assert poll(mhome, profiles=["p1"])["events"] == []
+
+
+# ---- 7. orchestration_overview counts ----------------------------------------------------------
+def row(key: str, rid: str) -> dict:
+    return {"session_key": key, "request_id": rid, "command": f"run {rid}", "description": "d",
+            "pattern_key": "rm", "surface": "telegram", "allowed_choices": ["once"], "timeout_seconds": 60}
+
+
+def overview(home: Path, key: str = "adm") -> dict:
+    r = caller(home)(key, "orchestration_overview", skills=False)
+    assert r["ok"], r
+    return r["result"]["approvals_pending"]
+
+
+def test_entries_for_profile_applies_the_session_key_namespace():
+    rows = [row(MAIN, "m"), row(MAIN_TILDE, "t"), row(P1, "a"), row(P2, "b"), row(ODD, "c"), row("agent:a~b:x:y", "d")]
+    assert [e["session_key"] for e in bridge.entries_for_profile(rows, "default")] == [MAIN]
+    assert [e["session_key"] for e in bridge.entries_for_profile(rows, "main")] == [MAIN_TILDE]
+    assert [e["session_key"] for e in bridge.entries_for_profile(rows, "p1")] == [P1]
+    assert bridge.entries_for_profile(rows, "p3") == []          # unattributable and lookalike rows stay out
+
+
+def test_orchestration_overview_counts_each_profile_on_the_shared_socket(mhome):
+    """The overview is the last consumer that assumed one socket per home.
+
+    It must not report the WHOLE shared queue as the default profile's count, nor call the other
+    profiles "unavailable" while their approvals are one socket away.
+    """
+    gateway_state(mhome, ["default", "p1", "p2"])
+    fake = FakeBridge(owner(mhome, "default"),
+                      pending=[row(MAIN, "r-main"), row(P1, "r-p1"), row(P2, "r-p2"), row(ODD, "r-odd")])
+    try:
+        assert overview(mhome) == {"default": 1, "p1": 1, "p2": 1}
+        assert fake.ops().count("list") == 3                     # every row was counted off the shared socket
+    finally:
+        fake.close()
+
+
+def test_orchestration_overview_leaves_a_per_home_socket_unfiltered(mhome):
+    """A live per-profile socket (separate gateway) is counted raw: no filtering, no new row semantics.
+
+    An unattributable `cli:…` key is another profile's own socket's business there, so it counts.
+    """
+    gateway_state(mhome, ["default", "p1"])
+    root, own = FakeBridge(owner(mhome, "default"), pending=[row(MAIN, "r-main")]), \
+        FakeBridge(owner(mhome, "p1"), pending=[row(P1, "r-p1"), row(ODD, "r-odd")])
+    try:
+        assert overview(mhome) == {"default": 1, "p1": 2}
+    finally:
+        own.close()
+        root.close()
+
+
+def test_orchestration_overview_skips_profiles_the_gateway_does_not_serve(mhome):
+    """Unchanged: a profile outside `served_profiles` gets no row at all (no socket is probed)."""
+    gateway_state(mhome, ["default"])
+    fake = FakeBridge(owner(mhome, "default"), pending=[row(MAIN, "r-main")])
+    try:
+        assert overview(mhome) == {"default": 1}
+    finally:
+        fake.close()
+
+
+def test_orchestration_overview_still_hides_the_section_from_a_default_bound_key(shared, mhome):
+    """The section stays hidden for a restricted key allowed the default profile; only the wording is new."""
+    out = bound_default(mhome)("orchestration_overview", skills=False)["result"]["approvals_pending"]
+    assert out.startswith("not visible:")
+    assert "bound to the default profile (shared bridge)" not in out
+    assert "approvals_pending" in out                            # points at the tool that does filter

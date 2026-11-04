@@ -91,7 +91,7 @@ def approvals_pending(ctx):
     out = {"profile": ctx.profile, "count": len(pending), "pending": pending,
            "mode": tgt.mode, "socket": str(tgt.socket)}
     if tgt.shared:      # one socket, every profile's approvals: keep only this profile's sessions
-        mine = [a for a in pending if bridge.profile_of_session_key(a.get("session_key")) == ctx.profile]
+        mine = bridge.entries_for_profile(pending, ctx.profile)
         out["hidden_other_profiles"] = len(pending) - len(mine)
         out["count"], out["pending"] = len(mine), mine
     return out
