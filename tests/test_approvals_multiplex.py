@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -384,6 +385,64 @@ def test_a_foreign_key_is_refused_in_per_home_mode_too(mhome):
         assert "answer" not in own.ops()
     finally:
         own.close()
+
+
+def test_the_real_bridge_server_filters_and_refuses_on_the_wire(mhome, monkeypatch):
+    """Integration: the real bridge server (bridge.start) with a fake in-gateway approval module.
+
+    Proves the refusal on the real wire format, not only against a canned fake: the gateway's own
+    resolve_gateway_approval must never see a cross-profile answer.
+    """
+    import types
+    from hermcp import bridge as real
+
+    class FakeApproval(types.ModuleType):
+        def __init__(self):
+            super().__init__("tools.approval")
+            import threading
+            self._lock = threading.Lock()
+            self._gateway_queues = {
+                P1: [types.SimpleNamespace(data={"request_id": "r1", "command": "rm -rf /x", "description": "d",
+                                                 "pattern_key": "rm", "allowed_choices": ["once", "deny"],
+                                                 "timeout_seconds": 300})],
+                P2: [types.SimpleNamespace(data={"request_id": "r2", "command": "systemctl restart y", "description": "d",
+                                                 "pattern_key": "systemctl", "allowed_choices": ["once", "deny"],
+                                                 "timeout_seconds": 300})],
+            }
+            self.resolved: list[tuple] = []
+
+        def list_gateway_approvals(self, key):
+            return [dict(e.data) for e in self._gateway_queues.get(key, [])]
+
+        def resolve_gateway_approval(self, key, choice, resolve_all=False, reason=None, request_id=None):
+            q = self._gateway_queues.get(key, [])
+            hit = [e for e in q if e.data["request_id"] == request_id]
+            for e in hit:
+                q.remove(e)
+            self.resolved.append((key, choice, request_id))
+            return len(hit)
+
+    fake = FakeApproval()
+    pkg = types.ModuleType("tools")
+    pkg.approval = fake
+    monkeypatch.setitem(sys.modules, "tools", pkg)
+    monkeypatch.setitem(sys.modules, "tools.approval", fake)
+    gateway_state(mhome, ["default", "p1", "p2"])
+    path = real.start(mhome)
+    assert path is not None
+    try:
+        call = caller(mhome)
+        out = call("p1", "approvals_pending")["result"]
+        assert out["mode"] == real.MULTIPLEX and [a["request_id"] for a in out["pending"]] == ["r1"]
+        assert "r2" not in json.dumps(out)
+        r = call("p1", "approvals_answer", session_key=P2, request_id="r2", choice="once")
+        assert r["ok"] is False and r["error"]["code"] == "forbidden"
+        assert fake.resolved == []                        # the gateway never saw the foreign answer
+        r = call("p1", "approvals_answer", session_key=P1, request_id="r1", choice="deny")
+        assert r["ok"] and r["result"]["resolved"] == 1
+        assert fake.resolved == [(P1, "deny", "r1")]
+    finally:
+        real.stop()
 
 
 # ---- 5. doctor ----------------------------------------------------------------------------------
