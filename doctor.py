@@ -105,19 +105,45 @@ def run() -> int:
     except Exception as exc:  # noqa: BLE001
         warn("could not read plugins.enabled", f"{type(exc).__name__}")
     from . import bridge
-    for prof in list_profile_names():
-        try:
-            path = bridge.socket_path(profile_home(prof))
-        except Exception:  # noqa: BLE001
-            continue
-        if not path.exists():
-            print(f"[info] approvals bridge [{prof}]: not running (needs plugins.enabled + gateway restart)")
-            continue
-        try:
-            r = bridge.call(path, {"op": "ping"}, timeout=1.0)
-            row(bool(r.get("ok")), f"approvals bridge [{prof}]", f"gateway pid {r.get('pid')}")
-        except OSError as exc:
-            warn(f"approvals bridge [{prof}] stale socket", f"{path} ({exc})")
+    root_home = hermes_home()
+    root_sock = bridge.socket_path(root_home)
+    served = bridge.served_profiles(root_home, known_profiles=list_profile_names())
+    root_hit = bridge.ping(root_sock)
+    if served is not None and root_hit is not None:
+        # ONE multiplex gateway serves every profile and publishes exactly one socket in its launch home.
+        row(True, "approvals bridge", f"shared multiplex socket ok (gateway pid {root_hit.get('pid')}, "
+                                      f"serves {len(served)} profiles)")
+        print("[info] approvals bridge: every profile's approvals are filtered out of that socket by the "
+              "session key's profile namespace")
+        for prof in list_profile_names():
+            try:
+                path = bridge.socket_path(profile_home(prof))
+            except Exception:  # noqa: BLE001
+                continue
+            if path == root_sock or not (path.exists() or path.is_symlink()):
+                continue
+            hit = bridge.ping(path)
+            if hit is not None:
+                print(f"[info] approvals bridge [{prof}]: its own per-home gateway socket (pid {hit.get('pid')})")
+            else:
+                warn(f"approvals bridge [{prof}] stale socket file",
+                     f"{path} is not served by the multiplex gateway; delete that file if it is left over "
+                     f"(hermcp never deletes it)")
+    else:
+        for prof in list_profile_names():
+            try:
+                path = bridge.socket_path(profile_home(prof))
+            except Exception:  # noqa: BLE001
+                continue
+            if not path.exists():
+                print(f"[info] approvals bridge [{prof}]: not running (needs plugins.enabled + gateway restart)")
+                continue
+            try:
+                r = bridge.call(path, {"op": "ping"}, timeout=1.0)
+                row(bool(r.get("ok")), f"approvals bridge [{prof}]", f"gateway pid {r.get('pid')}")
+            except OSError as exc:
+                warn(f"approvals bridge [{prof}] stale socket",
+                     f"{path} ({exc}); delete that file if it is left over (hermcp never deletes it)")
 
     # -- service / lock --------------------------------------------------------------------
     unit = Path("/etc/systemd/system/hermcp.service")

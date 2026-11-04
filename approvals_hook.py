@@ -15,6 +15,11 @@ deliberately never stores a request_id, so nothing in the inbox can become an ap
 
 Payload notes: Hermes redacts ``command``/``description`` before the hook fires (force=True); this module
 redacts again (``clean_text``) and single-lines everything. Disable with ``HERMCP_INBOX_APPROVALS=0``.
+
+Profile attribution: the event's ``profile`` decides which profile-restricted key sees it. In a
+multiplex gateway (one process, all profiles, launched from the default home) the home says
+``default`` for every event, so the profile is derived from the session key's namespace instead
+(``_event_profile``) — otherwise every profile's approvals would land in the default profile's events.
 """
 from __future__ import annotations
 
@@ -58,6 +63,30 @@ def _profile() -> str | None:
     return os.environ.get("HERMES_PROFILE") or None
 
 
+def _event_profile(payload: dict[str, Any]) -> str | None:
+    """Which profile an approval event belongs to.
+
+    Separate gateways: one process per profile home, so the home (``_profile()``) is authoritative
+    and the session key of such a gateway is namespaced ``agent:main:…`` — it must NOT be read as
+    "default" here.
+
+    Multiplex gateway: ONE process launched from the DEFAULT home serves every profile, so the home
+    reports ``default`` for all of them (that is the original bug: every approval landed in the
+    default profile's events). The session key does carry the profile namespace
+    (``agent:<profile>:…``, see ``gateway/session.py::_session_key_namespace``), so when the home is
+    the default home, derive the profile from the session key. Falling back to the home keeps the
+    fail-closed behaviour: an unattributable key stays NULL rather than being guessed.
+    """
+    home = _profile()
+    if home and home != "default":
+        return home
+    try:
+        from . import bridge
+        return bridge.profile_of_session_key(payload.get("session_key")) or home
+    except Exception:  # noqa: BLE001 - a hook must never raise
+        return home
+
+
 def _collect(settings=None) -> None:
     """Drop expired identities; keeps the dict bounded on long-lived gateway processes."""
     now = time.monotonic()
@@ -78,7 +107,7 @@ def handle_pre_approval_request(**payload: Any) -> None:
         settings = load_settings()
         if not enabled(settings) or payload.get("coalesced"):
             return                       # a follower of a coalesced prompt: the leader already reported it
-        key, profile = _identity(payload), _profile()
+        key, profile = _identity(payload), _event_profile(payload)
         with _lock:
             _collect()
             if key in _seen:
@@ -105,7 +134,7 @@ def handle_post_approval_response(**payload: Any) -> None:
         settings = load_settings()
         if not enabled(settings):
             return
-        key, profile = _identity(payload), _profile()
+        key, profile = _identity(payload), _event_profile(payload)
         with _lock:
             if _seen.pop(key, None) is None:
                 return                   # never announced (disabled, deduped or a coalesced follower): stay quiet

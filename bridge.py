@@ -6,8 +6,16 @@ standalone hermcp server reaches it over a loopback-only AF_UNIX socket:
 
     $HERMES_HOME/plugin-data/hermcp/approvals.sock      mode 0600, peer uid must match
 
-One socket per profile home (every profile gateway has its own HERMES_HOME), which makes
-profile pinning structural: a key pinned to ``researcher`` can only ever reach researcher's socket.
+Two gateway layouts answer on that socket:
+
+* **separate gateway** — one gateway process per profile home, so one socket per profile. Profile
+  pinning is structural: a key pinned to ``researcher`` can only ever reach researcher's socket.
+* **multiplex gateway** (``gateway.multiplex_profiles``) — ONE process launched from the default
+  home that serves every profile; it publishes exactly one socket, and that socket lists the
+  pending approvals of ALL profiles. ``resolve()`` detects this (the launch home's
+  ``gateway_state.json`` records ``served_profiles``) and the approvals tools then filter by the
+  profile namespace of the session key (``profile_of_session_key``), so a profile-restricted key
+  still sees and answers only its own profile's approvals.
 
 Wire format: one JSON object per line in, one out. Ops: ``ping``, ``list``, ``answer``.
 Nothing here imports Hermes at module import time; Hermes modules are imported lazily inside the
@@ -22,6 +30,7 @@ import socket
 import socketserver
 import struct
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +46,116 @@ CHOICES = ("once", "session", "always", "deny")
 
 def socket_path(home: Path) -> Path:
     return Path(home) / "plugin-data" / "hermcp" / SOCK_NAME
+
+
+# -- which socket serves which profile (multiplex vs separate gateway) ---------------------
+MULTIPLEX = "multiplex-shared"     # one socket serves every profile: callers MUST filter
+PER_HOME = "per-home"              # one gateway process and one socket per profile home
+
+
+def profile_of_session_key(session_key: Any) -> str | None:
+    """Profile a gateway session key belongs to, or None when it cannot be attributed.
+
+    ``gateway/session.py::_session_key_namespace`` namespaces every key with ``agent:<ns>``:
+    the default profile is ``agent:main:…``, a profile literally named ``main`` is the marked
+    ``agent:main~:…`` (``~`` is outside the profile-id alphabet, so it can never be another
+    profile's id), a named profile is ``agent:<name>:…``. This is the dependency-free mirror of
+    ``hermes_state_keys.profile_from_session_key`` — the standalone hermcp server has no Hermes on
+    its import path. Anything that is not a well formed ``agent:<ns>:<platform>…`` key returns
+    None: fail closed, an odd key is never attributed to a profile. That is stricter than the
+    upstream inverse, which reads a missing slot as ``main`` (so ``agent:`` -> "default"); here an
+    unattributable key would otherwise be shown to a default-bound key.
+    """
+    if not isinstance(session_key, str) or not session_key:
+        return None
+    parts = session_key.split(":")
+    if len(parts) < 3 or parts[0] != "agent":
+        return None
+    ns = parts[1]
+    if ns == "main":
+        return "default"
+    if ns == "main~":
+        return "main"
+    return None if (not ns or "~" in ns) else ns
+
+
+def runtime_status(home: Path) -> dict[str, Any] | None:
+    """``<home>/gateway_state.json`` as a dict, or None when it is absent or unreadable."""
+    try:
+        data = json.loads((Path(home) / "gateway_state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def recorded_served_profiles(home: Path) -> list[str] | None:
+    """``served_profiles`` the gateway at *home* recorded, or None when the key is absent.
+
+    The multiplexer writes every profile it serves into the launch home's (the default home's)
+    ``gateway_state.json``. An empty list is an authoritative "serves nobody else"; None means the
+    record predates the field (or there is no gateway), which is what the config hint covers.
+    """
+    served = (runtime_status(home) or {}).get("served_profiles")
+    return [str(p) for p in served if p] if isinstance(served, list) else None
+
+
+def config_multiplex_hint(home: Path) -> bool | None:
+    """``gateway.multiplex_profiles`` from *home*'s config.yaml, or None when it cannot be read."""
+    try:
+        import yaml
+        cfg = yaml.safe_load((Path(home) / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 - yaml missing or an unreadable config is "no hint"
+        return None
+    gw = cfg.get("gateway")
+    return bool(gw.get("multiplex_profiles")) if isinstance(gw, dict) and "multiplex_profiles" in gw else None
+
+
+def served_profiles(home: Path, known_profiles: list[str] | None = None) -> list[str] | None:
+    """Profiles the gateway at *home* serves, or None when it is not a multiplexer.
+
+    The runtime record is the truth about the running process; the config flag is only a hint for
+    a gateway that predates it, and then it means every known profile.
+    """
+    recorded = recorded_served_profiles(home)
+    if recorded is not None:
+        return recorded
+    if config_multiplex_hint(home) and known_profiles:
+        return [str(p) for p in known_profiles]
+    return None
+
+
+@dataclass(frozen=True)
+class Target:
+    """Which bridge socket serves a profile, and whether that socket is shared across profiles."""
+    profile: str
+    mode: str
+    socket: Path
+    shared: bool                                  # the socket lists every profile's approvals
+    served_profiles: list[str] | None = None
+    gateway_pid: int | None = None
+
+
+def resolve(profile: str, *, own_socket: Path, root_home: Path,
+            known_profiles: list[str] | None = None) -> Target:
+    """Decide which socket answers for *profile*.
+
+    1. the profile's own socket answers -> per-home (a separate gateway keeps working unchanged,
+       and a live per-profile socket wins even while a multiplexer runs)
+    2. the launch home records a multiplexer that serves *profile* and its socket answers ->
+       multiplex-shared, which is the ONLY case where a socket holds several profiles' approvals
+    3. otherwise the own socket is used ("per-home"): it is the socket the fix hint talks about
+    """
+    own = Path(own_socket)
+    root = socket_path(root_home)
+    served = served_profiles(root_home, known_profiles)
+    if own != root:
+        hit = ping(own)
+        if hit is not None:
+            return Target(profile, PER_HOME, own, False, served, hit.get("pid"))
+    hit = ping(root)
+    if hit is not None and served is not None and profile in served:
+        return Target(profile, MULTIPLEX, root, True, served, hit.get("pid"))
+    return Target(profile, PER_HOME, own, False, served, None)
 
 
 # -- server (gateway process) ------------------------------------------------------------
@@ -184,13 +303,23 @@ def stop() -> None:
 
 
 def _alive(path: Path) -> bool:
-    try:
-        return call(path, {"op": "ping"}, timeout=1.0).get("ok") is True
-    except OSError:
-        return False
+    return ping(path) is not None
 
 
 # -- client (standalone hermcp server) ----------------------------------------------------
+def ping(path: Path, timeout: float = 1.0) -> dict[str, Any] | None:
+    """The ping answer of a LIVE bridge at *path*, or None when nothing answers there.
+
+    Never raises: a missing socket file, a refused connection, a stale socket whose owner is gone
+    and a garbage answer all mean "not reachable" for mode detection.
+    """
+    try:
+        resp = call(Path(path), {"op": "ping"}, timeout=timeout)
+    except (OSError, ValueError):
+        return None
+    return resp if isinstance(resp, dict) and resp.get("ok") is True else None
+
+
 def call(path: Path, req: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(timeout)

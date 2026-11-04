@@ -7,7 +7,13 @@ __version__ = "0.1.0"
 
 
 def _start_bridge(**_kw) -> None:
-    """Agent half: publish this gateway's pending approvals on a 0600 AF_UNIX socket (see bridge.py)."""
+    """Agent half: publish this gateway's pending approvals on a 0600 AF_UNIX socket (see bridge.py).
+
+    One socket per process, in the process's own home. A multiplex gateway (one process serving every
+    profile) therefore publishes its single socket in the default home, and that socket holds every
+    profile's approvals — the standalone hermcp server detects that case and filters by the session
+    key's profile namespace (see bridge.resolve / bridge.profile_of_session_key). Nothing to do here.
+    """
     try:
         from . import bridge
         from hermes_constants import get_hermes_home  # type: ignore[import-not-found]

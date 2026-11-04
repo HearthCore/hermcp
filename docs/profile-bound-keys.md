@@ -10,9 +10,9 @@ Regenerate with `python -m hermcp docs-bound-keys` (or `hermcp keys policy` for 
 |---|---|---|---|
 | `audit_tail` | admin | no | global audit log of all keys |
 | `keys_list` | admin | no | key administration |
-| `approvals_answer` | write | yes (own profile) | same bridge rule as approvals_pending |
+| `approvals_answer` | write | yes (own profile) | a session_key of another profile is refused before the bridge is called |
 | `approvals_bridge_status` | read | yes (own profile) | ping only (reachable, pid); no approval data |
-| `approvals_pending` | read | yes (own profile) | per-profile socket: only the gateway process of that profile; for the default profile the bridge is shared by all multiplexed profiles, so default-bound keys are refused |
+| `approvals_pending` | read | yes (own profile) | per-profile socket; on a shared multiplex socket only the sessions whose key namespace is this profile's are listed |
 | `chat_conversations` | read | yes (own profile) | profile argument forced to the bound profile |
 | `chat_history` | read | yes (own profile) | profile argument forced to the bound profile |
 | `chat_run_approval` | write | yes (own profile) | same |
@@ -146,5 +146,7 @@ Regenerate with `python -m hermcp docs-bound-keys` (or `hermcp keys policy` for 
 
 Not available to a key bound to one profile: every admin tool (`access=admin`), all `keys_*`, `audit_tail`,
 `gateway_restart`, `ops_gateway_logs`, provider credentials, profile administration, board-level kanban views, and
-global plugin inventory. `approvals_pending`/`approvals_answer` work only for a non-default profile (their socket
-is per profile); the default profile's bridge is shared by all multiplexed profiles and is refused.
+global plugin inventory. `approvals_pending`/`approvals_answer` work on both gateway modes: with one socket per
+profile home (separate gateways) the socket itself is the boundary; on a multiplex gateway's single shared socket
+only the sessions whose key namespace is the key's profile are listed and answered, and a default-bound key sees
+only `agent:main:*` (outside multiplex mode such a key is refused, because the socket is shared by every profile).

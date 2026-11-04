@@ -704,8 +704,12 @@ protection for good, every grant lands in the audit log with the key name, the r
 - **Cross-session** (Telegram chats, other API runs): Hermes keeps pending approvals only in
   the gateway process memory, so a separate process cannot see them. hermcp therefore also ships
   an **agent half**: `register(ctx)` runs inside the gateway and publishes the pending queue on a
-  `0600` AF_UNIX socket (`$HERMES_HOME/plugin-data/hermcp/approvals.sock`, peer uid checked,
-  one socket per profile gateway → profile pinning is structural). `approvals_pending` lists,
+  `0600` AF_UNIX socket (`$HERMES_HOME/plugin-data/hermcp/approvals.sock`, peer uid checked).
+  In separate-gateway mode there is one socket per profile home, so profile pinning is structural;
+  a multiplex gateway (one process, all profiles) publishes a single shared socket, and there the
+  session key's profile namespace is the boundary: `approvals_pending` lists only the caller's
+  profile and `approvals_answer` refuses a `session_key` of another profile (see AGENTS.md,
+  "Multiplex vs separate gateways"). `approvals_pending` lists,
   `approvals_answer` answers by exact `session_key` + `request_id` (only choices the request
   allows). Every list/answer is audited both by the tool layer and by the bridge.
 

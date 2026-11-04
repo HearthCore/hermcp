@@ -74,8 +74,8 @@ DENY = {
 }
 
 NOTES = {
-    "approvals_pending": "per-profile socket: only the gateway process of that profile; for the default profile the bridge is shared by all multiplexed profiles, so default-bound keys are refused",
-    "approvals_answer": "same bridge rule as approvals_pending",
+    "approvals_pending": "per-profile socket; on a shared multiplex socket only the sessions whose key namespace is this profile's are listed",
+    "approvals_answer": "same bridge rule plus: a session_key of another profile is refused before the bridge is called",
     "approvals_bridge_status": "ping only (reachable, pid); no approval data",   # profile-aware tools whose handler narrows behaviour for restricted keys
     "logs_tail": "own profile logs only; gateway/agent/errors of the default profile are the shared gateway log (denied); worker:<id> only for own tasks",
     "plugin_config_get": "profile config section and own plugin dir; shared plugin dirs: manifest only",

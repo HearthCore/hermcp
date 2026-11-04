@@ -251,6 +251,38 @@ Steps (each needs the human's go-ahead):
 3. Verify: `... -m hermcp doctor` shows `approvals bridge [<profile>]` rows, and the tool
    `approvals_bridge_status` (needs a key with the `approvals` scope) reports whether it is up.
 
+### Multiplex vs separate gateways
+
+hermcp supports both gateway layouts; you do not configure anything in hermcp for them, they are
+detected:
+
+| | separate gateway | multiplex gateway |
+|---|---|---|
+| processes | one gateway process per profile home | ONE process, launched from the default home (`gateway.multiplex_profiles: true`) |
+| sockets | one `approvals.sock` per profile home | exactly one, in the launch home: `$HERMES_HOME/plugin-data/hermcp/approvals.sock` |
+| what it lists | that one profile's approvals | every served profile's approvals |
+| profile boundary | structural (your key only reaches your profile's socket) | the session key's namespace (`agent:<profile>:…`): `approvals_pending` filters, `approvals_answer` refuses a foreign `session_key` |
+
+**What is needed.** The agent half has to be loaded once in whichever process runs the gateway. In
+multiplex mode that is the default profile's config, so `hermes plugins enable hermcp` there is
+enough — **no per-profile `plugins.enabled` entry is needed** for the other profiles: the same
+process serves them all. A gateway restart is only needed when the plugin was not loaded yet (the
+bridge starts lazily with the first inbound message). `hermes gateway restart` is the owner's job.
+
+**How to verify.** `hermes hermcp doctor` prints one line in multiplex mode —
+`[ok] approvals bridge: shared multiplex socket ok (gateway pid N, serves M profiles)` — and
+per-profile rows otherwise. `approvals_bridge_status` answers with `mode` (`per-home` or
+`multiplex-shared`), `socket`, `reachable`, `gateway_pid` and `served_profiles`. A leftover
+per-profile socket from an older separate-gateway setup shows up as `[warn] approvals bridge
+[<profile>] stale socket file`; deleting that file is safe and doctor itself never deletes
+anything.
+
+**Guarantee.** A key restricted to a profile can only list and answer that profile's sessions,
+in both modes: on the shared socket the profile namespace of the session key is the boundary, and
+a `session_key` belonging to another profile is refused before the bridge is asked. A key bound to
+the default profile sees only `agent:main:*` — in per-home mode (or when the mode cannot be
+established) that key stays refused, as before.
+
 ## 7. First admin key and scoped keys
 
 There is no default account. The first admin key is created **locally by the human, in their own

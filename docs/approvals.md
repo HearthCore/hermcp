@@ -272,7 +272,54 @@ executes a command inside that profile's agent context.
 
 ---
 
-## 6. Sources
+## 7. Multiplex vs separate gateways (the shipped bridge)
+
+The bridge (`bridge.py`) supports both gateway layouts; nothing about them is configurable in
+hermcp, they are detected per call (`bridge.resolve()`).
+
+| | separate gateway | multiplex gateway |
+|---|---|---|
+| processes / homes | one gateway process per profile home | ONE process, launched from the default home (`gateway.multiplex_profiles: true`) |
+| sockets | `$HERMES_HOME/plugin-data/hermcp/approvals.sock` once per profile home | exactly one, in the launch home; it lists **every** served profile's approvals |
+| detection | the profile's own socket answers | the launch home's `gateway_state.json` records `served_profiles` containing the profile, the root socket answers, and no live per-profile socket exists (`gateway.multiplex_profiles: true` is only a hint when the record predates `served_profiles`) |
+| profile boundary | structural: a key pinned to `researcher` can only reach researcher's socket | the session key's namespace |
+
+The profile boundary is the session key's namespace
+(`gateway/session.py::_session_key_namespace` → `agent:main:…` for the default profile,
+`agent:main~:…` for a profile literally named `main`, `agent:<name>:…` otherwise;
+`bridge.profile_of_session_key()` is the dependency-free mirror of Hermes'
+`hermes_state_keys.profile_from_session_key`). On the shared socket:
+
+- `approvals_pending` lists only entries whose `session_key` maps to the key's profile,
+  `hidden_other_profiles` counts what was filtered out;
+- `approvals_answer` refuses a `session_key` of another profile **before** calling the bridge
+  (for profile-pinned keys and for an admin key with an explicit `profile`), and refuses a key
+  that cannot be attributed at all;
+- a key restricted to the default profile is no longer refused in multiplex mode (the filter
+  narrows the socket to `agent:main:*`); in per-home mode or when the mode cannot be established
+  the old refusal stands, because nothing then guarantees the socket is default-only.
+
+Cheap/unattributable formats fail closed: `cli:…`, a bare `tg:…`, an empty namespace or a
+namespace carrying `~` (other than `main~`) map to "no profile" and are never shown to a
+profile-restricted key. For the same reason `approvals_hook.py` derives an event's profile from
+the session key when the process home is the default one (a multiplex gateway's home says
+`default` for every event, which would otherwise put every profile's approvals into the default
+profile's events); a named-profile standalone gateway keeps its own home as the answer, since such
+a gateway builds `agent:main:…` keys.
+
+What an operator needs: the agent half loaded **once** in the process that runs the gateway
+(`hermes plugins enable hermcp` in the default profile) — no per-profile `plugins.enabled` entry
+in multiplex mode, and a gateway restart only if the plugin was not loaded yet. Verification:
+`hermes hermcp doctor` prints one line in multiplex mode
+(`[ok] approvals bridge: shared multiplex socket ok (gateway pid N, serves M profiles)`) or
+per-profile rows otherwise, and `approvals_bridge_status` reports `mode`, `socket`, `reachable`,
+`gateway_pid` and `served_profiles`. A stale per-profile socket file (e.g. from an older
+separate-gateway setup) is reported as `[warn] … stale socket file`; it is never deleted by
+doctor — deleting the file by hand is safe.
+
+---
+
+## 8. Sources
 
 Code (read-only, `/usr/local/lib/hermes-agent`):
 - `tools/approval.py` — `_gateway_queues` `:122`, `_gateway_notify_cbs` `:123`,
