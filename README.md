@@ -24,7 +24,7 @@ MCP client ──HTTPS──> reverse proxy ──> hermcp serve (own process, s
 ```
 
 > **Status: 0.1.0.** All four build phases are implemented and covered by tests: keys and
-> scopes, 119 tools in 18 toolsets, OAuth 2.1 for Claude.ai connectors, run-scoped and
+> scopes, 139 tools in 19 toolsets, OAuth 2.1 for Claude.ai connectors, run-scoped and
 > cross-session approvals, providers/secrets, memory, ops, audit. Known gaps are listed in
 > [Roadmap](#roadmap).
 
@@ -53,7 +53,7 @@ and see everything they did in an audit log.
 ## Install
 
 ```bash
-git clone <this repo> ~/.hermes/plugins/hermcp
+git clone https://github.com/HearthCore/hermcp.git ~/.hermes/plugins/hermcp
 cd ~/.hermes/plugins/hermcp
 cp deploy/hermcp.service.template /etc/systemd/system/hermcp.service   # or: make it yourself
 ```
@@ -172,7 +172,7 @@ connector inherits the scopes of the `hmcp_` key pasted on its consent page (see
 
 ## Tool surface
 
-**126 tools in the catalog, 39 advertised directly** (4 of them the meta tools). Models (and especially voice modes)
+**139 tools in the catalog, 45 advertised directly** (4 of them the meta tools). Models (and especially voice modes)
 degrade with huge tool lists, so the long tail is reachable through meta tools:
 
 ```
@@ -181,9 +181,9 @@ hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, 
 
 `hermes_call` re-runs the full scope check, so it cannot reach a tool the key may not use.
 
-Toolsets (tools per set): `status` 5, `chat` 6, `sessions` 9, `models` 11, `config` 6, `tools` 4,
-`plugins` 8, `mcp` 7, `skills` 8, `profiles` 6, `kanban` 14, `cron` 12, `providers` 10,
-`approvals` 3, `memory` 4, `ops` 2, `inbox` 5, `admin` 2, `meta` 4. A key only ever sees (and can only
+Toolsets (tools per set): `status` 6, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
+`plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 12, `providers` 11,
+`approvals` 3, `memory` 4, `ops` 6, `inbox` 5, `admin` 2, `meta` 4. A key only ever sees (and can only
 call) the tools its scopes allow.
 
 `status_gateway` / `hermes_health` only report platforms the *running* gateway process owns: an entry
