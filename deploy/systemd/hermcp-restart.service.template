@@ -1,0 +1,19 @@
+# Rendered by `hermes hermcp install-service` (restart_units.render_units); do not copy by hand.
+[Unit]
+Description=Restart hermcp.service after a Hermes update (only if the stamp is a new build)
+# Restart-loop guard: at most 3 runs per 10 min; past that the unit stays failed and is logged.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+# The script's test overrides double as the way to hand it this install's paths.
+Environment="HERMCP_STAMP=@STAMP@"
+Environment="HERMCP_PYTHON=@PYTHON@"
+Environment="HERMCP_SYSTEMCTL=@SYSTEMCTL@"
+# Debounce: give the update time to finish after the stamp was written.
+ExecStartPre=/bin/sleep 60
+ExecStart=@SCRIPT@
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal

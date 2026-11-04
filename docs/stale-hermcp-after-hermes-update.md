@@ -20,7 +20,9 @@ Every tool returns `_meta`, so the warning shows up in `hermes_health` and `orch
 1. **Automatic (after a Hermes update):** `hermcp-restart.path` watches `install-stamp.json`.
    Hermes writes that file atomically when an update finishes. The path unit starts
    `hermcp-restart.service`, which waits 60 s and restarts `hermcp.service` only when the stamp
-   is a new build. Install and test: see `deploy/systemd/README.md`.
+   is a new build. `hermes hermcp install-service` installs these units by default (`--no-auto-restart` opts out) and
+   detects the Hermes checkout instead of assuming `/usr/local/lib/hermes-agent`. Manual install and test: see
+   `deploy/systemd/README.md`.
 2. **On demand:** the admin tool `hermcp_restart` (needs admin scope):
    - without `confirm=true`, or with `dry_run=true`, it returns the plan only (`applied: false`)
      with the exact command and side effects;

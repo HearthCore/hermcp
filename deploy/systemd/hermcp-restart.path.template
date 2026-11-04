@@ -1,0 +1,12 @@
+# Rendered by `hermes hermcp install-service` (restart_units.render_units); do not copy by hand.
+# The watched stamp belongs to the Hermes checkout that the `hermes` executable on this host belongs to.
+[Unit]
+Description=Restart hermcp.service after a Hermes update (watches install-stamp.json)
+
+[Path]
+# Hermes writes this file with tempfile + os.replace (hermes_cli/source_stamp.py), which fires PathChanged.
+PathChanged=@STAMP@
+Unit=hermcp-restart.service
+
+[Install]
+WantedBy=multi-user.target

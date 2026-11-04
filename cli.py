@@ -32,6 +32,9 @@ def setup_parser(p: argparse.ArgumentParser) -> None:
     ins = sub.add_parser("install-service", help="install the systemd unit (does not start it)")
     ins.add_argument("--enable-now", action="store_true", help="also enable + start it")
     ins.add_argument("--out", default="/etc/systemd/system/hermcp.service")
+    ins.add_argument("--no-auto-restart", action="store_true",
+                     help="do not install the units that restart hermcp after a Hermes update")
+    ins.add_argument("--dry-run", action="store_true", help="print what would be written, change nothing")
     d = sub.add_parser("docs", help="regenerate docs/tools.html from the live registry")
     d.add_argument("--out", help="output path (default: docs/tools.html next to the package)")
     o = sub.add_parser("oauth", help="OAuth client for Claude.ai connectors").add_subparsers(dest="oauth_cmd")
@@ -283,7 +286,19 @@ def _install_service(args) -> int:
     if not src.exists():
         print(f"template missing: {src}", file=sys.stderr)
         return 1
+    from .restart_units import install_restart_units, plan_restart_units
     dest = Path(args.out)
+    if args.dry_run:
+        print(f"[dry-run] would write {dest}")
+        if args.no_auto_restart:
+            print("[dry-run] auto-restart: disabled by --no-auto-restart")
+        else:
+            units, msgs = plan_restart_units()
+            for m in msgs:
+                print(f"[dry-run] {m}")
+            for name, utext in units.items():
+                print(f"[dry-run] would write {dest.parent / name}:\n{utext}")
+        return 0
     hold = InstanceLock.holder(s.data)
     if args.enable_now and hold and hold.get("role") == "standalone":
         print("Refusing to enable-now: a standalone instance is running "
@@ -298,6 +313,13 @@ def _install_service(args) -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(text, encoding="utf-8")
     print(f"installed {dest}")
+    restart_path = dest.parent / "hermcp-restart.path"
+    if args.no_auto_restart:
+        print("auto-restart: disabled by --no-auto-restart")
+    else:
+        for m in install_restart_units(dest.parent)[1]:
+            print(m)
+    with_restart = not args.no_auto_restart and restart_path.exists()
     if not shutil.which("systemctl"):
         print("systemctl not found — unit written but not registered", file=sys.stderr)
         return 1
@@ -306,8 +328,15 @@ def _install_service(args) -> int:
     if args.enable_now:
         cp = sp.run(["systemctl", "enable", "--now", dest.stem], capture_output=True, text=True)
         print((cp.stdout or "") + (cp.stderr or ""))
-        return cp.returncode
+        rc = cp.returncode
+        if rc == 0 and with_restart:
+            cp = sp.run(["systemctl", "enable", "--now", restart_path.name], capture_output=True, text=True)
+            print((cp.stdout or "") + (cp.stderr or ""))
+            rc = cp.returncode
+        return rc
     print(f"next: sudo systemctl enable --now {dest.stem}")
+    if with_restart:
+        print(f"      sudo systemctl enable --now {restart_path.name}   # restart hermcp after Hermes updates")
     return 0
 
 
