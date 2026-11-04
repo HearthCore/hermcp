@@ -133,7 +133,29 @@ def run() -> int:
         import urllib.request
         urllib.request.urlopen(s.hermes_api_url + "/health", timeout=2)
         row(True, "Hermes api_server", s.hermes_api_url)
+        api_up = True
     except Exception as exc:  # noqa: BLE001
+        api_up = False
         warn(f"Hermes api_server {s.hermes_api_url} not reachable ({type(exc).__name__})", "chat tools need it")
+
+    # -- per-profile api_server keys -------------------------------------------------------
+    # The api_server checks /p/<profile>/... against the profile's OWN API_SERVER_KEY, so a key
+    # that is missing or shared across profiles shows up as HTTP 401 in the chat tools.
+    from . import profile_keys as pkeys
+    for st in pkeys.statuses(s, profiles=pkeys.known_profiles(), do_probe=api_up, timeout=2.0):
+        label = f"api_server key [{st.profile}]"
+        if not st.present:
+            warn(f"{label} missing", f"no {pkeys.ENV_VAR} in {st.path}; "
+                                     "fix: python -m hermcp profile-keys setup (or --dry-run to preview)")
+        elif st.shared_with:
+            warn(f"{label} shared with {', '.join(st.shared_with)}",
+                 "every profile needs its own key; fix: python -m hermcp profile-keys setup")
+        elif st.probed and st.probe_code is not None and st.probe_code != 200:
+            row(False, label, f"rejected by the api_server (HTTP {st.probe_code}, fingerprint "
+                              f"{st.fingerprint}); fix: python -m hermcp profile-keys setup")
+        elif st.probed:
+            row(True, label, f"{st.source} fingerprint {st.fingerprint}")
+        else:
+            print(f"[info] {label}: {st.source} fingerprint {st.fingerprint} (api_server not probed)")
     print(f"doctor: {'ALL OK' if not problems else str(problems) + ' problem(s)'}")
     return 1 if problems else 0

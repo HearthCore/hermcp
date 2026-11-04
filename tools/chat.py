@@ -59,7 +59,7 @@ def _start_run(ctx, body: dict, idem: str):
             raise ToolError("request_key_conflict", "this request_key was already used with a different message or "
                             "session_id; use a new request_key for a new message")
         if code in (401, 403):
-            raise ToolError("api_auth", f"Hermes api_server rejected the credentials (HTTP {code}); set HERMES_API_KEY for hermcp")
+            raise hapi.auth_error(ctx.settings, ctx.profile, code)
         if code is not None and code < 500:
             raise ToolError("api_error", f"Hermes api_server HTTP {code}: {_gateway_message(out)}".rstrip(": "))
         reason = "no answer from the gateway (timeout or connection lost)" if code is None else f"gateway error HTTP {code}"
@@ -166,7 +166,7 @@ def _read_run(ctx, run_id) -> dict:
         raise ToolError("not_found", f"the gateway does not know run {run_id!r} (finished long ago, never existed "
                                      "or gateway restarted)")
     if code in (401, 403):
-        raise ToolError("api_auth", f"Hermes api_server rejected the credentials (HTTP {code})")
+        raise hapi.auth_error(ctx.settings, ctx.profile, code)
     if code != 200 or not isinstance(st, dict):
         raise ToolError("api_error", f"Hermes api_server HTTP {code}")
     return st
@@ -211,7 +211,7 @@ def _steer(ctx, run_id, message, *, via: str) -> dict:
     if code == 404:
         raise ToolError("not_found", f"the gateway does not know run {run_id!r}")
     if code in (401, 403):
-        raise ToolError("api_auth", f"Hermes api_server rejected the credentials (HTTP {code})")
+        raise hapi.auth_error(ctx.settings, ctx.profile, code)
     if code != 200 or not isinstance(resp, dict) or not resp.get("accepted"):
         raise ToolError("api_error", f"Hermes api_server HTTP {code}: {_gateway_message(resp)}".rstrip(": "))
     try:
@@ -271,7 +271,7 @@ def _cancel(ctx, run_id, *, control: str) -> dict:
         if code is None:
             raise AdapterError(f"Hermes api_server unreachable at {ctx.settings.hermes_api_url}")
         if code in (401, 403):
-            raise ToolError("api_auth", f"Hermes api_server rejected the credentials (HTTP {code})")
+            raise hapi.auth_error(ctx.settings, ctx.profile, code)
         if code == 404:
             raise ToolError("not_found", f"the gateway does not know run {run_id!r}")
         raise ToolError("cannot_cancel", f"Hermes api_server HTTP {code}: {_gateway_message(resp)}".rstrip(": "),
@@ -509,7 +509,7 @@ def chat_run_approval(ctx, run_id, choice, request_id):
     if code == 404:
         raise ToolError("not_found", "the gateway does not know this run (finished long ago or gateway restarted)")
     if code in (401, 403):
-        raise ToolError("api_auth", f"Hermes api_server rejected the credentials (HTTP {code})")
+        raise hapi.auth_error(ctx.settings, ctx.profile, code)
     if code != 200 or not isinstance(st, dict):
         raise ToolError("api_error", f"Hermes api_server HTTP {code}")
     pending = st.get("approval") if st.get("status") == "waiting_for_approval" and isinstance(st.get("approval"), dict) else None

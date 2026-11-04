@@ -1,4 +1,9 @@
-"""Client for Hermes' api_server (chat completions / runs). The API key is never returned or logged."""
+"""Client for Hermes' api_server (chat completions / runs).
+
+The api_server authorizes `/p/<profile>/...` against that profile's own `API_SERVER_KEY`, so the
+key is resolved per profile (and re-read at call time; see `profile_keys`). Keys are never returned
+to callers or logged, and a 401 names the profile plus the sources that were tried — never a value.
+"""
 from __future__ import annotations
 
 import json
@@ -7,15 +12,26 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from ..profile_keys import resolve
 from ..registry import AdapterError, ToolError
-from ..settings import Settings, _read_dotenv, hermes_home
+from ..settings import Settings
 
 
-def api_key(settings: Settings) -> str:
-    if settings.hermes_api_key:
-        return settings.hermes_api_key
-    env = _read_dotenv(hermes_home() / ".env")
-    return env.get("API_SERVER_KEY", "") or env.get("HERMES_API_KEY", "")
+def api_key(settings: Settings, profile: str = "default") -> str:
+    """The api_server key for *profile* (override > profile .env > global). Never logged."""
+    return resolve(settings, profile).key
+
+
+def auth_error(settings: Settings, profile: str, code: int) -> ToolError:
+    """401/403 for *profile*: names the profile and the sources tried, without any key value."""
+    res = resolve(settings, profile)
+    found = (f"resolved from {res.source} (fingerprint {res.fingerprint})" if res.present
+             else "no key found for this profile")
+    return ToolError("api_auth",
+                     f"Hermes api_server rejected the credentials for profile {res.profile!r} "
+                     f"(HTTP {code}); {found}. Sources tried in order: {'; '.join(res.tried)}. "
+                     "Fix it with `python -m hermcp profile-keys status` and "
+                     "`python -m hermcp profile-keys setup`. No key values are logged.")
 
 
 def request(settings: Settings, method: str, path: str, *, profile: str = "default",
@@ -27,7 +43,7 @@ def request(settings: Settings, method: str, path: str, *, profile: str = "defau
     req.add_header("Content-Type", "application/json")
     for hk, hv in (headers or {}).items():
         req.add_header(hk, hv)
-    key = api_key(settings)
+    key = api_key(settings, profile)
     if key:
         req.add_header("Authorization", f"Bearer {key}")
     try:
@@ -37,8 +53,7 @@ def request(settings: Settings, method: str, path: str, *, profile: str = "defau
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]
         if exc.code in (401, 403):
-            raise ToolError("api_auth", f"Hermes api_server rejected the credentials (HTTP {exc.code}); "
-                                        "set HERMES_API_KEY for hermcp") from None
+            raise auth_error(settings, profile, exc.code) from None
         raise ToolError("api_error", f"Hermes api_server HTTP {exc.code}: {detail}") from None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise AdapterError(f"Hermes api_server unreachable at {settings.hermes_api_url}: {exc}") from exc
@@ -57,7 +72,7 @@ def request_status(settings: Settings, method: str, path: str, *, profile: str =
     req.add_header("Content-Type", "application/json")
     for hk, hv in (headers or {}).items():
         req.add_header(hk, hv)
-    key = api_key(settings)
+    key = api_key(settings, profile)
     if key:
         req.add_header("Authorization", f"Bearer {key}")
 

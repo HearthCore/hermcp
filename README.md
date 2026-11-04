@@ -397,6 +397,26 @@ chat), skills/profile files/plugin config/hooks/secrets (own profile only), stat
 (own profile's socket), runs and inbox events (own profile). `hermcp keys policy` prints the full table; it also lives in
 `docs/profile-bound-keys.md`. Tests: `tests/test_bound_keys.py`; the selftest checks every profile for isolation.
 
+### Per-profile api_server keys
+
+The chat tools reach Hermes' api_server, which authorizes `/p/<profile>/...` against that profile's **own**
+`API_SERVER_KEY` (from `~/.hermes/profiles/<p>/.env`; `default` uses `~/.hermes/.env`, re-read per request, no gateway
+restart needed). hermcp therefore resolves the key per profile — override `HERMCP_API_KEY_<PROFILE>` → the profile's own
+`.env` → legacy global `HERMES_API_KEY` — and reports a 401 as `api_auth` naming the profile and the sources tried, never
+a key value. One key copied into every profile works for exactly one of them:
+
+```bash
+python -m hermcp profile-keys status                # per profile: source, fingerprint, SHARED flag, live probe (200/401)
+python -m hermcp profile-keys setup --dry-run       # preview; writes nothing
+python -m hermcp profile-keys setup                 # give the missing/shared profiles their own key (interactive)
+python -m hermcp profile-keys rotate --all --yes    # replace every key (timestamped backup first, re-probe)
+```
+
+`setup`/`rotate` rewrite only the single `API_SERVER_KEY=` line (mode 0600 kept, comments untouched) after backing the
+file up to `~/.hermes/backups/hermcp-profile-keys-<ts>/`; `--dry-run` writes nothing, and no key is ever printed — only a
+fingerprint. `doctor` reports missing/shared/rejected keys per profile with the same hint. Full reference:
+[`docs/profile-keys.md`](docs/profile-keys.md).
+
 ## Event inbox
 
 A neutral, platform-independent mailbox for status events. Purpose: a live voice session (Claude) cannot

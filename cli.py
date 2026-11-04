@@ -69,6 +69,26 @@ def setup_parser(p: argparse.ArgumentParser) -> None:
         if name == "revoke":
             x.add_argument("--delete", action="store_true", help="remove instead of disabling")
 
+    pk = sub.add_parser("profile-keys", help="per-profile api_server keys: status, setup, rotate")
+    pks = pk.add_subparsers(dest="profile_keys_cmd")
+    ps = pks.add_parser("status", help="which key each profile resolves and whether the api_server accepts it")
+    ps.add_argument("--profiles", help="comma list (default: every profile)")
+    ps.add_argument("--no-probe", action="store_true", help="skip the live probe (offline)")
+    ps.add_argument("--json", action="store_true", help="machine-readable output")
+    pu = pks.add_parser("setup", help="give profiles their own key (interactive; writes profile .env files)")
+    pu.add_argument("--profiles", help="comma list (default: every profile missing a key or sharing one)")
+    pu.add_argument("--yes", action="store_true", help="non-interactive: apply --generate/--copy-from to all targets")
+    pu.add_argument("--generate", action="store_true", help="generate a new key per target (with --yes)")
+    pu.add_argument("--copy-from", help="copy the key of `global` or another profile")
+    pu.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    pu.add_argument("--no-probe", action="store_true", help="skip the live probe")
+    pt = pks.add_parser("rotate", help="replace a profile's api_server key (new key, verify by probe)")
+    pt.add_argument("profile", nargs="?", help="profile name")
+    pt.add_argument("--all", action="store_true", help="rotate every known profile")
+    pt.add_argument("--yes", action="store_true", help="required to write (a timestamped backup is written first)")
+    pt.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    pt.add_argument("--no-probe", action="store_true", help="skip the live probe")
+
 
 def _fmt_ts(t) -> str:
     return "-" if not t else time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
@@ -383,6 +403,9 @@ def dispatch(args) -> int:
             return _keys(args, KeyStore(load_settings().data / "keys.json"))
         if cmd == "oauth":
             return _oauth(args)
+        if cmd == "profile-keys":
+            from .profile_keys import cli_profile_keys
+            return cli_profile_keys(args)
         if cmd == "doctor":
             from .doctor import run
             return run()
@@ -400,7 +423,8 @@ def dispatch(args) -> int:
     except (KeyError_, ScopeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print("usage: hermes hermcp {serve,keys,oauth,doctor,selftest,docs,status,stop,install-service}", file=sys.stderr)
+    print("usage: hermes hermcp {serve,keys,oauth,profile-keys,doctor,selftest,docs,status,stop,install-service}",
+          file=sys.stderr)
     return 2
 
 
