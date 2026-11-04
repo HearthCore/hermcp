@@ -32,10 +32,10 @@ def strip_ansi(s: str) -> str:
 
 # -- locating Hermes --------------------------------------------------------------------
 def agent_dir() -> Path:
-    env = os.environ.get("HERMCP_HERMES_AGENT_DIR")
-    if env:
-        return Path(env)
-    return Path("/usr/local/lib/hermes-agent")
+    """Hermes checkout: HERMCP_HERMES_AGENT_DIR, the reference path if it exists, else detected from the
+    `hermes` executable (see restart_units.py)."""
+    from ..restart_units import resolve_agent_dir
+    return resolve_agent_dir()
 
 
 def ensure_hermes_importable() -> None:

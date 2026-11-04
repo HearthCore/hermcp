@@ -10,7 +10,15 @@ Units in this directory:
 
 It never touches the gateway or the dashboard.
 
-## Install (once, root)
+## Install
+
+`hermes hermcp install-service` renders `hermcp-restart.path.template` and `hermcp-restart.service.template` for this
+install and writes them next to `hermcp.service` (opt out with `--no-auto-restart`, preview with `--dry-run`). The
+Hermes checkout is detected, not hardcoded; see the README section "Auto-restart after Hermes updates".
+The static `hermcp-restart.path` / `.service` files stay for the manual route below, which assumes the reference
+layout (`/usr/local/lib/hermes-agent`, plugin in `~/.hermes/plugins/hermcp`).
+
+### Manual (once, root)
 
     cd ~/.hermes/plugins/hermcp/deploy/systemd
     systemd-analyze verify hermcp-restart.path hermcp-restart.service   # no errors for these two

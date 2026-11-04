@@ -89,13 +89,40 @@ python -m hermcp serve --port 9230
 As a service (recommended — must live outside the gateway's process tree):
 
 ```bash
-python -m hermcp install-service          # writes /etc/systemd/system/hermcp.service
+python -m hermcp install-service          # writes /etc/systemd/system/hermcp.service (+ the auto-restart units)
 systemctl enable --now hermcp
+systemctl enable --now hermcp-restart.path   # auto-restart after Hermes updates, see below (or: install-service --enable-now)
 python -m hermcp status                   # who serves, which role, unit state, verdict
 ```
 
 `hermes hermcp <cmd>` works too once the plugin is enabled in Hermes
 (`hermes plugins enable hermcp`), which registers the CLI but never starts a server.
+
+### Auto-restart after Hermes updates
+
+hermcp keeps its Python modules in memory, so after a Hermes update it answers from old code until it
+restarts (`_meta.hermcp_older_than_hermes_build` tells you). `install-service` therefore also installs two
+small units, `hermcp-restart.path` and `hermcp-restart.service`, **on by default**:
+
+- They watch `install-stamp.json` in the Hermes checkout, which Hermes rewrites at the end of every update.
+- 60 s after a new build they restart `hermcp.service` and nothing else (never the gateway or the dashboard),
+  at most 3 times per 10 minutes. A rewrite that carries no new build (boot-time adoption) is ignored.
+
+The checkout is not hardcoded. It comes from `HERMCP_HERMES_AGENT_DIR`, else the reference path
+`/usr/local/lib/hermes-agent` if it exists, else it is detected from the `hermes` executable (where its
+interpreter imports `hermes_cli` from, or the `<checkout>/venv/bin/hermes` layout). If no stamp is found, for
+example because Hermes runs in a container hermcp cannot see, the units are skipped with a hint.
+
+| Flag | Effect |
+|---|---|
+| `--no-auto-restart` | do not install the restart units |
+| `--dry-run` | print the units that would be written, change nothing |
+| `--enable-now` | also enable `hermcp-restart.path` (besides `hermcp.service`) |
+
+Units that are already symlinks (`systemctl link` of the files in `deploy/systemd/`) are never overwritten.
+To restart on demand instead, use the admin tool `hermcp_restart`. Details:
+[`docs/stale-hermcp-after-hermes-update.md`](docs/stale-hermcp-after-hermes-update.md) and
+[`deploy/systemd/README.md`](deploy/systemd/README.md).
 
 ## Setup with an agent
 
