@@ -103,6 +103,8 @@ Start your coding agent (Claude Code, Codex, Cursor, ...) inside this folder and
 "set up hermcp": it loads [`AGENTS.md`](AGENTS.md) and walks you through preflight, install,
 keys, client setup and verification. Claude Code reads it via `CLAUDE.md`, which only points there.
 Secrets stay with you — the agent is instructed to hand you every command that prints a key.
+The AGENTS.md flow has been run step by step with GitHub Copilot CLI (per the author's report, including
+with unclear user input); any agent that loads `AGENTS.md` should work.
 
 ## Keys and scopes
 
