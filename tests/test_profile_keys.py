@@ -584,11 +584,16 @@ def test_chat_send_401_error_is_actionable_and_key_free(home, monkeypatch):
 def test_doctor_warns_about_a_missing_key(home, monkeypatch, capsys):
     from hermcp import doctor
     monkeypatch.setenv("HERMES_API_URL", "http://127.0.0.1:1")     # unreachable: no probe
-    rc = doctor.run()
+    doctor.run()
     out = capsys.readouterr().out
     assert "[warn] api_server key [researcher] missing" in out
     assert "python -m hermcp profile-keys setup" in out
-    assert "doctor:" in out and rc == 0                            # advice, not a hard failure
+    assert "doctor:" in out
+    # A missing key is advice: no [FAIL] row for it, and no key value anywhere. (The global exit
+    # code is not asserted here: unrelated checks — e.g. `hermes internals` in a bare CI runner —
+    # can fail and make doctor return 1.)
+    assert "[FAIL] api_server key" not in out
+    assert KEY_A not in out
 
 
 def test_doctor_warns_about_a_shared_key(home, monkeypatch, capsys):
@@ -627,7 +632,8 @@ def test_doctor_ok_when_the_key_is_accepted(home, monkeypatch, capsys):
         pk.ProfileStatus("researcher", True, pk.SOURCE_PROFILE, pk.fingerprint(KEY_A),
                          env_path(home, "researcher"), [], 200, True, "")])
     monkeypatch.setattr(pk, "known_profiles", lambda: ["researcher"])
-    rc = doctor.run()
+    doctor.run()
     out = capsys.readouterr().out
     assert f"[ok] api_server key [researcher]: profile .env fingerprint {pk.fingerprint(KEY_A)}" in out
-    assert rc == 0 and KEY_A not in out
+    assert "[FAIL] api_server key" not in out and "[warn] api_server key" not in out
+    assert KEY_A not in out
