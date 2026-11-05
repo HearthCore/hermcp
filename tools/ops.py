@@ -30,27 +30,36 @@ def _systemctl(argv: list[str], timeout: float = 60.0) -> subprocess.CompletedPr
 
 
 @reg.tool("gateway_restart", toolset="ops", access="admin", core=True,
-          description=(("Restart the Hermes gateway unit. DESTRUCTIVE: every running agent session of the profile is "
-                        "terminated mid-turn (approval prompts included), and runs started with chat_send end as "
+          description=(("Restart the Hermes gateway unit. DESTRUCTIVE: running agent sessions are drained for a while and then "
+                        "interrupted mid-turn (approval prompts included), and runs started with chat_send end as "
                         "interrupted. Needs confirm=true; without it, or with dry_run, only the plan is returned (applied "
-                        "false). The MCP connection itself survives.")),
+                        "false), and the plan lists the agents that are running (`running_agents`, same data as "
+                        "agents_live) so you see who would be cut off. The MCP connection itself survives.")),
           properties={"unit": {**UNIT, "default": "hermes-gateway.service"},
                       "confirm": {"type": "boolean", "default": False,
                                   "description": "Must be true to actually restart"}})
 def gateway_restart(ctx, unit="hermes-gateway.service", confirm=False):
     if ".." in unit or unit.startswith("-"):
         raise ToolError("invalid_arguments", "bad unit name")
+    from ..adapters import active_work as AW
+    agents = AW.restart_preview()          # taken BEFORE anything happens: who is running
     if ctx.dry_run or not confirm:
         return ctx.plan(
             f"would run: systemctl restart {unit}",
             unit=unit, command=f"systemctl restart {unit}",
-            warning="terminates all running agent sessions of this profile",
+            warning=("terminates running agent sessions: the gateway stops taking new turns and drains in-flight work "
+                     "for agent.restart_drain_timeout seconds (config), then interrupts what "
+                     "is left (chat turns resume on the next message; interrupted cron jobs are recorded as failed); "
+                     "systemd's TimeoutStopSec ends the rest. Unlike `hermes gateway restart`, which refuses while "
+                     "sessions are live unless --yes is given, this runs `systemctl restart` directly."),
+            running_agents=agents,
             needed="confirm=true",
         )
     cp = _systemctl(["restart", unit])
     ok = cp.returncode == 0
     return {"applied": ok, "unit": unit, "exit_code": cp.returncode,
             "stderr": (cp.stderr or "").strip()[-800:],
+            "running_agents_at_request": agents,
             "note": "in-flight runs of the agent were terminated" if ok else "restart failed"}
 
 
@@ -165,6 +174,15 @@ def hermcp_restart(ctx, confirm=False):
                              "gateway and dashboard are not touched"],
             "verify": "call hermes_health: _meta.hermcp.started_at > old_started_at and "
                       "_meta.hermcp_older_than_hermes_build == false"}
+    if ctx.dry_run or not confirm:
+        from ..adapters import active_work as AW
+        prev = AW.restart_preview()
+        base["running_agents"] = ({"available": True, "active_agents": prev["active_agents"],
+                                   "by_kind": prev["by_kind"], "by_profile": prev["by_profile"],
+                                   "interrupted_by_this_restart": 0,
+                                   "note": "the gateway keeps running; agents are not touched, only hermcp's own "
+                                           "MCP connections and run watchers restart"}
+                                  if prev["available"] else prev)
     if ctx.dry_run or not confirm:
         extra = {} if confirm else {"needed": "confirm=true", "refused": "no restart without confirm=true; this is the plan only"}
         return ctx.plan(f"would restart {HERMCP_UNIT} in {RESTART_DELAY_S} s (old pid {old_pid})",

@@ -24,7 +24,7 @@ MCP client ──HTTPS──> reverse proxy ──> hermcp serve (own process, s
 ```
 
 > **Status: 0.1.0.** All four build phases are implemented and covered by tests: keys and
-> scopes, 139 tools in 19 toolsets, OAuth 2.1 for Claude.ai connectors, run-scoped and
+> scopes, 140 tools in 19 toolsets, OAuth 2.1 for Claude.ai connectors, run-scoped and
 > cross-session approvals, providers/secrets, memory, ops, audit. Known gaps are listed in
 > [Roadmap](#roadmap).
 
@@ -199,7 +199,7 @@ connector inherits the scopes of the `hmcp_` key pasted on its consent page (see
 
 ## Tool surface
 
-**139 tools in the catalog, 45 advertised directly** (4 of them the meta tools). Models (and especially voice modes)
+**140 tools in the catalog, 46 advertised directly** (4 of them the meta tools). Models (and especially voice modes)
 degrade with huge tool lists, so the long tail is reachable through meta tools:
 
 ```
@@ -208,7 +208,7 @@ hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, 
 
 `hermes_call` re-runs the full scope check, so it cannot reach a tool the key may not use.
 
-Toolsets (tools per set): `status` 6, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
+Toolsets (tools per set): `status` 7, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
 `plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 12, `providers` 11,
 `approvals` 3, `memory` 4, `ops` 6, `inbox` 5, `admin` 2, `meta` 4. A key only ever sees (and can only
 call) the tools its scopes allow.
@@ -326,8 +326,18 @@ only credential-pool rotation of the same provider remains. A `base_url` alone a
 - `runs_active` — runs of your key that are still going, with age, status, a coarse `activity`, `idle_seconds` and `queue_position` / `queue_length` in its session.
 - `chat_run_steer` / `chat_run_cancel` / `chat_session_queue` — change a running run instead of queueing a new one; see [Steering, cancelling and replacing runs](#steering-cancelling-and-replacing-runs).
 
-- `gateway_restart` — admin, needs `confirm=true`. Kills running agent sessions of the
-  profile; documented as destructive.
+- `agents_live` — read. Which agents are running, in one call: one row per unit of work in the gateway (chat turns from
+  Telegram / e-mail / webhook / API, cron jobs, delegations) with `kind`, `profile`, `source`, `elapsed_s`, `idle_s`,
+  `model`, `current_tool`, `restart_safe` for cron, plus totals (`by_kind`, `by_profile`, `unlisted`). `hermes_health`
+  only gives the number `active_agents`. hermcp asks the gateway's local control socket (`gateway.sock`, verb
+  `active-work`, read-only, 2 s timeout); without it the answer is `available: false` and the plain count stays in
+  `hermes_health`. Session keys (chat identities) are never returned, only the platform and a short `session_ref`.
+  Profile-restricted keys see only rows of their own profiles.
+- `gateway_restart` — admin, needs `confirm=true`. Interrupts running agent sessions after a drain; documented as
+  destructive. The plan (dry run, or missing `confirm`) lists the agents that are running (`running_agents`, same data
+  as `agents_live`, with `would_interrupt`), and the applied result keeps that snapshot. Note: this runs
+  `systemctl restart` and does not have the guard of `hermes gateway restart`, which refuses while sessions are live.
+  `hermcp_restart` shows the agent counts in its plan too (they are not touched by it).
 - `dashboard_status` — read. How the Hermes web dashboard runs: detection stages (which hit, which did not and why),
   mode, unit or PID, port, start command without secrets, HTTP status codes of `/` and `/api/status`, memory and CPU.
 - `dashboard_restart` — admin, needs `confirm=true`. Restarts the dashboard only (never the gateway or hermcp); without

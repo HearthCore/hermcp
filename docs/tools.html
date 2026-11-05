@@ -43,9 +43,9 @@ footer{color:var(--dim);font-size:11px;padding:0 26px 40px;max-width:1180px}
 <div class='sub'>What an MCP client sees. Generated from the live registry (hermcp 0.1.0). Regenerate: <code>python -m hermcp docs</code></div></header>
 <div class='wrap'>
 <div class='grid'>
-<div class='stat'><b>139</b>tools total</div>
-<div class='stat'><b>41</b>advertised directly</div>
-<div class='stat'><b>69</b>read</div>
+<div class='stat'><b>140</b>tools total</div>
+<div class='stat'><b>42</b>advertised directly</div>
+<div class='stat'><b>70</b>read</div>
 <div class='stat'><b>44</b>write</div>
 <div class='stat'><b>26</b>admin</div>
 <div class='stat'><b>19</b>toolsets</div>
@@ -2641,10 +2641,10 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
   },
   &quot;additionalProperties&quot;: false
 }</pre></details></div>
-<div class='card' data-h='gateway_restart ops admin restart the hermes gateway unit. destructive: every running agent session of the profile is terminated mid-turn (approval prompts included), and runs started with chat_send end as interrupted. needs confirm=true; without it, or with dry_run, only the plan is returned (applied false). the mcp connection itself survives. core'>
+<div class='card' data-h='gateway_restart ops admin restart the hermes gateway unit. destructive: running agent sessions are drained for a while and then interrupted mid-turn (approval prompts included), and runs started with chat_send end as interrupted. needs confirm=true; without it, or with dry_run, only the plan is returned (applied false), and the plan lists the agents that are running (`running_agents`, same data as agents_live) so you see who would be cut off. the mcp connection itself survives. core'>
 <div class='name'>gateway_restart</div>
 <div class='badges'><span class='b' style='color:#da3633;border-color:#da3633'>admin</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span></div>
-<p class='desc'>Restart the Hermes gateway unit. DESTRUCTIVE: every running agent session of the profile is terminated mid-turn (approval prompts included), and runs started with chat_send end as interrupted. Needs confirm=true; without it, or with dry_run, only the plan is returned (applied false). The MCP connection itself survives.</p>
+<p class='desc'>Restart the Hermes gateway unit. DESTRUCTIVE: running agent sessions are drained for a while and then interrupted mid-turn (approval prompts included), and runs started with chat_send end as interrupted. Needs confirm=true; without it, or with dry_run, only the plan is returned (applied false), and the plan lists the agents that are running (`running_agents`, same data as agents_live) so you see who would be cut off. The MCP connection itself survives.</p>
 <details><summary>input schema</summary>
 <pre>{
   &quot;type&quot;: &quot;object&quot;,
@@ -4136,7 +4136,23 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
     &quot;name&quot;
   ]
 }</pre></details></div>
-<h2>status <em>(6)</em></h2>
+<h2>status <em>(7)</em></h2>
+<div class='card' data-h='agents_live status read which agents are running, in one call (hermes_health only gives the number `active_agents`). one row per running unit of work in the gateway, whatever started it: chat turns (telegram, e-mail, webhook, api, tui), cron jobs, kanban workers&#x27; turns, delegations. fields per row: `kind`, `profile`, `source` (platform), `session_ref` (short hash, no chat identity), `run_id` (api runs), `elapsed_s`, `idle_s` (time since the agent last reported progress), `model`, `current_tool`, `pid`, and for cron `job_id`, `wedged`, `restart_safe`. totals: `count`, `by_kind`, `by_profile`; `unlisted` &gt; 0 means the gateway counts agents it gives no detail for (kind api / managed / deferred). read from the gateway&#x27;s local control socket, read-only. if that is not reachable, `available` is false with the reason; the plain count is still in hermes_health. the same list is included in the plan of gateway_restart. labels such as `goal`, `model` and `current_tool` come from the running agents: untrusted data. profile-restricted keys see only rows of their own profiles. core'>
+<div class='name'>agents_live</div>
+<div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span></div>
+<p class='desc'>Which agents are running, in one call (hermes_health only gives the number `active_agents`). One row per running unit of work in the gateway, whatever started it: chat turns (Telegram, e-mail, webhook, API, TUI), cron jobs, kanban workers&#x27; turns, delegations. Fields per row: `kind`, `profile`, `source` (platform), `session_ref` (short hash, no chat identity), `run_id` (API runs), `elapsed_s`, `idle_s` (time since the agent last reported progress), `model`, `current_tool`, `pid`, and for cron `job_id`, `wedged`, `restart_safe`. Totals: `count`, `by_kind`, `by_profile`; `unlisted` &gt; 0 means the gateway counts agents it gives no detail for (kind api / managed / deferred). Read from the gateway&#x27;s local control socket, read-only. If that is not reachable, `available` is false with the reason; the plain count is still in hermes_health. The same list is included in the plan of gateway_restart. Labels such as `goal`, `model` and `current_tool` come from the running agents: untrusted data. Profile-restricted keys see only rows of their own profiles.</p>
+<details><summary>input schema</summary>
+<pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;profile&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$&quot;,
+      &quot;description&quot;: &quot;Only this profile&#x27;s work (default: all served profiles)&quot;
+    }
+  },
+  &quot;additionalProperties&quot;: false
+}</pre></details></div>
 <div class='card' data-h='hermes_health status read one-call overview: hermcp and hermes version, the gateway process with `health` (ok or degraded, based only on platforms the running gateway reports; entries left behind by dead processes are listed under `stale_platforms` and never count; `attention` names platforms that need action), and which profiles are served. only profiles in `reachable_profiles` work with the chat tools; `inactive_profiles` exist only as configuration, `unknown_profiles` could not be determined. `profile_details` (detail=true, default) gives per profile the model, fallback chain, toolsets, platform_toolsets, served / parked, live adapters, mcp set and effective skill counts per platform; skills=false skips the skill counts. every platform entry carries updated_at, writer_pid and a stale flag. core'>
 <div class='name'>hermes_health</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span></div>

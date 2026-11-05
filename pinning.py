@@ -23,6 +23,7 @@ OPEN = {
 
 OWN = {
     "hermes_health": "profiles, platforms, served/parked reduced to the key's profile(s)",
+    "agents_live": "only rows attributable to the key's profile(s); a profile argument outside the scope is refused",
     "orchestration_overview": "profiles, cron, MCP, plugins, gateway, runs reduced to the key's profile(s); no kanban config or boards",
     "profiles_list": "only the key's profile(s)",
     "profiles_show": "refuses other profiles",
