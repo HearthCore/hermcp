@@ -40,7 +40,7 @@ _lock = threading.Lock()
 def enabled(settings=None) -> bool:
     try:
         from .settings import load_settings
-        return bool((settings or load_settings()).inbox_approvals)
+        return bool((settings or load_settings(strict=False)).inbox_approvals)
     except Exception:
         return False
 
@@ -104,7 +104,7 @@ def handle_pre_approval_request(**payload: Any) -> None:
     try:
         from .adapters.inbox_store import get_inbox
         from .settings import load_settings
-        settings = load_settings()
+        settings = load_settings(strict=False)
         if not enabled(settings) or payload.get("coalesced"):
             return                       # a follower of a coalesced prompt: the leader already reported it
         key, profile = _identity(payload), _event_profile(payload)
@@ -131,7 +131,7 @@ def handle_post_approval_response(**payload: Any) -> None:
     try:
         from .adapters.inbox_store import get_inbox
         from .settings import load_settings
-        settings = load_settings()
+        settings = load_settings(strict=False)
         if not enabled(settings):
             return
         key, profile = _identity(payload), _event_profile(payload)

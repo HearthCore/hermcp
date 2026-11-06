@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .keys import KeyStore
-from .settings import hermes_home, load_settings
+from .settings import hermes_home, load_settings, scope_errors
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
@@ -17,7 +17,7 @@ def _mode_ok(path: Path) -> bool:
 
 
 def run() -> int:
-    s = load_settings()
+    s = load_settings(strict=False)        # a bad HERMCP_*SYSTEMD_SCOPE is reported below, never a traceback here
     problems = 0
 
     def row(ok: bool, label: str, detail: str = "") -> None:
@@ -29,6 +29,13 @@ def run() -> int:
         print(f"[warn] {label}{(': ' + detail) if detail else ''}")
 
     row(sys.version_info >= (3, 11), "python", sys.version.split()[0])
+    # -- systemd scopes (gateway_restart / hermcp_restart): invalid values are a hard FAIL with the fix spelled out
+    bad = s.invalid_scopes or scope_errors(s)
+    for msg in bad:
+        row(False, "systemd scope", f"{msg}; fix: set it to system or user in .env / the unit environment "
+                                    "(until then hermcp serve refuses to start and the ops tools assume system)")
+    if not bad:
+        print(f"[info] systemd scope: gateway={s.systemd_scope}, hermcp={s.self_systemd_scope}")
     pp = os.environ.get("PYTHONPATH", "")
     if pp and "site-packages" in pp:
         warn("PYTHONPATH points at a site-packages dir", f"{pp[:80]} -- it can shadow the Hermes venv (mcp import)")
