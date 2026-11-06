@@ -34,6 +34,15 @@ def served_info() -> dict:
     if not isinstance(sp, list):
         return {"status": "unknown", "served": [], "gateway_pid": pid,
                 "reason": "gateway_state.json has no served_profiles field"}
+    if not sp:
+        # A single-profile gateway publishes an EMPTY roster: the record sits in the home it serves, so it
+        # proves that home (same rule as Hermes' cron.scheduler_ownership.record_serves_profile).
+        if not _alive(pid):
+            return {"status": "unknown", "served": [], "gateway_pid": pid,
+                    "reason": f"gateway pid {pid} is not alive; gateway_state.json is stale"}
+        home = hermes_home()
+        own = home.name if home.parent.name == "profiles" else "default"
+        return {"status": "known", "served": [own], "gateway_pid": pid, "reason": None}
     if not _alive(pid):
         return {"status": "unknown", "served": [], "gateway_pid": pid,
                 "reason": f"gateway pid {pid} is not alive; gateway_state.json is stale"}
