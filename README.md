@@ -747,7 +747,7 @@ keys, and rotate them.
 | Tool missing in `tools/list` | The key's `access`/`toolsets`/`profiles` or a `deny_tools` entry hides it; check `keys list`. |
 | `serve` exits with code 75 | Another instance holds the lock or the port; see [Single instance](#single-instance) and `python -m hermcp status`. |
 | `ModuleNotFoundError` / odd `mcp` import errors | Run with the Hermes virtualenv's Python and unset a foreign `PYTHONPATH` (`env -u PYTHONPATH ...`). |
-| Many tests fail locally | Run them in the Hermes venv (the system Python lacks `ruamel` etc.). |
+| Many tests fail locally (`No module named 'ruamel'` in a probe) | Run `scripts/run_tests.sh`; see Development. |
 | Anything else | `python -m hermcp doctor` checks imports, permissions, lock, unit and proxy settings. |
 
 ## Contributing and security
@@ -758,9 +758,13 @@ vulnerabilities privately via GitHub's *Report a vulnerability* button, see [SEC
 ## Development
 
 ```bash
-# tests (must run in the Hermes venv: the system python3 lacks ruamel etc. and fails ~17 tests;
-# conftest keeps the plugin dir off sys.path so `python -m pytest` from here works too)
-/usr/local/lib/hermes-agent/venv/bin/python -m pytest tests -q
+# tests: use the wrapper. It builds a throw-away uv venv (pytest only) that sees the Hermes venv's
+# site-packages through a .pth file. That matters: the skills/profiles tests start a probe interpreter
+# with `sys.executable -I`, which ignores PYTHONPATH, so a plain pytest venv fails ~16 tests with
+# "No module named 'ruamel'". The wrapper also unsets PYTHONPATH and uses an empty HERMES_HOME.
+scripts/run_tests.sh -q                      # whole suite, ~2.5 min (expected: all passed)
+scripts/run_tests.sh -q -k served            # any pytest args are passed through
+# HERMCP_HERMES_AGENT_DIR=<checkout> overrides ~/.hermes/hermes-agent; HERMCP_TEST_VENV=<dir> keeps the venv
 
 # if the shell exports PYTHONPATH (some agent shells point it at a foreign python3.14 env),
 # unset it first: `env -u PYTHONPATH …` -- the Hermes venv's `mcp` import breaks otherwise
