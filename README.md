@@ -67,7 +67,56 @@ HERMCP_HOST=127.0.0.1        # loopback only; the proxy is the single entry path
 HERMCP_PORT=9230
 HERMCP_TRUST_PROXY=1         # trust X-Forwarded-For for the failed-auth limiter
 HERMES_API_URL=http://127.0.0.1:8642
+# HERMCP_SYSTEMD_SCOPE=user       # only if the gateway runs as a systemd USER unit, see below
+# HERMCP_SELF_SYSTEMD_SCOPE=user  # only if hermcp.service itself is a user unit (default: system)
 ```
+
+#### systemd managers of `gateway_restart`, `ops_gateway_logs` and `hermcp_restart`
+
+Two independent settings (env or `.env`, both default to `system`, so existing installs behave exactly as before):
+
+| Variable | Which unit | Used by |
+|---|---|---|
+| `HERMCP_SYSTEMD_SCOPE=system\|user` | the Hermes gateway unit (`hermes-gateway.service`) | `gateway_restart`, `ops_gateway_logs` |
+| `HERMCP_SELF_SYSTEMD_SCOPE=system\|user` | hermcp itself (`hermcp.service`) | the payload of `hermcp_restart` |
+
+The self-restart is a transient systemd timer that runs `systemctl restart hermcp.service` after a few seconds, outside
+hermcp's own cgroup. The timer lives in the **user manager as soon as either variable is `user`** (a user manager
+exists, and a transient timer there needs no authorization), otherwise in the system manager.
+
+| Gateway unit | hermcp unit | `HERMCP_SYSTEMD_SCOPE` | `HERMCP_SELF_SYSTEMD_SCOPE` | Gateway restart / logs | Self-restart timer | Self-restart payload | Rights the account needs |
+|---|---|---|---|---|---|---|---|
+| system | system | `system` (default) | `system` (default) | `systemctl restart ...` / `journalctl -u ...` | `systemd-run` (system manager) | `systemctl restart hermcp.service` | permission to restart both units in the system manager |
+| user (`Linger=yes`) | system | `user` | `system` | `systemctl --user restart ...` / `journalctl --user -u ...` | `systemd-run --user` | `systemctl restart hermcp.service` (system manager) | permission to restart `hermcp.service` in the system manager; none for the gateway or the timer |
+| user (`Linger=yes`) | user | `user` | `user` | `systemctl --user ...` / `journalctl --user -u ...` | `systemd-run --user` | `systemctl --user restart hermcp.service` | none |
+| system | user | `system` | `user` | `systemctl restart ...` / `journalctl -u ...` | `systemd-run --user` | `systemctl --user restart hermcp.service` | permission to restart the gateway unit in the system manager |
+
+An invalid value is reported by `hermes hermcp doctor` as a `[FAIL] systemd scope` row naming the variable, and
+`hermcp serve` refuses to start with one readable error. Inside the gateway process (approval hooks) a bad value never
+switches anything off: it falls back to `system`. The plan returned by `dry_run` names the exact command and the scopes
+in use (`systemd_scope`, and for `hermcp_restart` also `timer_scope`).
+
+**User-manager calls:** `XDG_RUNTIME_DIR` is set at run time to `/run/user/<uid>` of the hermcp process if it is
+missing, so no uid is written into a unit file and the shipped units stay generic.
+
+**Rights in the system manager.** hermcp never grants itself anything. If the account that runs hermcp is not root
+and a restart goes through the system manager, grant exactly that, for example with a polkit rule pinned to the
+unit and the verb (generic example, adapt the unit and the account):
+
+```js
+// /etc/polkit-1/rules.d/50-hermcp-restart.rules  (requires polkit, e.g. the polkitd package)
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "hermcp.service" &&
+        action.lookup("verb") == "restart" &&
+        subject.user == "hermcp-account") {
+        return polkit.Result.YES;
+    }
+});
+```
+
+Keep `NoNewPrivileges=yes` in the unit: polkit works over D-Bus and needs no setuid helper. Do not use wildcards on
+the unit or the verb.
 
 ## Quick start
 
@@ -725,7 +774,9 @@ protection for good, every grant lands in the audit log with the key name, the r
 
   Enabling it: `hermes plugins enable hermcp` (adds `hermcp` to `plugins.enabled`) and **restart
   the gateway** — the owner performs that restart; hermcp never restarts it for you. The bridge
-  starts with the first inbound gateway message. `approvals_bridge_status` tells you if it is up.
+  starts on its own once the gateway reports `running` in `gateway_state.json` (a short watcher in the gateway
+  process, at most 10 minutes), and also with the first inbound message. It never opens a socket in a CLI or TUI
+  process. `approvals_bridge_status` tells you if it is up.
 
 ## Security model
 
