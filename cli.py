@@ -8,7 +8,7 @@ import time
 
 from .keys import KeyError_, KeyStore, parse_expiry
 from .scopes import ScopeError, Scopes
-from .settings import load_settings
+from .settings import load_settings, ConfigError
 
 
 def _csv(v: str | None, default: list[str]) -> list[str]:
@@ -422,6 +422,9 @@ def dispatch(args) -> int:
             return _install_service(args)
     except (KeyError_, ScopeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except ConfigError as exc:
+        print(f"error: invalid configuration: {exc}\nrun `hermes hermcp doctor` for the full check", file=sys.stderr)
         return 1
     print("usage: hermes hermcp {serve,keys,oauth,profile-keys,doctor,selftest,docs,status,stop,install-service}",
           file=sys.stderr)
