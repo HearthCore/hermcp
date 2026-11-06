@@ -8,6 +8,13 @@ from pathlib import Path
 PKG_DIR = Path(__file__).resolve().parent
 
 
+class ConfigError(ValueError):
+    """A hermcp setting has an invalid value. Readable message, no traceback needed (ValueError for compatibility)."""
+
+
+SCOPES = ("system", "user")
+
+
 def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()
 
@@ -64,6 +71,10 @@ class Settings:
     inbox_run_max_events: int = 20     # watcher events per run
     inbox_watch_ttl_hours: float = 24.0  # a watch that never saw a terminal state expires silently
     inbox_approvals: bool = True       # approval hooks: mirror pending/resolved approvals into the inbox
+    systemd_scope: str = "system"      # "system" | "user": manager of the Hermes gateway unit (gateway_restart)
+    self_systemd_scope: str = "system"  # "system" | "user": manager of hermcp.service itself (hermcp_restart)
+
+    invalid_scopes: list[str] = field(default_factory=list)   # set by load_settings(strict=False) only
 
     @property
     def public_origin(self) -> str:
@@ -86,13 +97,24 @@ class Settings:
         return data_dir()
 
 
+def scope_errors(s: "Settings") -> list[str]:
+    """One readable line per invalid systemd scope value (empty list = fine)."""
+    out = []
+    for env, val in (("HERMCP_SYSTEMD_SCOPE", s.systemd_scope), ("HERMCP_SELF_SYSTEMD_SCOPE", s.self_systemd_scope)):
+        if val not in SCOPES:
+            out.append(f"{env} must be 'system' or 'user', got {val!r}")
+    return out
+
+
 DEFAULT_REDIRECTS = [
     "https://claude.ai/api/mcp/auth_callback",
     "https://claude.com/api/mcp/auth_callback",
 ]
 
 
-def load_settings(env: dict[str, str] | None = None) -> Settings:
+def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Settings:
+    """strict=False (doctor, hooks inside the gateway) never raises for a bad scope: it falls back to `system`
+    and `scope_errors(settings)` tells what was wrong."""
     merged = _read_dotenv(PKG_DIR / ".env")
     merged.update(os.environ if env is None else env)
     g = merged.get
@@ -115,7 +137,17 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         inbox_run_max_events=int(g("HERMCP_INBOX_RUN_MAX_EVENTS", "20")),
         inbox_watch_ttl_hours=float(g("HERMCP_INBOX_WATCH_TTL_HOURS", "24")),
         inbox_approvals=g("HERMCP_INBOX_APPROVALS", "1").lower() not in ("0", "false", "no", "off"),
+        systemd_scope=g("HERMCP_SYSTEMD_SCOPE", "system").strip().lower() or "system",
+        self_systemd_scope=g("HERMCP_SELF_SYSTEMD_SCOPE", "system").strip().lower() or "system",
     )
+    bad = scope_errors(s)
+    if bad:
+        if strict:
+            raise ConfigError("; ".join(bad))
+        s.invalid_scopes = bad
+        for attr in ("systemd_scope", "self_systemd_scope"):
+            if getattr(s, attr) not in SCOPES:
+                setattr(s, attr, "system")
     hosts = _csv(g("HERMCP_ALLOWED_HOSTS", ""))
     if not hosts:
         hosts = ["127.0.0.1", "localhost", "[::1]"]
