@@ -23,10 +23,12 @@ MCP client ──HTTPS──> reverse proxy ──> hermcp serve (own process, s
                                           └─ adapters → Hermes internals / CLI / api_server
 ```
 
-> **Status: 0.1.0.** All four build phases are implemented and covered by tests: keys and
-> scopes, 140 tools in 19 toolsets, OAuth 2.1 for Claude.ai connectors, run-scoped and
-> cross-session approvals, providers/secrets, memory, ops, audit. Known gaps are listed in
-> [Roadmap](#roadmap).
+> **Status: 0.1.0.** All four build phases are implemented and covered by tests. Today's catalog is
+> **144 tools — 46 advertised in `tools/list`, the rest reachable through
+> `hermes_search_tools` → `hermes_describe_tool` → `hermes_call`** — spread over 18 toolsets plus 4
+> meta tools: per-key scopes, OAuth 2.1 for Claude.ai connectors, run-scoped, cross-session and
+> hook-based approvals, client sessions, the event inbox with a run watcher, per-profile api_server
+> keys, output redaction, audit. Known gaps are listed in [Roadmap](#roadmap).
 
 <!-- TODO: add a screenshot or short demo (e.g. Claude.ai driving Hermes through hermcp). Placeholder, intentionally not faked. -->
 
@@ -42,6 +44,30 @@ hermcp wraps the same capabilities as **tools with explicit scopes**, so you can
 someone a key that only speaks to one profile, only reads sessions, or only manages kanban —
 and see everything they did in an audit log.
 
+## What is confirmed working
+
+Everything in this list is exercised by tests and/or by `hermes hermcp doctor` and `hermes hermcp
+selftest` against a live install. Each row links to the section that documents it.
+
+| Feature | What you get | Where |
+|---|---|---|
+| 144 tools, 18 toolsets | Full Hermes control surface behind one `/mcp` endpoint; 46 tools advertised, the rest through `hermes_search_tools` | [Tool surface](#tool-surface) |
+| Per-key scopes | `access` + `toolsets` + `profiles` + explicit flags (`approvals`, `secrets_write`, `dangerous`, `inbox_push`, `approvals_always`); hidden tools never appear in `tools/list` | [Keys and scopes](#keys-and-scopes) |
+| Profile-bound keys | A key limited to one profile; global/admin tools and every indirect path (kanban, sessions, cron, skills, logs, approvals, inbox) closed | [Profile-bound keys](#profile-bound-keys) |
+| Key lifecycle | `keys create / list / policy / show / revoke / rotate / rename / scopes`; rename and scope changes keep the token valid | [CLI](#the-hermes-hermcp-cli) |
+| OAuth 2.1 for Claude.ai | PKCE S256, exact redirect allowlist, hashed opaque tokens, paste-an-`hmcp_`-key consent page | [Claude.ai connector](#claudeai-connector-oauth-21) |
+| Run-scoped approvals | Answer the approval of a run hermcp started (`chat_run_approval`) | [Approvals](#approvals) |
+| Cross-session approvals | An in-gateway agent half publishes Telegram/CLI approvals on a loopback socket | [Approvals](#approvals) |
+| Approval hooks | `pre_approval_request` / `post_approval_response` land in the inbox as `approval_pending` / `approval_resolved` | [Approval hooks](#approval-hooks-telegram-and-cli-approvals-in-the-inbox) |
+| Starting and steering runs | `chat_send` (idempotent via `request_key`), `chat_run_steer`, `chat_run_cancel`, `chat_session_queue` | [Starting runs](#starting-runs-chat_send) |
+| Client sessions | Session cards, `client_session` handles, run attribution, foreign-run guard, `recover_from`, claim of unclaimed runs, situation report | [Client sessions](#client-sessions) |
+| Event inbox + run watcher | Status-only mailbox with per-consumer read state; the watcher turns run status into `needs_approval` / `run_finished` / `run_failed` / `run_cancelled` / `run_lost` | [Event inbox](#event-inbox) |
+| Per-profile api_server keys | `profile-keys status / setup / rotate`, never printing a key | [Per-profile api_server keys](#per-profile-api_server-keys) |
+| Output redaction | Every result and audit line redacted centrally; write tools return changes, never values | [Output redaction](#output-redaction) |
+| Single instance + lifecycle | `flock`-guarded single server, `status`, `stop`, `install-service`, self-restart, auto-restart after a Hermes update | [Single instance](#single-instance) |
+| Dashboard control | `dashboard_status` / `dashboard_restart` find and restart exactly the running dashboard | [Dashboard control](#dashboard-control) |
+| Audit | Append-only JSONL with key id, tool, profile, duration, outcome | [Keys and scopes](#keys-and-scopes) |
+
 ## Requirements
 
 - Hermes Agent installed with its virtualenv (examples below use `/usr/local/lib/hermes-agent/venv`; adjust to your install)
@@ -52,13 +78,37 @@ and see everything they did in an audit log.
 
 ## Install
 
+Four steps: clone it, enable the plugin, configure `.env`, run it as a service. Then create one key
+and verify the install.
+
+### 1. Clone into the plugins directory
+
 ```bash
 git clone https://github.com/HearthCore/hermcp.git ~/.hermes/plugins/hermcp
-cd ~/.hermes/plugins/hermcp
-cp deploy/hermcp.service.template /etc/systemd/system/hermcp.service   # or: make it yourself
 ```
 
-Create the runtime env (`~/.hermes/plugins/hermcp/.env`, mode 0600):
+The folder name must be `hermcp` — Hermes imports the plugin by that name.
+
+### 2. Enable the plugin — this gives you `hermes hermcp`
+
+```bash
+hermes plugins enable hermcp     # adds `hermcp` to plugins.enabled
+hermes hermcp --help             # the CLI is registered now
+```
+
+The plugin registers the CLI command and, inside the gateway, the approval hooks and the approvals
+socket — it never starts a server and never opens a TCP port. Everything below therefore works both as
+`hermes hermcp <cmd>` (canonical once the plugin is enabled) and as `python -m hermcp <cmd>` from
+`~/.hermes/plugins` (works without the plugin, which is what systemd units, cron jobs and scripts use —
+see [The `hermes hermcp` CLI](#the-hermes-hermcp-cli)).
+
+Enabling the plugin also arms the **agent half** in the gateway (the approvals socket and the
+approval hooks). That part only comes alive on the gateway's next start — the owner restarts it;
+hermcp never restarts the gateway for you.
+
+### 3. Create the runtime env
+
+`~/.hermes/plugins/hermcp/.env`, mode 0600:
 
 ```ini
 HERMCP_PUBLIC_URL=https://hermes.example.com/mcp   # drives OAuth metadata + Host allowlist
@@ -71,6 +121,9 @@ HERMES_API_URL=http://127.0.0.1:8642
 # HERMCP_SYSTEMD_SCOPE=user       # only if the gateway runs as a systemd USER unit, see below
 # HERMCP_SELF_SYSTEMD_SCOPE=user  # only if hermcp.service itself is a user unit (default: system)
 ```
+
+Local-only installs need none of the proxy lines: with no `.env` at all the defaults are
+`HERMCP_HOST=127.0.0.1`, `HERMCP_PORT=9230` and `HERMES_API_URL=http://127.0.0.1:8642`.
 
 #### systemd managers of `gateway_restart`, `ops_gateway_logs` and `hermcp_restart`
 
@@ -119,36 +172,23 @@ polkit.addRule(function(action, subject) {
 Keep `NoNewPrivileges=yes` in the unit: polkit works over D-Bus and needs no setuid helper. Do not use wildcards on
 the unit or the verb.
 
-## Quick start
+### 4. Run it as a service
+
+The server must live **outside** the gateway's process tree:
 
 ```bash
-cd ~/.hermes/plugins
-
-# 1. a read-only key for one profile
-python -m hermcp keys create --name readme-readonly --access read \
-  --toolsets status,sessions --profiles default
-# TOKEN (shown once): hmcp_...
-
-# 2. run it
-python -m hermcp serve --port 9230
-
-# 3. point a client at http://127.0.0.1:9230/mcp with
-#    Authorization: Bearer hmcp_...
-```
-
-As a service (recommended — must live outside the gateway's process tree):
-
-```bash
-python -m hermcp install-service          # writes /etc/systemd/system/hermcp.service (+ the auto-restart units)
+hermes hermcp install-service              # writes /etc/systemd/system/hermcp.service (+ the auto-restart units)
 systemctl enable --now hermcp
-systemctl enable --now hermcp-restart.path   # auto-restart after Hermes updates, see below (or: install-service --enable-now)
-python -m hermcp status                   # who serves, which role, unit state, verdict
+systemctl enable --now hermcp-restart.path # auto-restart after Hermes updates, see below
+hermes hermcp status                       # who serves, which role, unit state, verdict
 ```
 
-`hermes hermcp <cmd>` works too once the plugin is enabled in Hermes
-(`hermes plugins enable hermcp`), which registers the CLI but never starts a server.
+`install-service` also takes `--enable-now` (installs, enables and starts in one go), `--dry-run`
+(prints the units, writes nothing), `--out <path>` (different unit location) and `--no-auto-restart`.
+To try it without systemd: `hermes hermcp serve --port 9230` — exactly one instance may serve, see
+[Single instance](#single-instance).
 
-### Auto-restart after Hermes updates
+#### Auto-restart after Hermes updates (the `hermcp-restart.path` unit above)
 
 hermcp keeps its Python modules in memory, so after a Hermes update it answers from old code until it
 restarts (`_meta.hermcp_older_than_hermes_build` tells you). `install-service` therefore also installs two
@@ -173,6 +213,84 @@ Units that are already symlinks (`systemctl link` of the files in `deploy/system
 To restart on demand instead, use the admin tool `hermcp_restart`. Details:
 [`docs/stale-hermcp-after-hermes-update.md`](docs/stale-hermcp-after-hermes-update.md) and
 [`deploy/systemd/README.md`](deploy/systemd/README.md).
+
+### 5. First key and a smoke test
+
+```bash
+hermes hermcp keys create --name admin-key --access admin   # prints hmcp_<id>_<secret> ONCE
+hermes hermcp keys list                                     # scopes, last use, status
+hermes hermcp doctor                                        # install check, exits 1 on a hard failure
+curl -fsS http://127.0.0.1:9230/health                      # 200 when the server is up
+```
+
+Point a client at `http://127.0.0.1:9230/mcp` (locally) or `https://hermes.example.com/mcp` (behind
+the proxy) with `Authorization: Bearer hmcp_<id>_<secret>`. Read-only first is the sane default:
+
+```bash
+hermes hermcp keys create --name readme-readonly --access read \
+  --toolsets status,sessions --profiles default
+```
+
+`hermes hermcp selftest --skip-slow` then compares hermcp's answers against fresh-process
+references; it is read-only and exits 1 on any FAIL.
+
+## The `hermes hermcp` CLI
+
+`hermes plugins enable hermcp` registers one sub-command, `hermes hermcp`, on the Hermes CLI. It is
+the canonical way to drive hermcp on the host — same code, same flags as `python -m hermcp`, but
+without `cd`-ing into the plugin directory or hunting for the right interpreter. Print any level with
+`--help`:
+
+```bash
+hermes hermcp --help
+hermes hermcp keys --help
+hermes hermcp keys scopes --help
+```
+
+| Command | What it does |
+|---|---|
+| `hermes hermcp serve [--host H] [--port P] [--log-level L]` | Run the MCP server in the foreground (default `127.0.0.1:9230`). Exactly one instance may serve. |
+| `hermes hermcp status` | Who owns the server: instance lock (pid, role), port, bind address, systemd unit state, verdict. |
+| `hermes hermcp stop [--force]` | Stop the instance holding the lock; asks systemd when the unit manages it. `--force` signals a systemd-managed pid directly. |
+| `hermes hermcp install-service [--enable-now] [--dry-run] [--out PATH] [--no-auto-restart]` | Write the systemd units (`hermcp.service` + `hermcp-restart.path`/`.service`), `daemon-reload`, do not start unless `--enable-now`. |
+| `hermes hermcp doctor` | Install check: imports, permissions, key store, unit, proxy/allowlist, api_server keys per profile. `[warn]` is advice, exit 1 is a hard failure. |
+| `hermes hermcp selftest [--profiles a,b] [--json] [--skip-slow]` | Compare hermcp's answers with fresh-process references for every profile. Read-only; exit 1 on any FAIL. |
+| `hermes hermcp docs [--out PATH]` | Regenerate `docs/tools.html` from the live registry (also refreshed on every server start). |
+| `hermes hermcp oauth init [--client-id ID] [--rotate]` | Create the static OAuth client for Claude.ai; secret shown once. `--rotate` invalidates every issued token. |
+| `hermes hermcp oauth status` | Client id, token counts. |
+| `hermes hermcp oauth revoke-all` | Invalidate every issued access/refresh token (client secret unchanged). |
+| `hermes hermcp keys create …` | Create a key; the token is printed once. |
+| `hermes hermcp keys list` | Every key with scopes, last use and status. |
+| `hermes hermcp keys show <key>` | One key's scopes and metadata. |
+| `hermes hermcp keys policy` | The table of what a profile-bound key may call. Creates nothing. |
+| `hermes hermcp keys rotate <key>` | New secret, same id; every OAuth token minted from it stops working. |
+| `hermes hermcp keys rename <key> <new-name>` | Metadata only — the token keeps working. |
+| `hermes hermcp keys scopes <key> [--copy-from K] [--access …] [--toolsets …] [--profiles …] [--deny-tools …] [--(no-)approvals …]` | Change a key's scopes in place; the token keeps working, the next request sees the change. |
+| `hermes hermcp keys revoke <key> [--delete]` | Disable a key (`--delete` removes the record). |
+| `hermes hermcp profile-keys status [--profiles a,b] [--no-probe] [--json]` | Which api_server key each profile resolves and whether the api_server accepts it. |
+| `hermes hermcp profile-keys setup [--dry-run] [--yes --generate] [--copy-from SRC]` | Give profiles their own `API_SERVER_KEY` (interactive; writes the profile `.env`). |
+| `hermes hermcp profile-keys rotate <profile> --yes` / `--all --yes` | Replace a profile's api_server key (timestamped backup first, re-probe). |
+
+Day-to-day, that comes down to a handful:
+
+```bash
+hermes hermcp keys list                       # who has which scopes
+hermes hermcp keys show alice-researcher      # what one key may do
+hermes hermcp keys scopes alice-r2 --toolsets status,sessions --no-approvals
+hermes hermcp keys rename alice-researcher alice-r2
+hermes hermcp doctor                          # after any config change
+```
+
+**`hermes hermcp` vs `python -m hermcp`.** Both run the same `cli.py`. Use `hermes hermcp` on the
+host (no `cd`, `hermes` resolves its own interpreter); use `python -m hermcp` where no Hermes CLI is
+around — a cron job, a container entrypoint, the systemd `ExecStart`, or a plugin that is not
+enabled. In an agent shell that exports a foreign `PYTHONPATH`, prefix it with `env -u PYTHONPATH`
+(see [Development](#development)).
+
+**Exit codes.** `0` success, `1` on a failed check (`doctor`, `selftest`, `profile-keys`), `2` when a
+command refuses to act (stopping a systemd-managed instance without `--force`, `install-service
+--enable-now` while a hand-started instance holds the lock, usage errors), and `75` (`EX_TEMPFAIL`)
+from `serve` when another instance holds the lock or the port — never an automatic retry loop.
 
 ## Setup with an agent
 
@@ -206,22 +324,22 @@ Key examples:
 # Alice: may talk to the `researcher` agent and use its kanban/sessions, nothing else.
 # Pinned to one profile -> every profile-aware call defaults to `researcher`, other profiles are
 # refused, and global writes (config of other profiles, plugins, …) are impossible.
-python -m hermcp keys create --name alice-researcher --owner alice --access write \
+hermes hermcp keys create --name alice-researcher --owner alice --access write \
   --toolsets chat,kanban,sessions,status --profiles researcher
 
 # Read-only overview key (e.g. for a dashboard or a voice assistant), expires in 30 days
-python -m hermcp keys create --name overview --access read --toolsets status,sessions,cron,kanban --expires 30d
+hermes hermcp keys create --name overview --access read --toolsets status,sessions,cron,kanban --expires 30d
 
 # Your own admin key. `approvals` and `secrets_write` are opt-in flags, `--allow-dangerous`
 # additionally unlocks memory_reset / profiles_delete — leave it off unless you need it.
-python -m hermcp keys create --name admin-key --access admin --approvals --secrets-write
+hermes hermcp keys create --name admin-key --access admin --approvals --secrets-write
 
-python -m hermcp keys list
-python -m hermcp keys rotate alice-researcher      # new secret, same id; OAuth tokens minted from it die
-python -m hermcp keys rename alice-researcher alice-r2   # metadata only; the token keeps working
-python -m hermcp keys scopes alice-r2 --copy-from admin-key   # take over another key's scopes, token unchanged
-python -m hermcp keys scopes alice-r2 --no-approvals --toolsets status,sessions   # switch single scopes on/off
-python -m hermcp keys revoke <id> --delete
+hermes hermcp keys list
+hermes hermcp keys rotate alice-researcher      # new secret, same id; OAuth tokens minted from it die
+hermes hermcp keys rename alice-researcher alice-r2   # metadata only; the token keeps working
+hermes hermcp keys scopes alice-r2 --copy-from admin-key   # take over another key's scopes, token unchanged
+hermes hermcp keys scopes alice-r2 --no-approvals --toolsets status,sessions   # switch single scopes on/off
+hermes hermcp keys revoke <id> --delete
 ```
 
 Every call is appended to `~/.hermes/plugin-data/hermcp/audit.jsonl` with key id, tool name,
@@ -234,7 +352,7 @@ There is no default account: **the first admin key is created locally by whoever
 access** to the Hermes host, and it is shown exactly once.
 
 ```bash
-python -m hermcp keys create --name admin-key --access admin      # prints hmcp_<id>_<secret>
+hermes hermcp keys create --name admin-key --access admin      # prints hmcp_<id>_<secret>
 ```
 
 | You want | Create the key with |
@@ -248,14 +366,15 @@ Rules to remember: `access` is a ceiling (`admin ⊃ write ⊃ read`); `approval
 `dangerous`, `inbox_push` and `approvals_always` are **never** implied by `*` or `admin`; tools
 outside a key's scope are hidden from `tools/list` and refused when called anyway. The Claude.ai
 connector inherits the scopes of the `hmcp_` key pasted on its consent page (see below).
-`python -m hermcp keys list` shows scopes and last use; `keys rotate` / `keys revoke` take effect immediately.
+`hermes hermcp keys list` shows scopes and last use; `keys rotate` / `keys revoke` take effect immediately.
 `keys rename` and `keys scopes` only touch metadata — a running key keeps its token (the name and scopes are
 not part of the hash), and the server picks the change up at the next request.
 
 ## Tool surface
 
-**140 tools in the catalog, 46 advertised directly** (4 of them the meta tools). Models (and especially voice modes)
-degrade with huge tool lists, so the long tail is reachable through meta tools:
+**144 tools in the catalog — 140 in 18 toolsets plus 4 meta tools — of which 46 are advertised
+directly** (4 of them the meta tools). Models (and especially voice modes) degrade with huge tool
+lists, so the long tail is reachable through meta tools:
 
 ```
 hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, args)
@@ -265,8 +384,10 @@ hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, 
 
 Toolsets (tools per set): `status` 8, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
 `plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 12, `providers` 11,
-`approvals` 3, `memory` 4, `ops` 6, `inbox` 5, `admin` 2, `meta` 4. A key only ever sees (and can only
-call) the tools its scopes allow.
+`approvals` 3, `memory` 4, `ops` 6, `inbox` 7, `admin` 3, plus the 4 `meta` tools. A key only ever
+sees (and can only call) the tools its scopes allow; the live truth for a key is `hermes_whoami`, and
+`hermes hermcp docs` regenerates the full catalog. These numbers move with every feature release —
+treat them as a snapshot, not a contract.
 
 `hermes_status` is the level-0 entry point: one call, well under 1 KB (verdict, gateway platforms, reachable
 profiles, runs, pending approvals, your unread inbox by kind, failed runs of the last 24 h) and a `next` list that
@@ -299,7 +420,7 @@ and `profile_active`.
 
 **Browse the whole surface, including every tool's schema and the exact guidance string the
 server sends on `initialize`:** open [`docs/tools.html`](docs/tools.html). It is generated
-from the live registry (`python -m hermcp docs`) and refreshed automatically on every server
+from the live registry (`hermes hermcp docs`) and refreshed automatically on every server
 start, so it cannot drift from the code.
 
 Every mutating tool accepts `dry_run: true` and returns what it *would* do without doing it.
@@ -442,7 +563,7 @@ its skill catalog for 30 s and reads `HERMES_PLATFORM` from the process environm
 inside `hermes_scope`, which clears Hermes' config and skills caches on entry and exit. `effective_enabled_count` per
 platform is what a session on that platform sees; the global `enabled` flag is not.
 
-`python -m hermcp selftest [--profiles a,b] [--json] [--skip-slow]` compares hermcp's answers with references from
+`hermes hermcp selftest [--profiles a,b] [--json] [--skip-slow]` compares hermcp's answers with references from
 fresh subprocesses (probes, the `hermes` CLI, files on disk) for every profile, hammers the in-process tools with
 interleaved and concurrent profile switches, checks the `_meta` contract, the redaction echo and the path whitelists,
 and proves in a throw-away HERMES_HOME that edits on disk are visible on the next call. Read-only; exit code 1 on any
@@ -481,10 +602,10 @@ restart needed). hermcp therefore resolves the key per profile — override `HER
 a key value. One key copied into every profile works for exactly one of them:
 
 ```bash
-python -m hermcp profile-keys status                # per profile: source, fingerprint, SHARED flag, live probe (200/401)
-python -m hermcp profile-keys setup --dry-run       # preview; writes nothing
-python -m hermcp profile-keys setup                 # give the missing/shared profiles their own key (interactive)
-python -m hermcp profile-keys rotate --all --yes    # replace every key (timestamped backup first, re-probe)
+hermes hermcp profile-keys status                # per profile: source, fingerprint, SHARED flag, live probe (200/401)
+hermes hermcp profile-keys setup --dry-run       # preview; writes nothing
+hermes hermcp profile-keys setup                 # give the missing/shared profiles their own key (interactive)
+hermes hermcp profile-keys rotate --all --yes    # replace every key (timestamped backup first, re-probe)
 ```
 
 `setup`/`rotate` rewrite only the single `API_SERVER_KEY=` line (mode 0600 kept, comments untouched) after backing the
@@ -555,8 +676,8 @@ another agent will read, so it needs its own opt-in flag that `*`/`admin` do not
 tiny: `access=read, toolsets=[inbox], inbox_push=true`.
 
 ```bash
-python -m hermcp keys create --name voice --access read --toolsets inbox
-python -m hermcp keys create --name cron-events --access read --toolsets inbox --inbox-push
+hermes hermcp keys create --name voice --access read --toolsets inbox
+hermes hermcp keys create --name cron-events --access read --toolsets inbox --inbox-push
 ```
 
 HTTP delivery for non-MCP sources (same Bearer key, same scope check, same audit log):
@@ -732,8 +853,8 @@ with metadata (pid, role `standalone|systemd`, host, port, start time, argv).
   readable message instead of restart-looping. A preflight port probe converts "port taken
   by a foreign process" into the same exit code (a raw bind error would exit 1 and flap).
 - Migration both ways:
-  - hand-started → systemd: `python -m hermcp stop` then `systemctl enable --now hermcp`
-  - systemd → hand-started: `systemctl stop hermcp` then `python -m hermcp serve`
+  - hand-started → systemd: `hermes hermcp stop` then `systemctl enable --now hermcp`
+  - systemd → hand-started: `systemctl stop hermcp` then `hermes hermcp serve`
 
 ## Deployment
 
@@ -784,9 +905,9 @@ hashes (access 1 h, refresh 30 d and rotating, code 60 s) so a restart does not 
 1. `HERMCP_PUBLIC_URL=https://<host>/mcp` in `.env`, the five routes above in place.
 2. Create the connector credentials (the secret is shown **once**, only a salted hash is kept):
    ```bash
-   python -m hermcp oauth init          # prints client_id + client_secret
+   hermes hermcp oauth init             # prints client_id + client_secret
    systemctl restart hermcp             # serve the OAuth endpoints
-   python -m hermcp oauth status
+   hermes hermcp oauth status
    ```
 3. Claude → Settings → Connectors → **Add custom connector** → URL `https://<host>/mcp`;
    under *Advanced settings* paste the `client_id` and `client_secret`.
@@ -795,7 +916,7 @@ hashes (access 1 h, refresh 30 d and rotating, code 60 s) so a restart does not 
    key's scopes on every call — rotate, revoke or expire the key and its tokens stop working
    immediately. Wrong keys count against the failed-auth limiter.
 
-`python -m hermcp oauth init --rotate` replaces the client secret and invalidates every issued
+`hermes hermcp oauth init --rotate` replaces the client secret and invalidates every issued
 token; `oauth revoke-all` only drops the tokens.
 
 ## Approvals
@@ -855,10 +976,10 @@ keys, and rotate them.
 | `403 host not allowed` | The public hostname is missing in `HERMCP_ALLOWED_HOSTS`; add it (and `HERMCP_PUBLIC_URL`). |
 | `401` on `/mcp` | Missing or wrong `Authorization: Bearer hmcp_...`; behind Pangolin make sure resource-level SSO/basic auth is **off** (it swallows the header). |
 | Tool missing in `tools/list` | The key's `access`/`toolsets`/`profiles` or a `deny_tools` entry hides it; check `keys list`. |
-| `serve` exits with code 75 | Another instance holds the lock or the port; see [Single instance](#single-instance) and `python -m hermcp status`. |
+| `serve` exits with code 75 | Another instance holds the lock or the port; see [Single instance](#single-instance) and `hermes hermcp status`. |
 | `ModuleNotFoundError` / odd `mcp` import errors | Run with the Hermes virtualenv's Python and unset a foreign `PYTHONPATH` (`env -u PYTHONPATH ...`). |
 | Many tests fail locally (`No module named 'ruamel'` in a probe) | Run `scripts/run_tests.sh`; see Development. |
-| Anything else | `python -m hermcp doctor` checks imports, permissions, lock, unit and proxy settings. |
+| Anything else | `hermes hermcp doctor` checks imports, permissions, lock, unit and proxy settings. |
 
 ## Contributing and security
 
@@ -887,7 +1008,7 @@ Layout:
 
 ```
 plugin.yaml      # Hermes plugin manifest (registers the CLI only, never a server)
-cli.py           # serve / keys / oauth / docs / status / stop / install-service / doctor
+cli.py           # serve / keys / oauth / docs / status / stop / install-service / doctor / selftest / profile-keys
 oauth.py         # OAuth 2.1 provider on the MCP SDK auth module, paste-key consent page
 bridge.py        # in-gateway approvals bridge (AF_UNIX, 0600) + client
 server.py        # Streamable-HTTP MCP endpoint, auth, host gate, instructions
@@ -910,7 +1031,7 @@ and a 383-command CLI→tool parity table.
 
 ## Roadmap
 
-- [x] Key store, scopes, audit, meta tools, 105 tools across 15 toolsets
+- [x] Key store, scopes, audit, meta tools, 140 tools across 18 toolsets
 - [x] Single-instance lock, systemd migration path, status/stop/install-service
 - [x] Remote provider OAuth (device code / paste-back), write-only secrets
 - [x] OAuth 2.1 authorization server for Claude.ai custom connectors (persistent hashed tokens)
