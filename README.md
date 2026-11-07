@@ -96,11 +96,11 @@ hermes plugins enable hermcp     # adds `hermcp` to plugins.enabled
 hermes hermcp --help             # the CLI is registered now
 ```
 
-The plugin itself only registers the CLI command; it never starts a server, never opens a port and
-never touches Hermes state. Everything below therefore works both as `hermes hermcp <cmd>` (canonical
-once the plugin is enabled) and as `python -m hermcp <cmd>` from `~/.hermes/plugins` (works without
-the plugin, which is what systemd units, cron jobs and scripts use — see
-[The `hermes hermcp` CLI](#the-hermes-hermcp-cli)).
+The plugin registers the CLI command and, inside the gateway, the approval hooks and the approvals
+socket — it never starts a server and never opens a TCP port. Everything below therefore works both as
+`hermes hermcp <cmd>` (canonical once the plugin is enabled) and as `python -m hermcp <cmd>` from
+`~/.hermes/plugins` (works without the plugin, which is what systemd units, cron jobs and scripts use —
+see [The `hermes hermcp` CLI](#the-hermes-hermcp-cli)).
 
 Enabling the plugin also arms the **agent half** in the gateway (the approvals socket and the
 approval hooks). That part only comes alive on the gateway's next start — the owner restarts it;
@@ -252,7 +252,7 @@ hermes hermcp keys scopes --help
 | `hermes hermcp serve [--host H] [--port P] [--log-level L]` | Run the MCP server in the foreground (default `127.0.0.1:9230`). Exactly one instance may serve. |
 | `hermes hermcp status` | Who owns the server: instance lock (pid, role), port, bind address, systemd unit state, verdict. |
 | `hermes hermcp stop [--force]` | Stop the instance holding the lock; asks systemd when the unit manages it. `--force` signals a systemd-managed pid directly. |
-| `hermes hermcp install-service [--enable-now] [--dry-run] [--out PATH] [--no-auto-restart]` | Write the systemd units (hermcp + the auto-restart path unit), `daemon-reload`, do not start unless `--enable-now`. |
+| `hermes hermcp install-service [--enable-now] [--dry-run] [--out PATH] [--no-auto-restart]` | Write the systemd units (`hermcp.service` + `hermcp-restart.path`/`.service`), `daemon-reload`, do not start unless `--enable-now`. |
 | `hermes hermcp doctor` | Install check: imports, permissions, key store, unit, proxy/allowlist, api_server keys per profile. `[warn]` is advice, exit 1 is a hard failure. |
 | `hermes hermcp selftest [--profiles a,b] [--json] [--skip-slow]` | Compare hermcp's answers with fresh-process references for every profile. Read-only; exit 1 on any FAIL. |
 | `hermes hermcp docs [--out PATH]` | Regenerate `docs/tools.html` from the live registry (also refreshed on every server start). |
@@ -265,7 +265,7 @@ hermes hermcp keys scopes --help
 | `hermes hermcp keys policy` | The table of what a profile-bound key may call. Creates nothing. |
 | `hermes hermcp keys rotate <key>` | New secret, same id; every OAuth token minted from it stops working. |
 | `hermes hermcp keys rename <key> <new-name>` | Metadata only — the token keeps working. |
-| `hermes hermcp keys scopes <key> [--copy-from K] [--access …] [--toolsets …] [--profiles …] [--(no-)approvals …]` | Change a key's scopes in place; the token keeps working, the next request sees the change. |
+| `hermes hermcp keys scopes <key> [--copy-from K] [--access …] [--toolsets …] [--profiles …] [--deny-tools …] [--(no-)approvals …]` | Change a key's scopes in place; the token keeps working, the next request sees the change. |
 | `hermes hermcp keys revoke <key> [--delete]` | Disable a key (`--delete` removes the record). |
 | `hermes hermcp profile-keys status [--profiles a,b] [--no-probe] [--json]` | Which api_server key each profile resolves and whether the api_server accepts it. |
 | `hermes hermcp profile-keys setup [--dry-run] [--yes --generate] [--copy-from SRC]` | Give profiles their own `API_SERVER_KEY` (interactive; writes the profile `.env`). |
@@ -287,9 +287,10 @@ around — a cron job, a container entrypoint, the systemd `ExecStart`, or a plu
 enabled. In an agent shell that exports a foreign `PYTHONPATH`, prefix it with `env -u PYTHONPATH`
 (see [Development](#development)).
 
-**Exit codes.** `0` success, `1` on a failed check (`doctor`, `selftest`, `profile-keys`), and `75`
-(`EX_TEMPFAIL`) from `serve` when another instance holds the lock or the port — never an automatic
-retry loop.
+**Exit codes.** `0` success, `1` on a failed check (`doctor`, `selftest`, `profile-keys`), `2` when a
+command refuses to act (stopping a systemd-managed instance without `--force`, `install-service
+--enable-now` while a hand-started instance holds the lock, usage errors), and `75` (`EX_TEMPFAIL`)
+from `serve` when another instance holds the lock or the port — never an automatic retry loop.
 
 ## Setup with an agent
 
