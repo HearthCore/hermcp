@@ -528,6 +528,15 @@ passes the handle to `chat_send`, `chat_run_steer` and `chat_run_cancel`. What f
   With it the new session gets a **new** handle that points back (`continues`), the old session's open runs move to it,
   and the old handle is retired (`taken_over_by`; using it answers `session_handed_over`). Same key only, once per
   handle; finished runs keep the old handle, so history stays attributable.
+- Situation report: `runs_active` without `client_session` adds `session_overview` — the sessions of this key, the runs
+  nobody claimed and what to do next (are you one of these? `recover_from`; new? register; your own unclaimed runs?
+  `claim_runs`). With your handle the overview is gone and your runs are marked `yours`. Reading stays open to everyone.
+- Claim: `session_card_set claim_runs=[run_ids]` (or `claim_unclaimed=true`) attaches open runs that were started
+  without a handle to your session (`client_session=<handle>`, or a new card if you pass none). Preview first,
+  `confirm=true` applies. Runs another session owns are never claimable (`not_claimable`); that goes through recover.
+- The previous owner is told: a recover writes a `session_taken_over` event, and a forced steer/cancel/interrupt of a
+  foreign run writes `foreign_run_forced` (not for dry runs). Both are plugin-written inbox events (callers cannot
+  push these kinds) that the session finds with its next `inbox_poll`.
 - Limit: `HERMCP_SESSION_MAX_RUNS=8` open runs per session (`session_run_limit`, 0 = off).
 - Cards expire after 30 days without use; at most 100 per key. Purpose and role are free labels and never change what a
   key may do.

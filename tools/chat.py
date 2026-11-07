@@ -125,7 +125,7 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
         target, _ = _session_running(ctx, session_id)
         if target:
             _own_run(ctx, target)
-            forced = _guard_foreign(ctx, target, client_session, force)
+            forced = _guard_foreign(ctx, target, client_session, force, "interrupted")
     limit = ctx.settings.session_max_runs
     if client_session and limit and not ctx.dry_run:
         open_runs = get_inbox(ctx.settings).session_open_runs(client_session)
@@ -262,7 +262,7 @@ def _send_steer(ctx, message, session_id, client_session=None, force=False) -> d
                         + ". Nothing was sent. Use mode=queue to start a new turn.",
                         session_id=session_id, waiting=sum(1 for t in queue or [] if t["state"] == "queued"))
     _own_run(ctx, run_id)
-    forced = _guard_foreign(ctx, run_id, client_session, force)
+    forced = _guard_foreign(ctx, run_id, client_session, force, "steered")
     return {**_steer(ctx, run_id, message, via="chat_send mode=steer"), **({"forced": forced} if forced else {})}
 
 
@@ -400,7 +400,7 @@ def _resolve_session(ctx, client_session):
     return card
 
 
-def _guard_foreign(ctx, run_id, client_session, force) -> dict | None:
+def _guard_foreign(ctx, run_id, client_session, force, action="acted on") -> dict | None:
     """Acting on a run that a different registered session started needs force=true. Runs without a recorded
     session are not guarded (nothing to compare). Returns what was overridden, for the result."""
     w = get_inbox(ctx.settings).get_watch(run_id)
@@ -413,6 +413,12 @@ def _guard_foreign(ctx, run_id, client_session, force) -> dict | None:
                         f"run {run_id!r} was started by session {owner!r}, but {mine}. Another session may be relying "
                         "on it. If this is intended, repeat with force=true; otherwise leave it alone.",
                         run_session=owner, your_session=client_session)
+    if not ctx.dry_run:         # the owner learns about it on its next inbox_poll
+        get_inbox(ctx.settings).push_ledger(
+            kind="foreign_run_forced", ref=run_id, profile=(w or {}).get("profile"),
+            summary=f"Run {run_id} of your session {owner} was {action} by "
+                    f"{client_session or 'a caller without a session'} using force=true. "
+                    "If that was not you, it is another chat on the same key: check runs_active.")
     return {"forced": True, "run_session": owner, "by_session": client_session}
 
 
@@ -466,7 +472,7 @@ def chat_run_steer(ctx, run_id, message, client_session=None, force=False):
     _own_run(ctx, run_id)
     require_served(ctx.profile)
     _resolve_session(ctx, client_session)
-    forced = _guard_foreign(ctx, run_id, client_session, force)
+    forced = _guard_foreign(ctx, run_id, client_session, force, "steered")
     return {**_steer(ctx, run_id, message, via="chat_run_steer"), **({"forced": forced} if forced else {})}
 
 
@@ -480,7 +486,7 @@ def chat_run_cancel(ctx, run_id, client_session=None, force=False):
     _own_run(ctx, run_id)
     require_served(ctx.profile)
     _resolve_session(ctx, client_session)
-    forced = _guard_foreign(ctx, run_id, client_session, force)
+    forced = _guard_foreign(ctx, run_id, client_session, force, "cancelled")
     return {**_cancel(ctx, run_id, control=f"cancelled via chat_run_cancel by {ctx.principal.name}"),
             **({"forced": forced} if forced else {})}
 
