@@ -59,12 +59,12 @@ Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Restart=on-failure (not always): a clean shutdown (SIGTERM from `systemctl stop`) must
 # stay stopped. Exit 75 = EX_TEMPFAIL = "another hermcp instance already owns the lock/port".
-# RestartPreventExitStatus=75 keeps systemd from loops when a standalone instance (started by
-# hand or by the gateway) is still serving — the unit then stays failed with a readable
-# message instead of fighting over the port. Migrate with: hermes hermcp stop
+# RestartPreventExitStatus parks the unit instead of looping when another instance owns the
+# port (75) or when the configuration itself is invalid (78) — a restart cannot fix a typo in
+# .env, it would just flap every 5 s. Migrate with: hermes hermcp stop
 Restart=on-failure
 RestartSec=5
-RestartPreventExitStatus=75
+RestartPreventExitStatus=75 78
 StandardOutput=journal
 StandardError=journal
 

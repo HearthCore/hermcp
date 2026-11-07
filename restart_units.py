@@ -34,7 +34,9 @@ def _candidate_bins() -> list[Path]:
     """`hermes` executables to ask, most specific first. Deliberately independent of agent_dir()."""
     from .settings import load_settings
     cands: list[Path] = []
-    cfg = load_settings().hermes_bin
+    # Lenient: a bad scope is reported where it belongs (doctor), not as a failure to
+    # locate the hermes binary.
+    cfg = load_settings(strict=False).hermes_bin
     if cfg:
         cands.append(Path(cfg))
     cands.append(Path(sys.executable).parent / "hermes")

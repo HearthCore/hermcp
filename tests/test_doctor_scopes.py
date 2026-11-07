@@ -41,10 +41,12 @@ def test_doctor_shows_the_effective_scopes_when_valid(env, capsys):
 
 
 def test_cli_serve_refuses_an_invalid_scope_with_one_readable_error(env, capsys):
+    from hermcp.lock import EX_CONFIG
     env.setenv("HERMCP_SELF_SYSTEMD_SCOPE", "nope")
     rc = cli.main(["serve"])
     err = capsys.readouterr().err
-    assert rc == 1 and "invalid configuration" in err and "HERMCP_SELF_SYSTEMD_SCOPE" in err
+    # 78 (not 1): the unit's RestartPreventExitStatus lists it, so systemd parks instead of flapping
+    assert rc == EX_CONFIG and "invalid configuration" in err and "HERMCP_SELF_SYSTEMD_SCOPE" in err
     assert "Traceback" not in err and "doctor" in err
 
 
