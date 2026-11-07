@@ -218,6 +218,9 @@ python -m hermcp keys create --name admin-key --access admin --approvals --secre
 
 python -m hermcp keys list
 python -m hermcp keys rotate alice-researcher      # new secret, same id; OAuth tokens minted from it die
+python -m hermcp keys rename alice-researcher alice-r2   # metadata only; the token keeps working
+python -m hermcp keys scopes alice-r2 --copy-from admin-key   # take over another key's scopes, token unchanged
+python -m hermcp keys scopes alice-r2 --no-approvals --toolsets status,sessions   # switch single scopes on/off
 python -m hermcp keys revoke <id> --delete
 ```
 
@@ -246,6 +249,8 @@ Rules to remember: `access` is a ceiling (`admin ⊃ write ⊃ read`); `approval
 outside a key's scope are hidden from `tools/list` and refused when called anyway. The Claude.ai
 connector inherits the scopes of the `hmcp_` key pasted on its consent page (see below).
 `python -m hermcp keys list` shows scopes and last use; `keys rotate` / `keys revoke` take effect immediately.
+`keys rename` and `keys scopes` only touch metadata — a running key keeps its token (the name and scopes are
+not part of the hash), and the server picks the change up at the next request.
 
 ## Tool surface
 
