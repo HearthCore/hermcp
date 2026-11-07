@@ -34,7 +34,7 @@ you did and what you saw.
 
 Work from the plugin folder. The package must be importable as `hermcp`, so run all
 `python -m hermcp ...` commands from the **parent** directory (`~/.hermes/plugins`), using the
-Hermes virtualenv's Python (the README uses `/usr/local/lib/hermes-agent/venv`; adjust to the
+Hermes virtualenv's Python (docs/install.md uses `/usr/local/lib/hermes-agent/venv`; adjust to the
 install you find in preflight). No third-party packages are installed: hermcp uses the stdlib plus
 what Hermes already ships (`starlette`, `uvicorn`, `mcp`).
 
@@ -45,7 +45,7 @@ PY=/usr/local/lib/hermes-agent/venv/bin/python     # adjust after preflight
 cd ~/.hermes/plugins && env -u PYTHONPATH "$PY" -m hermcp <command>
 ```
 
-(`env -u PYTHONPATH` is the README's fix for a foreign `PYTHONPATH` that breaks the `mcp` import.)
+(`env -u PYTHONPATH` is the fix documented in `docs/development.md` for a foreign `PYTHONPATH` that breaks the `mcp` import.)
 
 Once the plugin is enabled (`hermes plugins enable hermcp`), the same commands are reachable as
 `hermes hermcp <command>` from any directory — no `cd`, no `$PY`, and it is the preferred form for
@@ -100,7 +100,7 @@ the same flags and exit codes.
 Run these, then summarise to the human and ask which deployment they want.
 
 1. Hermes installed and which Python it uses: `hermes --version`. Find the virtualenv that
-   contains `starlette`, `uvicorn` and `mcp` (README default: `/usr/local/lib/hermes-agent/venv`).
+   contains `starlette`, `uvicorn` and `mcp` (docs/install.md default: `/usr/local/lib/hermes-agent/venv`).
    Confirm `"$PY" --version` is 3.11 or newer (hermcp requires Python ≥ 3.11).
 2. Import and install sanity, from `~/.hermes/plugins`: `env -u PYTHONPATH "$PY" -m hermcp doctor`.
    It checks Python, imports, `HERMES_HOME`, key store, file permissions, public-URL settings, OAuth
@@ -162,11 +162,11 @@ Run these, then summarise to the human and ask which deployment they want.
    auth **off** (it would swallow the `Authorization` header). Route `/mcp` for all clients; add
    `/.well-known`, `/authorize`, `/token` (and optionally `/register`) only for the Claude.ai
    connector. `/health` is deliberately not routed publicly. Details and the Pangolin/Traefik
-   example: README "Deployment" and `docs/deployment.md`.
+   example: `docs/deployment.md` and `docs/install.md`.
 5. **Choose one way to run it** (exactly one instance may serve):
    - **A. systemd (recommended).** Ask the human first. Open `deploy/hermcp.service` and check
      that `ExecStart` points at the Python you found in preflight, and that `User=` and the
-     `%h` home match the install (the shipped unit uses the README venv path and `User=root`; edit
+     `%h` home match the install (the shipped unit uses the `docs/install.md` venv path and `User=root`; edit
      if they differ). Then: `... -m hermcp install-service` (copies the unit to
      `/etc/systemd/system/hermcp.service`, runs `daemon-reload`, does not start it), and after the
      human agrees `systemctl enable --now hermcp`. The unit's start gate waits up to 30 s for
@@ -407,7 +407,7 @@ non-secret result). A `read` key is enough for steps 1, 2, 3 and 5; step 4 needs
 
 ## 10. Troubleshooting (documented cases)
 
-| Symptom | Cause / fix (README "Troubleshooting") |
+| Symptom | Cause / fix (see `docs/troubleshooting.md`) |
 |---|---|
 | `403 host not allowed` | Public hostname missing in `HERMCP_ALLOWED_HOSTS`; also set `HERMCP_PUBLIC_URL`. |
 | `401` on `/mcp` | Missing or wrong bearer key; behind a proxy, resource-level SSO/basic auth must be off. |
@@ -441,15 +441,31 @@ non-secret result). A `read` key is enough for steps 1, 2, 3 and 5; step 4 needs
 
 ## 12. References
 
-- `README.md`: install (clone → enable plugin → `.env` → service → first key), the full
-  `hermes hermcp` CLI reference, keys and scopes, tool surface, inbox, approvals, deployment,
-  OAuth connector, security model, troubleshooting.
-- `docs/deployment.md`: reverse-proxy route and env values; `docs/oauth.md`: OAuth 2.1 design and
-  bearer setup; `docs/approvals.md`: how approvals work inside Hermes;
-  `docs/profile-bound-keys.md`: what a profile-bound key may call;
-  `docs/profile-keys.md`: per-profile `API_SERVER_KEY` resolution, the `profile-keys` CLI and its
-  install/rotate/rollback flow (`docs/DESIGN.md`: design contract);
-  `docs/stale-hermcp-after-hermes-update.md`; `deploy/systemd/README.md` (optional auto-restart after a Hermes update).
-- `docs/tools.html`: generated catalog of all tools, schemas and the server instructions
+The README is the entry point (what it is, architecture diagram, five-step install, tool surface,
+docs index). Everything below it lives in `docs/` — read the one you need instead of the README:
+
+- `docs/install.md`: `.env` values, the two systemd managers, the service units, the polkit rule,
+  auto-restart after a Hermes update, the single-instance lock. **This is the file to edit when an
+  install instruction changes.**
+- `docs/cli.md`: every `hermes hermcp` command and the exit-code contract (0 / 1 / 2 / 75 / 78).
+- `docs/keys-and-scopes.md`: scope semantics, the admin-key table, worked `keys create` examples.
+- `docs/tool-surface.md`: the catalog, meta tools, `initialize` instructions, list defaults, cron
+  routing, output redaction. The generated, always-current version is `docs/tools.html`
   (`python -m hermcp docs` regenerates it).
+- `docs/inbox-and-runs.md`: the event inbox, the run watcher, the approval hooks,
+  `chat_send`/steer/cancel.
+- `docs/client-sessions.md`: the `client_session` ledger, the foreign-run guard, `recover_from`,
+  `claim_runs`.
+- `docs/approvals.md`: what approvals are inside Hermes, run-scoped and cross-session.
+- `docs/provenance.md`: the `_meta` contract and the selftest.
+- `docs/profile-bound-keys.md` / `docs/profile-keys.md`: what a profile-bound key may call, and
+  per-profile `API_SERVER_KEY` resolution with the `profile-keys` CLI.
+- `docs/oauth.md`: OAuth 2.1 for Claude.ai connectors, plus the connector setup steps.
+- `docs/deployment.md`: the reverse-proxy route (Pangolin/Traefik) and env values.
+- `docs/dashboard-control.md`, `docs/troubleshooting.md`, `docs/development.md`,
+  `docs/DESIGN.md` (design contract), `docs/stale-hermcp-after-hermes-update.md`,
+  `docs/cli-parity.md` + `docs/CLI_INVENTORY.md`, `deploy/systemd/README.md`.
 - `SECURITY.md` for vulnerability reports, `CONTRIBUTING.md` for development.
+
+**When you change a behaviour, change the doc that owns it.** The README only links — it must not
+grow a second copy of an install step or a command reference.

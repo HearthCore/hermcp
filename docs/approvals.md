@@ -351,3 +351,45 @@ Live probes (read-only):
 - `sqlite3 -readonly ~/.hermes/state.db ".tables"` / `.schema` — confirms no approval table
 - `~/.hermes/.env` lines 426-428 — `API_SERVER_ENABLED`, `API_SERVER_KEY`, `API_SERVER_HOST`
   (names only, values masked)
+
+---
+
+## Run-scoped and cross-session approvals
+
+A remote "approve" executes a command inside an agent. Everything here needs the key's explicit
+`approvals` flag (never implied by `*`), is profile-pinned and audited. Over MCP **`once`, `session`,
+`deny` and `always`** can be given; `session` needs `access=admin` and, for a run, covers that run's
+approval session only
+(Hermes keys it by the run id and keeps it in gateway memory: a new run asks again, a gateway restart clears it;
+it covers every later command of the same pattern within that run, not just the one shown). **`always`**
+(permanent, rewrites the protection rules across sessions) is released **only for keys that carry both
+`access=admin` and the explicit `approvals_always` scope** — `*` and `admin` never imply it, so every other key
+(including an admin key without the flag) gets `choice_not_allowed` with a plain message, and even an entitled key
+only gets `always` when the request itself offers it (`choice_not_available` otherwise). Because `always` widens the
+protection for good, every grant lands in the audit log with the key name, the request id and the choice —
+`audit_tail(key=..., tool="approvals_answer")` shows them. `resolve_all` does not exist.
+
+- **Run-scoped** (works out of the box): `chat_send` starts a run via the Hermes api_server
+  (`POST /v1/runs`); when it reports `waiting_for_approval`, answer with `chat_run_approval`.
+  `request_id` is mandatory and hermcp first reads the run: only the request the RUN reports as
+  pending is accepted (anything else, e.g. an id copied from an inbox text, is refused with
+  `approval_not_pending`; a 409 from the gateway maps to the same code).
+  Only runs hermcp itself started can be answered this way.
+- **Cross-session** (Telegram chats, other API runs): Hermes keeps pending approvals only in
+  the gateway process memory, so a separate process cannot see them. hermcp therefore also ships
+  an **agent half**: `register(ctx)` runs inside the gateway and publishes the pending queue on a
+  `0600` AF_UNIX socket (`$HERMES_HOME/plugin-data/hermcp/approvals.sock`, peer uid checked).
+  In separate-gateway mode there is one socket per profile home, so profile pinning is structural;
+  a multiplex gateway (one process, all profiles) publishes a single shared socket, and there the
+  session key's profile namespace is the boundary: `approvals_pending` lists only the caller's
+  profile and `approvals_answer` refuses a `session_key` of another profile (see AGENTS.md,
+  "Multiplex vs separate gateways"). `approvals_pending` lists,
+  `approvals_answer` answers by exact `session_key` + `request_id` (only choices the request
+  allows). Every list/answer is audited both by the tool layer and by the bridge.
+
+  Enabling it: `hermes plugins enable hermcp` (adds `hermcp` to `plugins.enabled`) and **restart
+  the gateway** — the owner performs that restart; hermcp never restarts it for you. The bridge
+  starts on its own once the gateway reports `running` in `gateway_state.json` (a short watcher in the gateway
+  process, at most 10 minutes), and also with the first inbound message. It never opens a socket in a CLI or TUI
+  process. `approvals_bridge_status` tells you if it is up.
+

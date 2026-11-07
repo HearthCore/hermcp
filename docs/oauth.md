@@ -343,3 +343,31 @@ Reference implementation `mlennie/hermes-mcp` :
 
 Specs: RFC 8414 (AS metadata), RFC 9728 (protected-resource metadata), RFC 7591 (DCR),
 RFC 8707 (resource indicators), RFC 6749 (token endpoint), RFC 7636 (PKCE), RFC 9207 (iss).
+
+---
+
+## Claude.ai connector (OAuth 2.1)
+
+Claude.ai custom connectors speak OAuth, not static bearer tokens. hermcp is a confidential-client
+authorization server built on the MCP SDK's auth module: PKCE `S256` mandatory, exact redirect
+allowlist (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`),
+`client_secret_post` only, no dynamic client registration, opaque tokens stored as SHA-256
+hashes (access 1 h, refresh 30 d and rotating, code 60 s) so a restart does not log Claude out.
+
+1. `HERMCP_PUBLIC_URL=https://<host>/mcp` in `.env`, the five routes above in place.
+2. Create the connector credentials (the secret is shown **once**, only a salted hash is kept):
+   ```bash
+   hermes hermcp oauth init             # prints client_id + client_secret
+   systemctl restart hermcp             # serve the OAuth endpoints
+   hermes hermcp oauth status
+   ```
+3. Claude → Settings → Connectors → **Add custom connector** → URL `https://<host>/mcp`;
+   under *Advanced settings* paste the `client_id` and `client_secret`.
+4. Claude opens `/authorize`: a small page asks for an **`hmcp_` key**. Paste the key whose
+   permissions the connector should have (e.g. `alice-researcher`). The connector inherits that
+   key's scopes on every call — rotate, revoke or expire the key and its tokens stop working
+   immediately. Wrong keys count against the failed-auth limiter.
+
+`hermes hermcp oauth init --rotate` replaces the client secret and invalidates every issued
+token; `oauth revoke-all` only drops the tokens.
+
