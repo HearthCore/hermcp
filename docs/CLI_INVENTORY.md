@@ -1,5 +1,9 @@
 # Hermes CLI Inventory
 
+> **Scope note:** this file inventories the **Hermes** CLI (`hermes <cmd>`) that hermcp wraps. It is
+> not the hermcp CLI — for `hermes hermcp serve|keys|oauth|profile-keys|doctor|selftest` see
+> ["The `hermes hermcp` CLI"](../README.md#the-hermes-hermcp-cli) in the README.
+
 Source: `hermes <cmd> --help` output (read-only, `--help` only). Binary: `/usr/local/lib/hermes-agent/venv/bin/hermes`, version `v0.22.1+683.g848fc0a.dirty (2026.9.24)`.
 
 Conventions:

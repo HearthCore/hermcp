@@ -47,6 +47,13 @@ cd ~/.hermes/plugins && env -u PYTHONPATH "$PY" -m hermcp <command>
 
 (`env -u PYTHONPATH` is the README's fix for a foreign `PYTHONPATH` that breaks the `mcp` import.)
 
+Once the plugin is enabled (`hermes plugins enable hermcp`), the same commands are reachable as
+`hermes hermcp <command>` from any directory — no `cd`, no `$PY`, and it is the preferred form for
+every interactive step. Keep the `"$PY" -m hermcp` form where a Hermes CLI may be absent or for
+scripted output. Newer docs and the daily workflow use `hermes hermcp keys list`,
+`hermes hermcp doctor`, `hermes hermcp profile-keys status`; both forms run the same `cli.py` with
+the same flags and exit codes.
+
 ## 2. Ground rules and security
 
 **Secrets**
@@ -123,7 +130,13 @@ Run these, then summarise to the human and ask which deployment they want.
 1. **Clone** (skip if you are already in it):
    `git clone https://github.com/HearthCore/hermcp.git ~/.hermes/plugins/hermcp`. The folder name must be
    `hermcp`.
-2. **Create `~/.hermes/plugins/hermcp/.env`** with mode 0600 (`doctor` checks permissions). Create the
+2. **Enable the plugin** — ask the human first, since it changes Hermes config:
+   `hermes plugins enable hermcp` adds the plugin to `plugins.enabled`, which registers the
+   `hermes hermcp` CLI for everybody and arms the **agent half** (approvals socket and approval
+   hooks) inside the gateway. The CLI works immediately; the agent half only comes alive on the
+   gateway's next start, and that restart belongs to the human. If the human declines, everything
+   still works via `python -m hermcp`, minus the cross-session approvals bridge and the hooks.
+3. **Create `~/.hermes/plugins/hermcp/.env`** with mode 0600 (`doctor` checks permissions). Create the
    file empty, `chmod 600`, then fill it. No secrets belong in it unless the human insists.
 
    Local only: nothing is required; defaults are `HERMCP_HOST=127.0.0.1`, `HERMCP_PORT=9230`,
@@ -144,13 +157,13 @@ Run these, then summarise to the human and ask which deployment they want.
    or `*` in `HERMCP_ALLOWED_HOSTS` (`doctor` warns on both). The allowlist must contain the **public**
    hostname the proxy forwards in `Host`; the check runs before auth, so a wrong list shows up as
    `403 host not allowed` even with a valid key.
-3. **Proxy (remote only, human's side).** Terminate TLS at the proxy and forward to
+4. **Proxy (remote only, human's side).** Terminate TLS at the proxy and forward to
    `127.0.0.1:9230` without rewriting paths or the `Host` header, with proxy-level SSO/password/basic
    auth **off** (it would swallow the `Authorization` header). Route `/mcp` for all clients; add
    `/.well-known`, `/authorize`, `/token` (and optionally `/register`) only for the Claude.ai
    connector. `/health` is deliberately not routed publicly. Details and the Pangolin/Traefik
    example: README "Deployment" and `docs/deployment.md`.
-4. **Choose one way to run it** (exactly one instance may serve):
+5. **Choose one way to run it** (exactly one instance may serve):
    - **A. systemd (recommended).** Ask the human first. Open `deploy/hermcp.service` and check
      that `ExecStart` points at the Python you found in preflight, and that `User=` and the
      `%h` home match the install (the shipped unit uses the README venv path and `User=root`; edit
@@ -161,8 +174,9 @@ Run these, then summarise to the human and ask which deployment they want.
    - **B. by hand** (no systemd, or a quick local test): `... -m hermcp serve --port 9230`
      (flags: `--host`, `--port`, `--log-level`). Run it in a separate terminal or background process
      that you can stop again.
-5. **Verify the start:** `curl -fsS http://127.0.0.1:9230/health` (adjust the port), then
-   `... -m hermcp status` and `... -m hermcp doctor`.
+6. **Verify the start:** `curl -fsS http://127.0.0.1:9230/health` (adjust the port), then
+   `... -m hermcp status` and `... -m hermcp doctor` (or `hermes hermcp status|doctor` once the
+   plugin is enabled).
 
 **Single instance and exit code 75.** An `flock` on `~/.hermes/plugin-data/hermcp/serve.lock`
 decides who serves; it records pid, role (`standalone` or `systemd`), host, port and start time. A
@@ -244,12 +258,13 @@ It is optional; skip it if the human does not need cross-session approvals.
 
 Steps (each needs the human's go-ahead):
 
-1. `hermes plugins enable hermcp`. This registers the `hermes hermcp <cmd>` CLI and adds `hermcp` to
-   `plugins.enabled`. It never starts a server.
+1. `hermes plugins enable hermcp` — already done in section 4, step 2 if you followed the flow. It
+   registers the `hermes hermcp <cmd>` CLI and adds `hermcp` to `plugins.enabled`. It never starts a
+   server.
 2. The **owner** restarts the gateway (`hermes gateway restart`, from an external shell). You do not do
    this yourself. The bridge starts with the first inbound gateway message.
-3. Verify: `... -m hermcp doctor` shows `approvals bridge [<profile>]` rows (one shared line in
-   multiplex mode — see below), and the tool
+3. Verify: `hermes hermcp doctor` (or `... -m hermcp doctor`) shows `approvals bridge [<profile>]` rows
+   (one shared line in multiplex mode — see below), and the tool
    `approvals_bridge_status` (needs a key with the `approvals` scope) reports whether it is up.
 
 ### Multiplex vs separate gateways
@@ -298,30 +313,33 @@ Add `--approvals` or `--secrets-write` only if the human needs those tools; `--a
 `--approvals-always` only on explicit request. Then you run `... -m hermcp keys list` (scopes,
 last use, no secrets) to confirm the key exists.
 
-Typical scope cuts (the human runs them; adapt names):
+Typical scope cuts (the human runs them; adapt names — `hermes hermcp` works from any directory once
+the plugin is enabled):
 
 ```bash
 # Read-only monitoring / dashboard / voice assistant, expires in 30 days
-python -m hermcp keys create --name overview --access read \
+hermes hermcp keys create --name overview --access read \
   --toolsets status,sessions,cron,kanban --expires 30d
 
 # Operator pinned to one profile: profile-aware calls default to it, other profiles are refused,
 # global writes are impossible
-python -m hermcp keys create --name ops-researcher --owner alice --access write \
+hermes hermcp keys create --name ops-researcher --owner alice --access write \
   --toolsets chat,kanban,sessions,status --profiles researcher
 
 # Alternative pin with --profile: read/write inside ONE profile only, no admin;
-# `python -m hermcp keys policy` prints what such a key may call
-python -m hermcp keys create --name agent-x --profile developer --access write
+# `hermes hermcp keys policy` prints what such a key may call
+hermes hermcp keys create --name agent-x --profile developer --access write
 
 # Inbox producer (scripts that push events): read access, inbox toolset, inbox_push opt-in
-python -m hermcp keys create --name cron-events --access read --toolsets inbox --inbox-push
+hermes hermcp keys create --name cron-events --access read --toolsets inbox --inbox-push
 
 # Admin only for the owner (see above), never for a connector or a shared client
 ```
 
-Management: `keys list`, `keys show <key>`, `keys rotate <key>` (new secret, same id; OAuth tokens
-minted from it die), `keys revoke <key> [--delete]`. Changes take effect immediately, no restart.
+Management: `hermes hermcp keys list`, `keys show <key>`, `keys rotate <key>` (new secret, same id;
+OAuth tokens minted from it die), `keys rename <key> <new-name>` (metadata only, the token survives),
+`keys scopes <key> …` (change access/toolsets/profiles/flags in place, the token survives),
+`keys revoke <key> [--delete]`. Changes take effect immediately, no restart.
 Key management is deliberately local-only: no MCP tool can create keys.
 
 ## 8. Connect clients
@@ -423,7 +441,8 @@ non-secret result). A `read` key is enough for steps 1, 2, 3 and 5; step 4 needs
 
 ## 12. References
 
-- `README.md`: install, quick start, keys and scopes, tool surface, inbox, approvals, deployment,
+- `README.md`: install (clone → enable plugin → `.env` → service → first key), the full
+  `hermes hermcp` CLI reference, keys and scopes, tool surface, inbox, approvals, deployment,
   OAuth connector, security model, troubleshooting.
 - `docs/deployment.md`: reverse-proxy route and env values; `docs/oauth.md`: OAuth 2.1 design and
   bearer setup; `docs/approvals.md`: how approvals work inside Hermes;
