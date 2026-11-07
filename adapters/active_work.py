@@ -201,3 +201,28 @@ def restart_preview(allowed_profiles: set[str] | None = None, home: Path | None 
             "agents": agents,
             "would_interrupt": len(unsafe) + snap["unlisted"],
             "restart_safe": len(agents) - len(unsafe)}
+
+
+IDLE_FLAG_S = 300     # `idle_5m` in hermes_status: an agent silent for this long deserves a look (not an error by itself)
+
+
+def by_run_id(snap: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Rows of an `agents_live` snapshot keyed by API run_id (only rows that carry one)."""
+    return {r["run_id"]: r for r in (snap.get("agents") or []) if r.get("run_id")}
+
+
+def health_digest(snap: dict[str, Any]) -> dict[str, Any]:
+    """Counts for hermes_status from one snapshot: who runs, what kind, who has been silent for a while."""
+    if not snap.get("available"):
+        return {"available": False}
+    rows = snap.get("agents") or []
+    idle = [r for r in rows if isinstance(r.get("idle_s"), (int, float)) and r["idle_s"] >= IDLE_FLAG_S]
+    wedged = [r for r in rows if r.get("wedged") is True]
+    out: dict[str, Any] = {"available": True, "agents": snap.get("active_agents"), "by_kind": snap.get("by_kind") or {}}
+    if snap.get("unlisted"):
+        out["no_detail"] = snap["unlisted"]
+    if idle:
+        out["idle_5m"] = len(idle)
+    if wedged:
+        out["wedged"] = len(wedged)
+    return out

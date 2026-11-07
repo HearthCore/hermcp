@@ -133,7 +133,9 @@ def _iso(epoch):
                       "status and a coarse activity label (queued, thinking, running a tool, between tools, "
                       "waiting for approval, ...) with its age as idle_seconds. Activity is a fixed label, never "
                       "content. Only runs of your own key are listed (admin keys may pass all_keys). Read the "
-                      "result of a run with chat_run_status.",
+                      "result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway's own "
+                      "progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher's coarse "
+                      "label is known.",
           properties={"all_keys": {"type": "boolean", "default": False,
                                    "description": "Admin keys only: include runs started by other keys"}})
 def runs_active(ctx, all_keys=False):
@@ -153,6 +155,7 @@ def runs_active(ctx, all_keys=False):
              **({"control": r["control"]} if r.get("control") else {}),
              **({"started_by": r["key_name"]} if all_keys else {})} for r in rows]
     _queue_positions(runs)
+    _gateway_progress(ctx, runs)
     for r in runs:
         r.pop("_started", None)
     return {"count": len(runs), "runs": runs,
@@ -160,6 +163,30 @@ def runs_active(ctx, all_keys=False):
                     "on a running run means no progress signal, not necessarily a problem. queue_position: 0 = "
                     "running now, n = n-th in line in its session; queue_length = turns waiting in that session "
                     "(chat_session_queue shows them)."}
+
+
+def _gateway_progress(ctx, runs: list[dict]) -> None:
+    """The gateway itself tracks progress per run (control socket `active-work`): idle_s, elapsed_s, current_tool.
+    Join it by run_id; runs the gateway lists without detail (kind api) keep their watcher-based fields."""
+    if not runs:
+        return
+    from ..adapters import active_work as AW
+    snap = AW.snapshot(allowed_profiles=set(ctx.principal.scopes.profiles) if ctx.restricted else None)
+    if not snap.get("available"):
+        return
+    rows = AW.by_run_id(snap)
+    for r in runs:
+        g = rows.get(r["run_id"])
+        if not g:
+            r["gateway_detail"] = False       # listed by hermcp's watcher only; the gateway gives no detail for it
+            continue
+        r["gateway_detail"] = True
+        if isinstance(g.get("idle_s"), (int, float)):
+            r["idle_seconds"] = int(g["idle_s"])
+        if isinstance(g.get("elapsed_s"), (int, float)):
+            r["running_seconds"] = int(g["elapsed_s"])
+        if g.get("current_tool"):
+            r["current_tool"] = g["current_tool"]
 
 
 def _queue_positions(runs: list[dict]) -> None:

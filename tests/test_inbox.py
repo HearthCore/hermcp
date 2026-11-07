@@ -240,7 +240,8 @@ def test_hermes_status_is_a_small_digest_with_next_steps(home):
     b2 = make(home)
     ok, r = b2("admin", "hermes_status")
     assert ok and r["verdict"] in ("ok", "degraded", "down")
-    assert set(r) >= {"verdict", "gateway", "profiles", "runs", "approvals_pending", "inbox", "next"}
+    assert set(r) >= {"verdict", "gateway", "profiles", "runs", "gateway_agents", "approvals_pending", "inbox", "next"}
+    assert "mine" in r["runs"]
     assert len(json.dumps(r)) < 1500                                  # level 0 stays small
     assert r["inbox"]["unread"] == 0 and r["inbox"]["failed_runs_24h"] == 0
 
@@ -266,3 +267,35 @@ def test_hermes_health_is_slim_by_default(home):
     assert ok and "profile_details" not in r
     ok, r = b("admin", "hermes_health", skills=False, detail=True)
     assert ok and "profile_details" in r
+
+
+def test_runs_active_takes_progress_from_the_gateway(monkeypatch):
+    """The gateway tracks idle_s / elapsed_s / current_tool itself; hermcp joins it by run_id."""
+    from types import SimpleNamespace
+    from hermcp.adapters import active_work as AW
+    from hermcp.tools.inbox import _gateway_progress
+    snap = {"available": True, "agents": [
+        {"kind": "chat", "run_id": "run_a", "idle_s": 0.4, "elapsed_s": 61.9, "current_tool": "terminal"},
+        {"kind": "api", "pid": 1}]}
+    monkeypatch.setattr(AW, "snapshot", lambda **kw: snap)
+    ctx = SimpleNamespace(restricted=False, principal=SimpleNamespace(scopes=SimpleNamespace(profiles=[])))
+    runs = [{"run_id": "run_a", "idle_seconds": None}, {"run_id": "run_b", "idle_seconds": None}]
+    _gateway_progress(ctx, runs)
+    assert runs[0] == {"run_id": "run_a", "idle_seconds": 0, "running_seconds": 61, "current_tool": "terminal",
+                       "gateway_detail": True}
+    assert runs[1]["gateway_detail"] is False and runs[1]["idle_seconds"] is None
+    monkeypatch.setattr(AW, "snapshot", lambda **kw: {"available": False})
+    runs = [{"run_id": "run_a", "idle_seconds": None}]
+    _gateway_progress(ctx, runs)
+    assert runs == [{"run_id": "run_a", "idle_seconds": None}]          # no socket: nothing invented
+
+
+def test_gateway_health_digest_counts_idle_and_wedged():
+    from hermcp.adapters.active_work import health_digest
+    snap = {"available": True, "active_agents": 4, "unlisted": 1, "by_kind": {"chat": 2, "cron": 1, "api": 1},
+            "agents": [{"kind": "chat", "idle_s": 2.0}, {"kind": "chat", "idle_s": 900.0},
+                       {"kind": "cron", "wedged": True, "idle_s": 10.0}]}
+    d = health_digest(snap)
+    assert d == {"available": True, "agents": 4, "by_kind": {"chat": 2, "cron": 1, "api": 1},
+                 "no_detail": 1, "idle_5m": 1, "wedged": 1}
+    assert health_digest({"available": False}) == {"available": False}

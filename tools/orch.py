@@ -148,7 +148,8 @@ def orchestration_overview(ctx, skills=True, plugins_exact=False):
 @reg.tool("hermes_status", toolset="status", core=True,
           description=("START HERE. Level-0 digest in one cheap call (well under 1 KB): `verdict` (ok, degraded, down), "
                        "gateway state and platforms that are not connected, how many profiles are reachable, runs still "
-                       "going (and how many wait for approval), pending approvals (counts, needs the approvals scope) "
+                       "going: `runs.mine` (started with your key; admin keys also see `other_keys`) and `gateway_agents` (everything the "
+                       "gateway itself runs, by kind, with `idle_5m` / `wedged` when something has been silent), pending approvals (counts, needs the approvals scope) "
                        "and YOUR inbox: unread events by kind, `older_unread` backlog and failed runs of the last 24 h. "
                        "Counts only, never event text. `next` names the tool to call for whatever needs attention; "
                        "details live one level down (inbox_poll, runs_active, approvals_pending, status_gateway), the "
@@ -177,10 +178,16 @@ def hermes_status(ctx, consumer=None):
                  "profiles": {"reachable": len(reach), "total": len(names),
                               **({"not_reachable": sorted(set(names) - set(reach))} if set(names) - set(reach) else {})}}
     try:
-        runs = runs_active(ctx)["runs"]
-        out["runs"] = {"active": len(runs),
-                       "waiting_for_approval": sum(1 for r in runs if "approval" in str(r.get("activity"))
+        from ..adapters import active_work as AW
+        mine = runs_active(ctx)["runs"]
+        out["runs"] = {"mine": len(mine),
+                       "waiting_for_approval": sum(1 for r in mine if "approval" in str(r.get("activity"))
                                                    or r.get("status") == "waiting_for_approval")}
+        if ctx.principal.scopes.access == "admin":     # other keys' runs started through hermcp (counts only)
+            allr = get_inbox(ctx.settings).running(key_id=None)
+            out["runs"]["other_keys"] = max(0, len(allr) - len(mine))
+        out["gateway_agents"] = AW.health_digest(
+            AW.snapshot(allowed_profiles=set(ctx.principal.scopes.profiles) if ctx.restricted else None))
     except Exception as exc:  # noqa: BLE001
         out["runs"] = {"error": f"{type(exc).__name__}"}
     appr = approvals_overview(ctx, names, info)
@@ -201,7 +208,10 @@ def hermes_status(ctx, consumer=None):
         nxt.append("inbox_list kind=run_failed, then chat_run_status <run_id>")
     if isinstance(out["approvals_pending"], dict) and out["approvals_pending"]["total"]:
         nxt.append("approvals_pending")
-    if out["runs"].get("active"):
+    ga = out.get("gateway_agents") or {}
+    if ga.get("idle_5m") or ga.get("wedged"):
+        nxt.append("agents_live (idle_s / wedged per agent)")
+    if out["runs"].get("mine"):
         nxt.append("runs_active")
     out["next"] = nxt or ["nothing needs attention"]
     return out
