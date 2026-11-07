@@ -384,3 +384,44 @@ Pangolin docs:
 
 - https://docs.pangolin.net — resource/target model (path, rewrite, priority,
   custom headers).
+
+---
+
+## Deployment
+
+Bind loopback, terminate TLS at the proxy, and route the MCP and OAuth paths to the server.
+
+### Pangolin (Traefik) route
+
+On the **existing** resource of your hostname (e.g. `mcp.example.com`, HTTP mode, TLS on)
+add path-scoped targets — Pangolin matches them before the `/` catch-all (priority 113 vs 1),
+so the dashboard target keeps working. All targets: site = the tunnelled host, method `http`,
+host `127.0.0.1`, port `9230`, **Rewrite Path empty**.
+
+| Match path | Type | Needed for |
+|---|---|---|
+| `/mcp` | prefix | the MCP endpoint (all clients) |
+| `/.well-known` | prefix | OAuth metadata (Claude.ai connectors only) |
+| `/authorize` | prefix | OAuth authorize + paste-key page (`/authorize/consent`) |
+| `/token` | prefix | OAuth token endpoint |
+| `/register` | prefix | optional: answers "DCR unsupported" cleanly instead of falling to the dashboard |
+
+Bearer-only clients (Codex, Cursor, scripts) need just `/mcp`. Resource settings: Set Host
+Header **empty** (the original Host must reach hermcp), SSO / password / basic auth **off**
+(badger would consume `Authorization: Bearer` before hermcp sees it). `GET /health` is not
+routed publicly; check it on the host: `curl -fsS http://127.0.0.1:9230/health`.
+
+| Proxy target | Value |
+|---|---|
+| Host / port | `127.0.0.1` / `9230` |
+| Rewrite | none — the server serves these paths itself |
+| Auth middleware | **off** — otherwise the proxy consumes `Authorization: Bearer` |
+
+Two details that bite:
+
+1. Metadata documents live at the **origin**, not under the endpoint path —
+   `https://host/.well-known/oauth-protected-resource`, never `…/mcp/.well-known/…`.
+2. Most proxies forward the original `Host` header, so `HERMCP_ALLOWED_HOSTS` must contain
+   the **public** hostname. The host check runs *before* auth: a wrong allowlist looks like
+   a 403 even with a valid key.
+
