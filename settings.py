@@ -69,6 +69,7 @@ class Settings:
     inbox_watcher: bool = True         # run watcher: observes runs started via chat_send
     inbox_watch_interval: float = 2.0  # seconds between polls of the Hermes api_server
     inbox_watch_max_per_key: int = 50  # active watched runs per key
+    session_max_runs: int = 8          # open runs per registered client session (0 = no limit)
     inbox_run_max_events: int = 20     # watcher events per run
     inbox_watch_ttl_hours: float = 24.0  # a watch that never saw a terminal state expires silently
     inbox_approvals: bool = True       # approval hooks: mirror pending/resolved approvals into the inbox
@@ -139,6 +140,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         inbox_watcher=g("HERMCP_INBOX_WATCHER", "1").lower() not in ("0", "false", "no", "off"),
         inbox_watch_interval=max(0.5, float(g("HERMCP_INBOX_WATCH_INTERVAL", "2"))),
         inbox_watch_max_per_key=int(g("HERMCP_INBOX_WATCH_MAX_PER_KEY", "50")),
+        session_max_runs=int(g("HERMCP_SESSION_MAX_RUNS", "8")),
         inbox_run_max_events=int(g("HERMCP_INBOX_RUN_MAX_EVENTS", "20")),
         inbox_watch_ttl_hours=float(g("HERMCP_INBOX_WATCH_TTL_HOURS", "24")),
         inbox_approvals=g("HERMCP_INBOX_APPROVALS", "1").lower() not in ("0", "false", "no", "off"),

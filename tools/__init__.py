@@ -7,7 +7,7 @@ reg = Registry()
 def load_all() -> Registry:
     import importlib
     for mod in ("status", "sessions", "models", "config", "tools_cfg", "plugins_ts", "mcp_ts", "skills",
-                "profiles", "kanban", "cron", "chat", "approvals", "providers", "memory", "ops", "dashboard", "inbox", "admin", "orch", "files"):
+                "profiles", "kanban", "cron", "chat", "approvals", "providers", "memory", "ops", "dashboard", "inbox", "session_cards", "admin", "orch", "files"):
         try:
             importlib.import_module(f"{__name__}.{mod}")
         except ModuleNotFoundError as exc:

@@ -36,6 +36,7 @@ class Principal:
     name: str
     scopes: Scopes
     client: str = ""        # coarse label from request headers (client_id.derive_client); attribution only
+    native_session: str = ""   # the client's own session id when a header carries one (client_profiles); usually empty
 
 
 @dataclass
