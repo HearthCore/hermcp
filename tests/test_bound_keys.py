@@ -377,7 +377,8 @@ def test_inbox_and_runs_only_for_own_profile_events(rig):
     assert [e["id"] for e in rig.ok("w1", "inbox_list")["events"]] == [own["id"]]
     ack = rig.ok("w1", "inbox_ack", ids=[own["id"], foreign["id"], pushed["id"]])
     assert ack["acked"] == [own["id"]] and sorted(ack["not_found"]) == sorted([foreign["id"], pushed["id"]])
-    assert len(rig.ok("adm", "inbox_poll")["events"]) == 2                              # foreign + pushed were not touched
+    # read state is per key: w1's ack did not touch what adm has to read (all three events are still unread for it)
+    assert [e["id"] for e in rig.ok("adm", "inbox_poll")["events"]] == [own["id"], foreign["id"], pushed["id"]]
     assert [r["run_id"] for r in rig.ok("w1", "runs_active")["runs"]] == ["run_own"]
     assert rig.call("w1", "inbox_push", source="a", kind="info", summary="x")["ok"] is False
 

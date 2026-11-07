@@ -98,11 +98,10 @@ def test_rotation_by_count_and_age(home):
     b("producer", "inbox_push", source="s", kind="k", summary="e8")
     ids = [e["id"] for e in b("voice", "inbox_list")[1]["events"]]
     assert len(ids) == 5 and 1 not in ids and ids[0] == 9
-    # age: acked events older than retention are dropped on next push
+    # age: events older than retention are dropped on next push (read state is per consumer, so age decides)
     b.app.settings.inbox_retention_days = 1.0
-    b("voice", "inbox_ack", ids=[ids[-1]])
     db = sqlite3.connect(b.app.settings.data / "inbox.db")
-    db.execute("UPDATE events SET acked_at='2020-01-01T00:00:00Z' WHERE id=?", (ids[-1],))
+    db.execute("UPDATE events SET ts='2020-01-01T00:00:00Z' WHERE id=?", (ids[-1],))
     db.commit()
     b("producer", "inbox_push", source="s", kind="k", summary="trigger")
     left = [e["id"] for e in b("voice", "inbox_list")[1]["events"]]
@@ -170,3 +169,68 @@ def test_ack_batch_limits(box):
     assert not box("voice", "inbox_ack", ids=[])[0]
     assert not box("voice", "inbox_ack", ids=list(range(1, 102)))[0]
     assert not box("voice", "inbox_ack", ids=["1"])[0]
+
+
+def _age_all(box, minutes):
+    """Pretend every stored event is `minutes` old (the store compares ISO timestamps)."""
+    from datetime import datetime, timedelta, timezone
+    ts = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    db = sqlite3.connect(box.app.settings.data / "inbox.db")
+    db.execute("UPDATE events SET ts=?", (ts,))
+    db.commit()
+
+
+def test_ack_is_per_key(box):
+    """One consumer's ack must not hide the event from another key."""
+    push(box, summary="shared")
+    assert [e["id"] for e in box("voice", "inbox_poll")[1]["events"]] == [1]
+    assert [e["id"] for e in box("producer", "inbox_poll")[1]["events"]] == [1]
+    box("voice", "inbox_ack", ids=[1])
+    assert box("voice", "inbox_poll")[1]["events"] == []
+    ok, r = box("producer", "inbox_poll")
+    assert [e["id"] for e in r["events"]] == [1] and r["unread_total"] == 1 and r["events"][0]["acked"] is False
+    assert box("voice", "inbox_list", status="unread")[1]["events"] == []
+    assert [e["id"] for e in box("producer", "inbox_list", status="unread")[1]["events"]] == [1]
+
+
+def test_consumer_label_splits_sessions_of_one_key(box):
+    push(box)
+    box("voice", "inbox_ack", ids=[1], consumer="sess-a")
+    assert box("voice", "inbox_poll", consumer="sess-a")[1]["events"] == []
+    assert [e["id"] for e in box("voice", "inbox_poll", consumer="sess-b")[1]["events"]] == [1]
+    assert [e["id"] for e in box("voice", "inbox_poll")[1]["events"]] == [1]       # unlabeled consumer is its own
+    assert not box("voice", "inbox_poll", consumer="bad label")[0]               # pattern-checked
+
+
+def test_new_consumer_skips_old_backlog(home):
+    b = make(home, HERMCP_INBOX_JOIN_WINDOW_MIN="30")
+    for i in range(3):
+        push(b, summary=f"old{i}")
+    _age_all(b, 120)
+    push(b, summary="fresh")
+    ok, r = b("voice", "inbox_poll")
+    assert [e["summary"] for e in r["events"]] == ["fresh"]
+    assert r["unread_total"] == 1 and r["older_unread"] == 3 and "include_older" in r["older_note"]
+    ok, r = b("voice", "inbox_poll", include_older=True)
+    assert [e["id"] for e in r["events"]] == [1, 2, 3, 4] and "older_unread" not in r
+    # the cursor is sticky: a later poll does not re-hide or re-deliver anything wrongly
+    push(b, summary="later")
+    assert [e["summary"] for e in b("voice", "inbox_poll")[1]["events"]] == ["fresh", "later"]
+
+
+def test_join_window_zero_and_ack_all(home):
+    b = make(home, HERMCP_INBOX_JOIN_WINDOW_MIN="0")
+    push(b)
+    push(b)
+    ok, r = b("voice", "inbox_poll")
+    assert r["events"] == [] and r["unread_total"] == 0 and r["older_unread"] == 2
+    ok, r = b("voice", "inbox_ack", all=True)
+    assert ok and r["acked"] == [1, 2] and r["unread_total"] == 0
+    assert "older_unread" not in b("voice", "inbox_poll")[1]
+    push(b)
+    assert [e["id"] for e in b("voice", "inbox_poll")[1]["events"]] == [3]
+
+
+def test_ack_needs_ids_or_all(box):
+    ok, err = box("voice", "inbox_ack")
+    assert not ok and err["code"] == "invalid_arguments"
