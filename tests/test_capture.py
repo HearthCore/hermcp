@@ -1,7 +1,6 @@
 """Discovery capture: records what clients send, never credentials, argument values or addresses."""
 import json
 
-import pytest
 from starlette.testclient import TestClient
 
 from hermcp.app import create_app
