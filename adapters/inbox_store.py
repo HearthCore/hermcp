@@ -47,7 +47,8 @@ NEW_COLUMNS = (("run_id", "TEXT"), ("session_id", "TEXT"), ("profile", "TEXT"), 
 # control = last control action hermcp took on the run (fixed text written by hermcp itself, e.g. "cancelled via
 # chat_run_cancel", "interrupted by chat_send mode=interrupt; replaced by run <id>"); steer_count = accepted steers.
 WATCH_NEW_COLUMNS = (("activity", "TEXT"), ("activity_at", "REAL"), ("control", "TEXT"),
-                     ("steer_count", "INTEGER NOT NULL DEFAULT 0"))
+                     ("steer_count", "INTEGER NOT NULL DEFAULT 0"),
+                     ("client", "TEXT"), ("client_session", "TEXT"))
 
 
 def is_reserved_kind(kind: str) -> bool:
@@ -232,15 +233,18 @@ class Inbox:
         return self._row(row) if row else None
 
     # -- watches (runs started via chat_send) -------------------------------------------
-    def add_watch(self, *, run_id: str, profile: str, session_id: str | None, key_id: str, key_name: str) -> None:
+    def add_watch(self, *, run_id: str, profile: str, session_id: str | None, key_id: str, key_name: str,
+                  client: str | None = None, client_session: str | None = None) -> None:
         now = time.time()
         with self._db() as db:
             active = db.execute("SELECT COUNT(*) FROM watches WHERE done=0 AND expires_at>? AND key_id=?",
                                 (now, key_id)).fetchone()[0]
             if active >= self.watch_max_per_key:
                 raise ToolError("watch_limit", f"{self.watch_max_per_key} runs are already being watched for this key")
-            db.execute("INSERT OR IGNORE INTO watches(run_id,profile,session_id,key_id,key_name,started_at,expires_at) "
-                       "VALUES(?,?,?,?,?,?,?)", (run_id, profile, session_id, key_id, key_name, now, now + self.watch_ttl_s))
+            db.execute("INSERT OR IGNORE INTO watches(run_id,profile,session_id,key_id,key_name,started_at,expires_at,"
+                       "client,client_session) VALUES(?,?,?,?,?,?,?,?,?)",
+                       (run_id, profile, session_id, key_id, key_name, now, now + self.watch_ttl_s,
+                        client or None, client_session or None))
 
     def active_watches(self, now: float | None = None) -> list[dict[str, Any]]:
         """Open watches; watches past their TTL are closed silently (no terminal evidence, no event)."""

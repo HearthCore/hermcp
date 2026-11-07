@@ -32,12 +32,17 @@ class AuditLog:
         self._lock = threading.Lock()
 
     def write(self, *, key_id: str, key_name: str, tool: str, args: dict, profile: str | None,
-              status: str, duration_ms: float, detail: str = "") -> None:
+              status: str, duration_ms: float, detail: str = "", client: str = "",
+              client_session: str = "") -> None:
         rec = {
             "ts": round(time.time(), 3), "key_id": key_id, "key_name": key_name, "tool": tool,
             "args": redact(args), "profile": profile, "status": status,
             "duration_ms": round(duration_ms, 1),
         }
+        if client:                                  # who called (header-derived label) and the handle it chose
+            rec["client"] = client
+        if client_session:
+            rec["client_session"] = client_session
         if detail:
             rec["detail"] = redact(detail)
         line = json.dumps(rec, ensure_ascii=False, default=str)

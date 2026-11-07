@@ -24,6 +24,11 @@ REQUEST_KEY = {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{8,80}$",
                "description": "Idempotency handle. Omit it for a new message (one is generated and returned). "
                               "Send the SAME request_key with the SAME message to retry after status "
                               "start_unconfirmed without starting a second run."}
+CLIENT_SESSION = {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,80}$",
+                  "description": "Optional handle your session chose for itself (Claude Code and Cowork: their own "
+                                 "session id; chat or voice: any stable label you pick once and reuse). Recorded with "
+                                 "the run and in the audit log so runs can be attributed to the client session that "
+                                 "started them. Attribution only, never access control; not the Hermes session_id."}
 UNCONFIRMED_NEXT = ("The start request got no usable answer, so the run may or may not exist. First check "
                     "chat_conversations (newest conversation) and inbox_poll (run events); only if nothing shows up, "
                     "call chat_send again with the SAME request_key and the SAME message (it will not start a second run).")
@@ -91,11 +96,12 @@ MODE = {"type": "string", "enum": list(MODES), "default": "queue",
                       "session_id": {"type": "string", "description": "Continue an existing session"},
                       "mode": MODE,
                       "request_key": REQUEST_KEY,
+                      "client_session": CLIENT_SESSION,
                       "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT, "default": 0,
                                        "description": "Seconds to wait for the answer (0 = return at once, max 20). "
                                                       "Long tasks: leave at 0 and read the result later."}},
           required=["message"])
-def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, mode="queue"):
+def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, mode="queue", client_session=None):
     started = time.monotonic()
     require_served(ctx.profile)
     mode = mode or "queue"
@@ -123,7 +129,9 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
         return ctx.plan("start agent run", profile=ctx.profile, session_id=session_id, chars=len(message),
                         request_key=request_key, endpoint=f"{ctx.settings.hermes_api_url}/v1/runs",
                         watch="the run would be registered with the inbox run watcher", **extra)
-    base = {"run_id": None, "session_id": session_id, "profile": ctx.profile, "request_key": request_key}
+    base = {"run_id": None, "session_id": session_id, "profile": ctx.profile, "request_key": request_key,
+            **({"client": ctx.principal.client} if ctx.principal.client else {}),
+            **({"client_session": client_session} if client_session else {})}
     if mode != "queue":
         base["mode"] = mode
     run, replayed = _start_run(ctx, body, idempotency_key(ctx.principal.id, ctx.profile, request_key))
@@ -135,7 +143,7 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
            **({"replayed": True} if replayed else {})}
     notes: list[str] = []
     try:
-        out["watch"] = _register_watch(ctx, run_id, session_id)
+        out["watch"] = _register_watch(ctx, run_id, session_id, client_session)
     except Exception as exc:  # noqa: BLE001 - the run exists; never lose the run_id
         out["watch"] = {"registered": False, "reason": f"{type(exc).__name__}"}
     if mode == "interrupt":
@@ -333,7 +341,7 @@ def _observe(ctx, out: dict, wait: int, started: float) -> None:
         time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
-def _register_watch(ctx, run_id, session_id) -> dict:
+def _register_watch(ctx, run_id, session_id, client_session=None) -> dict:
     """Hand the run to the inbox watcher. Never fails the chat call; says why it did not register."""
     if not run_id:
         return {"registered": False, "reason": "gateway returned no run_id"}
@@ -343,7 +351,8 @@ def _register_watch(ctx, run_id, session_id) -> dict:
         return {"registered": False, "reason": f"profile {ctx.profile!r} is not confirmed as served by the gateway"}
     try:
         get_inbox(ctx.settings).add_watch(run_id=run_id, profile=ctx.profile, session_id=session_id,
-                                          key_id=ctx.principal.id, key_name=ctx.principal.name)
+                                          key_id=ctx.principal.id, key_name=ctx.principal.name,
+                                          client=ctx.principal.client, client_session=client_session)
     except ToolError as exc:
         return {"registered": False, "reason": exc.message}
     except Exception as exc:  # noqa: BLE001

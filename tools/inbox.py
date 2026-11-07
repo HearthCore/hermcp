@@ -151,6 +151,8 @@ def runs_active(ctx, all_keys=False):
              "activity_at": _iso(r["activity_at"]),
              "idle_seconds": int(now - r["activity_at"]) if r["activity_at"] else None,
              "_started": r["started_at"],
+             **({"client": r["client"]} if r.get("client") else {}),
+             **({"client_session": r["client_session"]} if r.get("client_session") else {}),
              **({"steered": r["steer_count"]} if r.get("steer_count") else {}),
              **({"control": r["control"]} if r.get("control") else {}),
              **({"started_by": r["key_name"]} if all_keys else {})} for r in rows]
