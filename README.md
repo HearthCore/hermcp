@@ -66,6 +66,7 @@ HERMCP_ALLOWED_HOSTS=hermes.example.com,127.0.0.1,localhost
 HERMCP_HOST=127.0.0.1        # loopback only; the proxy is the single entry path
 HERMCP_PORT=9230
 HERMCP_TRUST_PROXY=1         # trust X-Forwarded-For for the failed-auth limiter
+HERMCP_DEBUG_CAPTURE=1          # discovery aid: record what MCP clients send (headers, clientInfo, _meta; no secrets, no argument values); stops after HERMCP_DEBUG_CAPTURE_HOURS (default 12); read with the admin tool capture_report
 HERMES_API_URL=http://127.0.0.1:8642
 # HERMCP_SYSTEMD_SCOPE=user       # only if the gateway runs as a systemd USER unit, see below
 # HERMCP_SELF_SYSTEMD_SCOPE=user  # only if hermcp.service itself is a user unit (default: system)

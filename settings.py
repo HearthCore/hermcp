@@ -71,6 +71,9 @@ class Settings:
     inbox_run_max_events: int = 20     # watcher events per run
     inbox_watch_ttl_hours: float = 24.0  # a watch that never saw a terminal state expires silently
     inbox_approvals: bool = True       # approval hooks: mirror pending/resolved approvals into the inbox
+    debug_capture: bool = False        # discovery aid: record what MCP clients send (capture.py); off by default
+    debug_capture_max: int = 300       # newest records kept in capture.jsonl
+    debug_capture_hours: float = 12.0  # recording stops by itself this long after start
     systemd_scope: str = "system"      # "system" | "user": manager of the Hermes gateway unit (gateway_restart)
     self_systemd_scope: str = "system"  # "system" | "user": manager of hermcp.service itself (hermcp_restart)
 
@@ -137,6 +140,9 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         inbox_run_max_events=int(g("HERMCP_INBOX_RUN_MAX_EVENTS", "20")),
         inbox_watch_ttl_hours=float(g("HERMCP_INBOX_WATCH_TTL_HOURS", "24")),
         inbox_approvals=g("HERMCP_INBOX_APPROVALS", "1").lower() not in ("0", "false", "no", "off"),
+        debug_capture=g("HERMCP_DEBUG_CAPTURE", "").lower() in ("1", "true", "yes", "on"),
+        debug_capture_max=int(g("HERMCP_DEBUG_CAPTURE_MAX", "300")),
+        debug_capture_hours=float(g("HERMCP_DEBUG_CAPTURE_HOURS", "12")),
         systemd_scope=g("HERMCP_SYSTEMD_SCOPE", "system").strip().lower() or "system",
         self_systemd_scope=g("HERMCP_SELF_SYSTEMD_SCOPE", "system").strip().lower() or "system",
     )

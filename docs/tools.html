@@ -43,11 +43,11 @@ footer{color:var(--dim);font-size:11px;padding:0 26px 40px;max-width:1180px}
 <div class='sub'>What an MCP client sees. Generated from the live registry (hermcp 0.1.0). Regenerate: <code>python -m hermcp docs</code></div></header>
 <div class='wrap'>
 <div class='grid'>
-<div class='stat'><b>140</b>tools total</div>
+<div class='stat'><b>141</b>tools total</div>
 <div class='stat'><b>42</b>advertised directly</div>
 <div class='stat'><b>70</b>read</div>
 <div class='stat'><b>44</b>write</div>
-<div class='stat'><b>26</b>admin</div>
+<div class='stat'><b>27</b>admin</div>
 <div class='stat'><b>19</b>toolsets</div>
 </div>
 <h2>Server guidance (the <code>instructions</code> string sent on initialize)</h2>
@@ -67,7 +67,7 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
 <h2>How the surface is split</h2>
 <div class='guidance'>Core tools are advertised at <code>tools/list</code> — the model sees their names, descriptions and schemas immediately and calls them directly. Every other tool lives in the catalog: the model reaches it with <code>hermes_search_tools</code> → <code>hermes_describe_tool</code> → <code>hermes_call</code>. The same scope check runs on all three paths, so <code>hermes_call</code> cannot reach a tool the key may not use. Tools a key may not use are hidden from <code>tools/list</code> entirely.</div>
 <input id='q' placeholder='Filter: name, toolset, access, description…' autocomplete='off'>
-<h2>admin <em>(2)</em></h2>
+<h2>admin <em>(3)</em></h2>
 <div class='card' data-h='audit_tail admin admin tail the hermcp audit log (who called which tool, args redacted, status, duration). core'>
 <div class='name'>audit_tail</div>
 <div class='badges'><span class='b' style='color:#da3633;border-color:#da3633'>admin</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span></div>
@@ -90,6 +90,29 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;type&quot;: &quot;string&quot;,
       &quot;maxLength&quot;: 80,
       &quot;description&quot;: &quot;key id or name&quot;
+    },
+    &quot;dry_run&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;default&quot;: false,
+      &quot;description&quot;: &quot;Return the planned change without applying it&quot;
+    }
+  },
+  &quot;additionalProperties&quot;: false
+}</pre></details></div>
+<div class='card' data-h='capture_report admin admin discovery aid for hermcp_debug_capture=1: what mcp clients really send with their requests. groups the recorded requests by client (user-agent + clientinfo) and shows header names, non-standard headers, whether an mcp-session-id was ever sent, params._meta paths, rpc methods and tool names. tool argument values, credentials and ips are never recorded. reports enabled=false when capture is off. '>
+<div class='name'>capture_report</div>
+<div class='badges'><span class='b' style='color:#da3633;border-color:#da3633'>admin</span></div>
+<p class='desc'>Discovery aid for HERMCP_DEBUG_CAPTURE=1: what MCP clients really send with their requests. Groups the recorded requests by client (User-Agent + clientInfo) and shows header names, non-standard headers, whether an Mcp-Session-Id was ever sent, params._meta paths, RPC methods and tool names. Tool argument values, credentials and IPs are never recorded. Reports enabled=false when capture is off.</p>
+<details><summary>input schema</summary>
+<pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;last&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 0,
+      &quot;maximum&quot;: 50,
+      &quot;default&quot;: 10,
+      &quot;description&quot;: &quot;also return this many raw newest records (0 = summary only)&quot;
     },
     &quot;dry_run&quot;: {
       &quot;type&quot;: &quot;boolean&quot;,

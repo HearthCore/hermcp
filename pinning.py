@@ -46,6 +46,7 @@ OWN = {
 DENY = {
     "audit_tail": "global audit log of all keys",
     "keys_list": "key administration",
+    "capture_report": "request metadata of all keys (discovery aid)",
     "inbox_push": "producer scope for global events",
     "kanban_stats": "counts over all profiles' tasks",
     "kanban_assignees": "lists all profiles with task counts",
