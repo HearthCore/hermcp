@@ -1432,10 +1432,10 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
     &quot;summary&quot;
   ]
 }</pre></details></div>
-<div class='card' data-h='runs_active inbox read runs started with chat_send that are still going: run_id, profile, start time, age, last known status and a coarse activity label (queued, thinking, running a tool, between tools, waiting for approval, ...) with its age as idle_seconds. activity is a fixed label, never content. only runs of your own key are listed (admin keys may pass all_keys). read the result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway&#x27;s own progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher&#x27;s coarse label is known. core'>
+<div class='card' data-h='runs_active inbox read runs started with chat_send that are still going: run_id, profile, start time, age, last known status and a coarse activity label (queued, thinking, running a tool, between tools, waiting for approval, ...) with its age as idle_seconds. activity is a fixed label, never content. only runs of your own key are listed (admin keys may pass all_keys). read the result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway&#x27;s own progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher&#x27;s coarse label is known. without client_session the answer carries `session_overview`: the sessions of this key, the runs nobody claimed and how to take over or claim (session_card_set). with your handle your own runs are marked `yours`. core'>
 <div class='name'>runs_active</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span></div>
-<p class='desc'>Runs started with chat_send that are still going: run_id, profile, start time, age, last known status and a coarse activity label (queued, thinking, running a tool, between tools, waiting for approval, ...) with its age as idle_seconds. Activity is a fixed label, never content. Only runs of your own key are listed (admin keys may pass all_keys). Read the result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway&#x27;s own progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher&#x27;s coarse label is known.</p>
+<p class='desc'>Runs started with chat_send that are still going: run_id, profile, start time, age, last known status and a coarse activity label (queued, thinking, running a tool, between tools, waiting for approval, ...) with its age as idle_seconds. Activity is a fixed label, never content. Only runs of your own key are listed (admin keys may pass all_keys). Read the result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway&#x27;s own progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher&#x27;s coarse label is known. Without client_session the answer carries `session_overview`: the sessions of this key, the runs nobody claimed and how to take over or claim (session_card_set). With your handle your own runs are marked `yours`.</p>
 <details><summary>input schema</summary>
 <pre>{
   &quot;type&quot;: &quot;object&quot;,
@@ -1444,6 +1444,11 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;type&quot;: &quot;boolean&quot;,
       &quot;default&quot;: false,
       &quot;description&quot;: &quot;Admin keys only: include runs started by other keys&quot;
+    },
+    &quot;client_session&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^[A-Za-z0-9_.:-]{1,80}$&quot;,
+      &quot;description&quot;: &quot;Your session handle (session_card_set): marks your runs `yours` and drops the session_overview&quot;
     }
   },
   &quot;additionalProperties&quot;: false
@@ -1492,6 +1497,20 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;type&quot;: &quot;boolean&quot;,
       &quot;default&quot;: false,
       &quot;description&quot;: &quot;Apply a recover_from (otherwise it is only previewed)&quot;
+    },
+    &quot;claim_runs&quot;: {
+      &quot;type&quot;: &quot;array&quot;,
+      &quot;items&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;pattern&quot;: &quot;^[A-Za-z0-9_.:-]{1,120}$&quot;
+      },
+      &quot;maxItems&quot;: 50,
+      &quot;description&quot;: &quot;Claim these open runs of this key that no session owns yet (they were started without client_session). Preview first; confirm=true applies. runs_active lists them under session_overview.unclaimed_runs.&quot;
+    },
+    &quot;claim_unclaimed&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;default&quot;: false,
+      &quot;description&quot;: &quot;Claim ALL open runs of this key that no session owns&quot;
     },
     &quot;native_id&quot;: {
       &quot;type&quot;: &quot;string&quot;,
