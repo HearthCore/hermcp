@@ -467,6 +467,11 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;pattern&quot;: &quot;^[A-Za-z0-9_.:-]{8,80}$&quot;,
       &quot;description&quot;: &quot;Idempotency handle. Omit it for a new message (one is generated and returned). Send the SAME request_key with the SAME message to retry after status start_unconfirmed without starting a second run.&quot;
     },
+    &quot;client_session&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^[A-Za-z0-9_.:-]{1,80}$&quot;,
+      &quot;description&quot;: &quot;Optional handle your session chose for itself (Claude Code and Cowork: their own session id; chat or voice: any stable label you pick once and reuse). Recorded with the run and in the audit log so runs can be attributed to the client session that started them. Attribution only, never access control; not the Hermes session_id.&quot;
+    },
     &quot;wait_seconds&quot;: {
       &quot;type&quot;: &quot;integer&quot;,
       &quot;minimum&quot;: 0,

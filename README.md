@@ -379,6 +379,10 @@ only credential-pool rotation of the same provider remains. A `base_url` alone a
   request_key}` at once (`wait_seconds` 0-20, default 0, optional short wait; the whole call stays under 35 s).
   Read the result with `chat_run_status` or the inbox. `request_key` (optional, generated if omitted) is the retry
   handle: see [Starting runs](#starting-runs-chat_send).
+  `client_session` (optional) is a handle your session picks for itself (Claude Code and Cowork can use their own
+  session id; chat or voice any stable label). hermcp stores it with the run and in the audit log, next to a `client`
+  label derived from the request headers (`x-anthropic-client`, else the User-Agent), and `runs_active` shows both.
+  Attribution only, never access control, and unrelated to the Hermes `session_id`.
 - `runs_active` — runs of your key that are still going, with age, status, a coarse `activity`, `idle_seconds` and `queue_position` / `queue_length` in its session.
 - `chat_run_steer` / `chat_run_cancel` / `chat_session_queue` — change a running run instead of queueing a new one; see [Steering, cancelling and replacing runs](#steering-cancelling-and-replacing-runs).
 

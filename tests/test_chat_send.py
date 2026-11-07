@@ -439,3 +439,25 @@ def test_runs_active_works_for_a_read_only_key(rig):
     ro = rig.tok("voice", access="read", toolsets=["inbox"])
     ok, r = rig.call(ro, "runs_active")
     assert ok and r["count"] == 0
+
+
+# ---- client / client_session attribution ---------------------------------------------------------
+def test_chat_send_records_client_session_on_the_run(rig):
+    t = rig.tok()
+    c = TestClient(rig.app.app)
+    resp = c.post("/mcp", headers={"Authorization": f"Bearer {t}", "x-anthropic-client": "ClaudeCode"},
+                  json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "chat_send", "arguments": {"message": "hi", "client_session": "cc-sess-42"}}})
+    body = json.loads(resp.json()["result"]["content"][0]["text"])["result"]
+    assert body["client"] == "ClaudeCode" and body["client_session"] == "cc-sess-42"
+    w = get_inbox(rig.app.settings).get_watch(body["run_id"])
+    assert w["client"] == "ClaudeCode" and w["client_session"] == "cc-sess-42"
+    ok, runs = rig.call(t, "runs_active")
+    mine = [r for r in runs["runs"] if r["run_id"] == body["run_id"]][0]
+    assert mine["client"] == "ClaudeCode" and mine["client_session"] == "cc-sess-42"
+    assert "client_session" not in GW.posts[0][0]        # attribution stays in hermcp, never sent to the gateway
+
+
+def test_chat_send_rejects_a_malformed_client_session(rig):
+    ok, e = rig.call(rig.tok(), "chat_send", message="x", client_session="no spaces allowed")
+    assert not ok and e["code"] == "invalid_arguments"

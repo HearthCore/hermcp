@@ -23,6 +23,7 @@ from . import __version__
 from .audit import AuditLog
 from .capture import Capture, FILE_NAME as CAPTURE_FILE
 from .keys import KeyStore
+from .client_id import derive_client
 from .registry import Principal, Registry, render
 from .settings import Settings
 
@@ -155,9 +156,11 @@ class HermcpApp:
             return None
         token = token.strip()
         rec = self.keystore.authenticate(token)
-        if rec is not None:
-            return Principal(rec.id, rec.name, rec.scopes)
-        return self.extra_auth(token) if self.extra_auth else None
+        principal = Principal(rec.id, rec.name, rec.scopes) if rec is not None else (
+            self.extra_auth(token) if self.extra_auth else None)
+        if principal is not None:
+            principal.client = derive_client(req.headers)
+        return principal
 
     def unauthorized(self, status: int = 401) -> Response:
         hdr = {"WWW-Authenticate": "Bearer"}

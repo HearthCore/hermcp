@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .audit import AuditLog
+from .client_id import clean_handle
 from .scopes import Scopes
 from .settings import Settings
 from . import validation
@@ -34,6 +35,7 @@ class Principal:
     id: str
     name: str
     scopes: Scopes
+    client: str = ""        # coarse label from request headers (client_id.derive_client); attribution only
 
 
 @dataclass
@@ -202,7 +204,8 @@ class Registry:
                     audit.write(key_id=principal.id, key_name=principal.name,
                                 tool=name if tool else f"?{name}"[:80], args=logged, profile=profile,
                                 status=status, duration_ms=(time.monotonic() - t0) * 1000,
-                                detail=(f"via={via} " if via else "") + detail)
+                                detail=(f"via={via} " if via else "") + detail,
+                                client=principal.client, client_session=clean_handle(args.get("client_session")) or "")
                 except OSError:
                     pass
 
