@@ -225,7 +225,7 @@ def test_join_window_zero_and_ack_all(home):
     ok, r = b("voice", "inbox_poll")
     assert r["events"] == [] and r["unread_total"] == 0 and r["older_unread"] == 2
     ok, r = b("voice", "inbox_ack", all=True)
-    assert ok and r["acked"] == [1, 2] and r["unread_total"] == 0
+    assert ok and r["acked_count"] == 2 and "acked" not in r and r["unread_total"] == 0
     assert "older_unread" not in b("voice", "inbox_poll")[1]
     push(b)
     assert [e["id"] for e in b("voice", "inbox_poll")[1]["events"]] == [3]
@@ -234,3 +234,35 @@ def test_join_window_zero_and_ack_all(home):
 def test_ack_needs_ids_or_all(box):
     ok, err = box("voice", "inbox_ack")
     assert not ok and err["code"] == "invalid_arguments"
+
+
+def test_hermes_status_is_a_small_digest_with_next_steps(home):
+    b2 = make(home)
+    ok, r = b2("admin", "hermes_status")
+    assert ok and r["verdict"] in ("ok", "degraded", "down")
+    assert set(r) >= {"verdict", "gateway", "profiles", "runs", "approvals_pending", "inbox", "next"}
+    assert len(json.dumps(r)) < 1500                                  # level 0 stays small
+    assert r["inbox"]["unread"] == 0 and r["inbox"]["failed_runs_24h"] == 0
+
+
+def test_status_digest_counts_unread_by_kind_and_failed_runs(home):
+    b = make(home)
+    from hermcp.adapters.inbox_store import get_inbox
+    box = get_inbox(b.app.settings)
+    box.add_watch(run_id="r1", profile="p", session_id=None, key_id="k", key_name="k")
+    box.push_system(kind="run_failed", summary="x", run_id="r1", profile="p", requester="k", dedupe_key="f1")
+    push(b, summary="note")
+    d = box.digest(consumer="c")
+    assert d["unread"] == 2 and d["unread_by_kind"] == {"run_failed": 1, "job_finished": 1} \
+        and d["failed_runs_24h"] == 1 and d["older_unread"] == 0
+    box.ack([1], consumer="c")
+    assert box.digest(consumer="c")["unread"] == 1
+    assert box.digest(consumer="other")["unread"] == 2
+
+
+def test_hermes_health_is_slim_by_default(home):
+    b = make(home)
+    ok, r = b("admin", "hermes_health", skills=False)
+    assert ok and "profile_details" not in r
+    ok, r = b("admin", "hermes_health", skills=False, detail=True)
+    assert ok and "profile_details" in r

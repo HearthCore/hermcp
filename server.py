@@ -31,6 +31,13 @@ from .settings import Settings
 INSTRUCTIONS = (
     "Hermes control surface (profiles, chat, config, cron, kanban, approvals, inbox).\n"
     "Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_call for the rest.\n"
+    "- Start with hermes_status: a sub-1KB digest (verdict, runs, approvals, your unread inbox) whose `next` names "
+    "what to open. Detail comes in levels: hermes_status -> inbox_poll / runs_active / approvals_pending -> "
+    "chat_run_status / sessions_messages by id; orchestration_overview for the whole setup, hermes_health "
+    "detail=true for per-profile configuration.\n"
+    "- Terms: a profile is one agent configuration; the orchestrator is the profile that dispatches work "
+    "(kanban); a run is one chat_send turn (run_id); a session is a conversation that can hold many runs "
+    "(session_id); a consumer is whoever reads the inbox (your key, plus an optional `consumer` label).\n"
     "- At the start of every turn call inbox_poll. Report only what is relevant to the user, then call inbox_ack "
     "with those ids (or all=true). Read state is yours alone (per key; pass a stable `consumer` label if several "
     "sessions share one key); a first poll shows only recent events and reports `older_unread`.\n"
