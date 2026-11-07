@@ -209,6 +209,20 @@ class KeyStore:
             self._save()
             return rec
 
+    def rename(self, ref: str, name: str) -> KeyRecord:
+        """Change a key's name. Metadata only — salt/hash (and therefore the token) are untouched."""
+        new = (name or "").strip()
+        if not new:
+            raise KeyError_("name required")
+        with self._lock:
+            rec = self.get(ref)
+            for k in self._keys.values():
+                if k.id != rec.id and k.name == new:
+                    raise KeyError_(f"a key named {new!r} already exists")
+            rec.name = new
+            self._save()
+            return rec
+
 
 def parse_expiry(text: str | None) -> float | None:
     """`30d`, `12h`, `90m` or ISO date -> epoch seconds."""

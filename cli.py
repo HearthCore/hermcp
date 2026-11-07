@@ -63,11 +63,25 @@ def setup_parser(p: argparse.ArgumentParser) -> None:
     c.add_argument("--expires", help="30d / 12h / ISO date")
     k.add_parser("list", help="list keys")
     k.add_parser("policy", help="table of what a profile-bound key may call (no key is created)")
-    for name, h in (("show", "show one key"), ("revoke", "disable a key"), ("rotate", "issue a new secret")):
+    for name, h in (("show", "show one key"), ("revoke", "disable a key"), ("rotate", "issue a new secret"),
+                    ("rename", "change a key's name (token unchanged)")):
         x = k.add_parser(name, help=h)
         x.add_argument("key", help="key id or name")
         if name == "revoke":
             x.add_argument("--delete", action="store_true", help="remove instead of disabling")
+        if name == "rename":
+            x.add_argument("new_name", help="new name for the key")
+    sc = k.add_parser("scopes", help="change a key's scopes in place (token keeps working)")
+    sc.add_argument("key", help="key id or name")
+    sc.add_argument("--copy-from", help="take every scope from this key (id or name)")
+    sc.add_argument("--access", choices=["read", "write", "admin"])
+    sc.add_argument("--toolsets", help="comma list or *")
+    sc.add_argument("--profiles", help="comma list or *")
+    sc.add_argument("--deny-tools", help="comma list (replaces the current list)")
+    for flag, h in (("approvals", "approvals toolset"), ("approvals-always", "answer approvals with `always` (needs admin)"),
+                    ("inbox-push", "deliver events into the inbox"), ("secrets-write", "write-only secret tools"),
+                    ("dangerous", "exfiltration / irreversible tools")):
+        sc.add_argument(f"--{flag}", action=argparse.BooleanOptionalAction, default=None, help=h)
 
     pk = sub.add_parser("profile-keys", help="per-profile api_server keys: status, setup, rotate")
     pks = pk.add_subparsers(dest="profile_keys_cmd")
@@ -156,8 +170,43 @@ def _keys(args, ks: KeyStore) -> int:
     elif cmd == "rotate":
         r, token = ks.rotate(args.key)
         print(f"rotated {r.id} ({r.name})\nTOKEN (shown once): {token}")
+    elif cmd == "rename":
+        before = ks.get(args.key).name
+        r = ks.rename(args.key, args.new_name)
+        print(f"renamed {r.id}: {before} -> {r.name}")
+    elif cmd == "scopes":
+        rec = ks.get(args.key)
+        base = ks.get(args.copy_from).scopes.to_dict() if args.copy_from else rec.scopes.to_dict()
+        overrides = {
+            "access": args.access,
+            "toolsets": _csv(args.toolsets, []) or None,
+            "profiles": _csv(args.profiles, []) or None,
+            "deny_tools": _csv(args.deny_tools, []) if args.deny_tools is not None else None,
+            "approvals": args.approvals,
+            "approvals_always": args.approvals_always,
+            "inbox_push": args.inbox_push,
+            "secrets_write": args.secrets_write,
+            "dangerous": args.dangerous,
+        }
+        for field, value in overrides.items():
+            if value is not None:
+                base[field] = value
+        new = Scopes.from_dict(base)              # validates access / lists / booleans
+        if new.approvals_always and new.access != "admin":
+            raise ScopeError("approvals_always needs access=admin")
+        before = rec.scopes.to_dict()
+        ks.update_scopes(args.key, new)
+        after = new.to_dict()
+        changed = {k: (before.get(k), after.get(k)) for k in after if before.get(k) != after.get(k)}
+        print(f"scopes updated for {rec.id} ({rec.name})"
+              + (f" from {args.copy_from!r}" if args.copy_from else ""))
+        if not changed:
+            print("  no change")
+        for field, (old, cur) in changed.items():
+            print(f"  {field}: {old!r} -> {cur!r}")
+        print("  " + json.dumps(after, sort_keys=True))
     else:
-        print("usage: keys {create,list,show,revoke,rotate,policy}", file=sys.stderr)
+        print("usage: keys {create,list,show,revoke,rotate,rename,scopes,policy}", file=sys.stderr)
         return 2
     return 0
 
