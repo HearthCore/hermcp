@@ -21,6 +21,7 @@ from starlette.routing import Route
 
 from . import __version__
 from .audit import AuditLog
+from .capture import Capture, FILE_NAME as CAPTURE_FILE
 from .keys import KeyStore
 from .registry import Principal, Registry, render
 from .settings import Settings
@@ -96,6 +97,11 @@ class HermcpApp:
         self.settings, self.keystore, self.registry, self.audit = settings, keystore, registry, audit
         self.extra_auth = extra_auth
         self.limiter = FailLimiter(settings.auth_fail_limit, settings.auth_fail_window)
+        self.capture = Capture(settings.data / CAPTURE_FILE, enabled=settings.debug_capture,
+                               max_records=settings.debug_capture_max, hours=settings.debug_capture_hours)
+        if settings.debug_capture:
+            log.warning("HERMCP_DEBUG_CAPTURE is on: recording request metadata to %s for %.0f h",
+                        self.capture.path, settings.debug_capture_hours)
         routes = [
             Route("/health", self.health, methods=["GET"]),
             Route("/mcp", self.mcp, methods=["POST", "GET", "DELETE"]),
@@ -169,8 +175,10 @@ class HermcpApp:
             self.limiter.fail(ip)
             return self.unauthorized()
         if req.method == "GET":      # no server-initiated SSE stream: stateless
+            self._capture(req, principal, [])
             return Response(status_code=405, headers={"Allow": "POST"})
         if req.method == "DELETE":   # session termination is a no-op
+            self._capture(req, principal, [])
             return Response(status_code=200)
         body = await req.body()
         if len(body) > MAX_BODY:
@@ -179,11 +187,17 @@ class HermcpApp:
             msg = json.loads(body)
         except ValueError:
             return JSONResponse(rpc_error(None, -32700, "parse error"), status_code=400)
+        self._capture(req, principal, msg if isinstance(msg, list) else [msg])
         if isinstance(msg, list):
             outs = [o for o in [await self.handle(m, principal) for m in msg] if o is not None]
             return JSONResponse(outs) if outs else Response(status_code=202)
         out = await self.handle(msg, principal)
         return JSONResponse(out) if out is not None else Response(status_code=202)
+
+    def _capture(self, req: Request, principal: Principal, messages: list) -> None:
+        if self.capture.active:     # discovery aid, see capture.py; never affects the request
+            self.capture.record(method=req.method, path=req.url.path, headers=dict(req.headers), messages=messages,
+                                key_name=principal.name, key_id=principal.id)
 
     async def inbox_http(self, req: Request) -> Response:
         """POST /inbox — same auth/scope as MCP (Bearer key), same fields as the inbox_push tool."""
