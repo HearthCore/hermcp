@@ -29,6 +29,11 @@ CLIENT_SESSION = {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,80}$",
                                  "session id; chat or voice: any stable label you pick once and reuse). Recorded with "
                                  "the run and in the audit log so runs can be attributed to the client session that "
                                  "started them. Attribution only, never access control; not the Hermes session_id."}
+FORCE = {"type": "boolean", "default": False,
+         "description": "Act on a run that another registered client session started. Without it hermcp refuses "
+                        "(accident protection, not security: same key). The override is shown in the result."}
+REGISTER_HINT = ("This run is not attributed to a session. Register once with session_card_set and pass the handle "
+                 "as client_session, so you and other sessions can tell whose runs these are.")
 UNCONFIRMED_NEXT = ("The start request got no usable answer, so the run may or may not exist. First check "
                     "chat_conversations (newest conversation) and inbox_poll (run events); only if nothing shows up, "
                     "call chat_send again with the SAME request_key and the SAME message (it will not start a second run).")
@@ -97,13 +102,16 @@ MODE = {"type": "string", "enum": list(MODES), "default": "queue",
                       "mode": MODE,
                       "request_key": REQUEST_KEY,
                       "client_session": CLIENT_SESSION,
+                      "force": FORCE,
                       "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT, "default": 0,
                                        "description": "Seconds to wait for the answer (0 = return at once, max 20). "
                                                       "Long tasks: leave at 0 and read the result later."}},
           required=["message"])
-def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, mode="queue", client_session=None):
+def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, mode="queue", client_session=None,
+              force=False):
     started = time.monotonic()
     require_served(ctx.profile)
+    _resolve_session(ctx, client_session)
     mode = mode or "queue"
     if mode not in MODES:
         raise ToolError("invalid_arguments", f"mode must be one of {list(MODES)}")
@@ -111,12 +119,20 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
         raise ToolError("invalid_arguments", f"mode={mode} needs session_id (the session whose running run it "
                                              "targets); without a session there is nothing to steer or interrupt")
     if mode == "steer":
-        return _send_steer(ctx, message, session_id)
-    target = None
+        return _send_steer(ctx, message, session_id, client_session, force)
+    target, forced = None, None
     if mode == "interrupt":                     # fail before starting anything if the key may not stop that run
         target, _ = _session_running(ctx, session_id)
         if target:
             _own_run(ctx, target)
+            forced = _guard_foreign(ctx, target, client_session, force)
+    limit = ctx.settings.session_max_runs
+    if client_session and limit and not ctx.dry_run:
+        open_runs = get_inbox(ctx.settings).session_open_runs(client_session)
+        if open_runs >= limit:
+            raise ToolError("session_run_limit", f"session {client_session!r} already has {open_runs} open runs "
+                            f"(limit {limit}, HERMCP_SESSION_MAX_RUNS). Wait for some to finish or cancel them.",
+                            open_runs=open_runs, limit=limit)
     request_key = request_key or "req-" + uuid.uuid4().hex[:24]
     body = {"input": message, **({"session_id": session_id} if session_id else {})}
     if ctx.dry_run:
@@ -134,6 +150,10 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
             **({"client_session": client_session} if client_session else {})}
     if mode != "queue":
         base["mode"] = mode
+    if forced:
+        base["forced"] = forced
+    if not client_session:
+        base["hint"] = REGISTER_HINT
     run, replayed = _start_run(ctx, body, idempotency_key(ctx.principal.id, ctx.profile, request_key))
     if run is None:
         return {**base, "status": "start_unconfirmed", "reason": replayed, "watch": {"registered": False, "reason": "no run_id"},
@@ -231,7 +251,7 @@ def _steer(ctx, run_id, message, *, via: str) -> dict:
                                       "reports as usual (chat_run_status, inbox). No new run was queued."}
 
 
-def _send_steer(ctx, message, session_id) -> dict:
+def _send_steer(ctx, message, session_id, client_session=None, force=False) -> dict:
     run_id, queue = _session_running(ctx, session_id)
     if not run_id:
         foreign = queue is not None and any(t["state"] == "running" and not t["run_id"] for t in queue)
@@ -242,7 +262,8 @@ def _send_steer(ctx, message, session_id) -> dict:
                         + ". Nothing was sent. Use mode=queue to start a new turn.",
                         session_id=session_id, waiting=sum(1 for t in queue or [] if t["state"] == "queued"))
     _own_run(ctx, run_id)
-    return _steer(ctx, run_id, message, via="chat_send mode=steer")
+    forced = _guard_foreign(ctx, run_id, client_session, force)
+    return {**_steer(ctx, run_id, message, via="chat_send mode=steer"), **({"forced": forced} if forced else {})}
 
 
 def _cancel(ctx, run_id, *, control: str) -> dict:
@@ -360,6 +381,41 @@ def _register_watch(ctx, run_id, session_id, client_session=None) -> dict:
     return {"registered": True, "note": "poll inbox_poll for run_finished / run_failed / needs_approval"}
 
 
+def _resolve_session(ctx, client_session):
+    """A client_session must be a handle hermcp issued to THIS key. Returns the card (None when no handle given)."""
+    if not client_session:
+        return None
+    box = get_inbox(ctx.settings)
+    card = box.session_get(client_session)
+    if not card:
+        raise ToolError("unknown_client_session", f"hermcp has no session {client_session!r}. Register with "
+                        "session_card_set (it returns the handle), or find yours again with session_cards_list.")
+    if card["key_id"] != ctx.principal.id:
+        raise ToolError("forbidden", f"session {client_session!r} was registered by another key")
+    if card.get("successor"):
+        raise ToolError("session_handed_over", f"session {client_session!r} was taken over by "
+                        f"{card['successor']!r}. If this chat is that continuation use the new handle; otherwise "
+                        "register a separate session with session_card_set.", successor=card["successor"])
+    box.session_touch(client_session)
+    return card
+
+
+def _guard_foreign(ctx, run_id, client_session, force) -> dict | None:
+    """Acting on a run that a different registered session started needs force=true. Runs without a recorded
+    session are not guarded (nothing to compare). Returns what was overridden, for the result."""
+    w = get_inbox(ctx.settings).get_watch(run_id)
+    owner = (w or {}).get("client_session")
+    if not owner or owner == client_session:
+        return None
+    if not force:
+        mine = f"your session is {client_session!r}" if client_session else "you passed no client_session"
+        raise ToolError("foreign_session_run",
+                        f"run {run_id!r} was started by session {owner!r}, but {mine}. Another session may be relying "
+                        "on it. If this is intended, repeat with force=true; otherwise leave it alone.",
+                        run_session=owner, your_session=client_session)
+    return {"forced": True, "run_session": owner, "by_session": client_session}
+
+
 def _own_run(ctx, run_id):
     """A restricted key may only touch runs that hermcp started on one of its profiles (watch record)."""
     if not ctx.restricted:
@@ -403,12 +459,15 @@ def chat_run_stop(ctx, run_id):
                        "retry injects the text twice. Same as chat_send with mode=steer, which finds the running run "
                        "of a session itself."),
           properties={"run_id": RUN, "message": {"type": "string", "minLength": 1, "maxLength": 20000,
-                                                 "description": "Guidance for the running agent"}},
+                                                 "description": "Guidance for the running agent"},
+                      "client_session": CLIENT_SESSION, "force": FORCE},
           required=["run_id", "message"])
-def chat_run_steer(ctx, run_id, message):
+def chat_run_steer(ctx, run_id, message, client_session=None, force=False):
     _own_run(ctx, run_id)
     require_served(ctx.profile)
-    return _steer(ctx, run_id, message, via="chat_run_steer")
+    _resolve_session(ctx, client_session)
+    forced = _guard_foreign(ctx, run_id, client_session, force)
+    return {**_steer(ctx, run_id, message, via="chat_run_steer"), **({"forced": forced} if forced else {})}
 
 
 @reg.tool("chat_run_cancel", toolset="chat", access="write", profile_aware=True,
@@ -416,11 +475,14 @@ def chat_run_steer(ctx, run_id, message):
                        "(status cancelled); a running run is interrupted (status stopping, then cancelled; work already "
                        "done stays). A finished run is left alone (applied false). The run watcher reports the end as "
                        "run_cancelled in the inbox with run_id and session_id. Cannot be undone."),
-          properties={"run_id": RUN}, required=["run_id"])
-def chat_run_cancel(ctx, run_id):
+          properties={"run_id": RUN, "client_session": CLIENT_SESSION, "force": FORCE}, required=["run_id"])
+def chat_run_cancel(ctx, run_id, client_session=None, force=False):
     _own_run(ctx, run_id)
     require_served(ctx.profile)
-    return _cancel(ctx, run_id, control=f"cancelled via chat_run_cancel by {ctx.principal.name}")
+    _resolve_session(ctx, client_session)
+    forced = _guard_foreign(ctx, run_id, client_session, force)
+    return {**_cancel(ctx, run_id, control=f"cancelled via chat_run_cancel by {ctx.principal.name}"),
+            **({"forced": forced} if forced else {})}
 
 
 @reg.tool("chat_session_queue", toolset="chat", profile_aware=True,

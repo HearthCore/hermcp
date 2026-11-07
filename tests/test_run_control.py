@@ -399,3 +399,86 @@ def test_watcher_labels_a_steer_as_activity(rig):
     GW.runs[run["run_id"]].update(status="running", last_event="run.steered", updated_at=time.time())
     RunWatcher(rig.settings).tick()
     assert get_inbox(rig.settings).get_watch(run["run_id"])["activity"] == "steered (guidance injected)"
+
+
+# ---- 9. session ledger: hint, foreign-run guard, limit ---------------------------------------------------
+def _register(rig, t, **kw):
+    ok, r = rig.call(t, "session_card_set", **kw)
+    assert ok, r
+    return r["card"]["client_session"]
+
+
+def test_send_without_handle_runs_but_points_to_registration(rig):
+    t = rig.tok()
+    out = _send_run(rig, t, "no handle")
+    assert out["run_id"] and "session_card_set" in out["hint"]
+    assert get_inbox(rig.settings).get_watch(out["run_id"])["client_session"] is None
+
+
+def test_a_handle_belongs_to_the_key_that_registered_it(rig):
+    a, b = rig.tok(), rig.tok()
+    h = _register(rig, a)
+    ok, e = rig.call(b, "chat_send", message="x", client_session=h)
+    assert not ok and e["code"] == "forbidden"
+    ok, e = rig.call(b, "session_card_set", client_session=h, purpose="hijack")
+    assert not ok and e["code"] == "forbidden"
+
+
+def test_acting_on_another_sessions_run_needs_force(rig):
+    t = rig.tok()
+    s1, s2 = _register(rig, t, purpose="orchestrator"), _register(rig, t, purpose="reviewer")
+    run = rig.call(t, "chat_send", message="long", client_session=s1)[1]
+    GW.runs[run["run_id"]].update(status="running")
+    # the other session, and a caller without any handle, are stopped with a clear message
+    for who in ({"client_session": s2}, {}):
+        ok, e = rig.call(t, "chat_run_steer", run_id=run["run_id"], message="x", **who)
+        assert not ok and e["code"] == "foreign_session_run" and s1 in e["message"] and "force=true" in e["message"]
+        ok, e = rig.call(t, "chat_run_cancel", run_id=run["run_id"], **who)
+        assert not ok and e["code"] == "foreign_session_run"
+    assert rig.posts("/steer") == [] and rig.posts("/stop") == []
+    # the owner is never asked; force overrides and says so
+    ok, r = rig.call(t, "chat_run_steer", run_id=run["run_id"], message="mine", client_session=s1)
+    assert ok and "forced" not in r
+    ok, r = rig.call(t, "chat_run_steer", run_id=run["run_id"], message="override", client_session=s2, force=True)
+    assert ok and r["forced"] == {"forced": True, "run_session": s1, "by_session": s2}
+    ok, r = rig.call(t, "chat_run_cancel", run_id=run["run_id"], client_session=s2, force=True)
+    assert ok and r["forced"]["run_session"] == s1
+
+
+def test_runs_without_a_recorded_session_are_not_guarded(rig):
+    t = rig.tok()
+    s1 = _register(rig, t)
+    old = _send_run(rig, t, "started before sessions existed")
+    GW.runs[old["run_id"]].update(status="running")
+    ok, r = rig.call(t, "chat_run_steer", run_id=old["run_id"], message="x", client_session=s1)
+    assert ok and "forced" not in r
+
+
+def test_open_runs_per_session_are_limited(rig):
+    rig.settings.session_max_runs = 2
+    t = rig.tok()
+    s1, s2 = _register(rig, t), _register(rig, t)
+    for i in range(2):
+        assert rig.call(t, "chat_send", message=f"m{i}", client_session=s1)[0]
+    ok, e = rig.call(t, "chat_send", message="m2", client_session=s1)
+    assert not ok and e["code"] == "session_run_limit" and e["open_runs"] == 2 and e["limit"] == 2
+    assert rig.call(t, "chat_send", message="other session", client_session=s2)[0]    # limit is per session
+
+
+def test_recover_moves_open_runs_and_the_old_handle_is_retired(rig):
+    t = rig.tok()
+    old = _register(rig, t, purpose="orchestrator")
+    run = rig.call(t, "chat_send", message="long", client_session=old)[1]
+    done = rig.call(t, "chat_send", message="short", client_session=old)[1]
+    GW.runs[run["run_id"]].update(status="running")
+    get_inbox(rig.settings).update_watch(done["run_id"], done=True)               # finished: stays attributed to old
+    ok, r = rig.call(t, "session_card_set", recover_from=old, confirm=True)
+    assert ok and r["recovered"] == {"from": old, "open_runs_moved": 1}
+    new = r["card"]["client_session"]
+    box = get_inbox(rig.settings)
+    assert box.get_watch(run["run_id"])["client_session"] == new and box.get_watch(done["run_id"])["client_session"] == old
+    # the new session owns the moved run: no force needed; the retired handle is refused with a pointer
+    ok, r = rig.call(t, "chat_run_steer", run_id=run["run_id"], message="carry on", client_session=new)
+    assert ok and "forced" not in r
+    ok, e = rig.call(t, "chat_send", message="x", client_session=old)
+    assert not ok and e["code"] == "session_handed_over" and e["successor"] == new

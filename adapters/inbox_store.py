@@ -37,6 +37,7 @@ HOOK_KINDS = ("approval_pending", "approval_resolved")
 SYSTEM_ORIGINS = ("watcher", "hook")
 TERMINAL_KINDS = ("run_finished", "run_failed", "run_cancelled", "run_lost")
 MAX_ACTION, MAX_RATIONALE = 800, 400
+SESSION_TTL_DAYS, MAX_SESSIONS_PER_KEY = 30, 100
 NEW_COLUMNS = (("run_id", "TEXT"), ("session_id", "TEXT"), ("profile", "TEXT"), ("approval_id", "TEXT"),
                ("requester", "TEXT"), ("action", "TEXT"), ("rationale", "TEXT"), ("session_key", "TEXT"),
                ("origin", "TEXT NOT NULL DEFAULT 'push'"), ("dedupe_key", "TEXT"))
@@ -108,6 +109,14 @@ class Inbox:
             if name not in have_w:
                 db.execute(f"ALTER TABLE watches ADD COLUMN {name} {decl}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_watches_active ON watches(done, key_id)")
+        # Ledger of valid client_session handles: one card per session, bound to the key that registered it.
+        db.execute("""CREATE TABLE IF NOT EXISTS sessions (
+            handle TEXT PRIMARY KEY, key_id TEXT NOT NULL, key_name TEXT NOT NULL, client TEXT NOT NULL,
+            kind TEXT, purpose TEXT, role TEXT, native_id TEXT, created_at REAL NOT NULL, last_seen REAL NOT NULL,
+            predecessor TEXT, successor TEXT)""")
+        db.execute("CREATE INDEX IF NOT EXISTS ix_sessions_key ON sessions(key_id, last_seen)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_sessions_native ON sessions(key_id, native_id) "
+                   "WHERE native_id IS NOT NULL")
         # Read state is tracked per CONSUMER (a key, optionally narrowed by a session label), not globally:
         # one session's ack must not hide events from another, and a new session must not start with the
         # whole backlog. `events.acked` stays for rows acked by older versions (read for everybody).
@@ -292,6 +301,103 @@ class Inbox:
         """Open watches (optionally of one key) with their live activity; read-only apart from TTL expiry."""
         rows = self.active_watches(now)
         return [r for r in rows if key_id is None or r["key_id"] == key_id]
+
+    # -- client sessions: the ledger of valid handles ---------------------------------------
+    def session_register(self, *, key_id: str, key_name: str, client: str, kind: str | None, purpose: str | None,
+                         role: str | None, native_id: str | None, handle_factory) -> tuple[dict[str, Any], bool]:
+        """Create a card, or return the key's existing card for the same native_id (resume / re-registration).
+        Returns (card, created)."""
+        now = time.time()
+        with self._db() as db:
+            db.execute("DELETE FROM sessions WHERE last_seen<?", (now - SESSION_TTL_DAYS * 86400,))
+            if native_id:
+                r = db.execute("SELECT * FROM sessions WHERE key_id=? AND native_id=?", (key_id, native_id)).fetchone()
+                if r:
+                    db.execute("UPDATE sessions SET last_seen=? WHERE handle=?", (now, r["handle"]))
+                    return {**dict(r), "last_seen": now}, False
+            n = db.execute("SELECT COUNT(*) FROM sessions WHERE key_id=?", (key_id,)).fetchone()[0]
+            if n >= MAX_SESSIONS_PER_KEY:
+                raise ToolError("session_limit", f"this key already has {MAX_SESSIONS_PER_KEY} registered sessions; "
+                                "reuse a handle from session_cards_list (unused cards expire after "
+                                f"{SESSION_TTL_DAYS} days)")
+            for _ in range(8):
+                handle = handle_factory()
+                if not db.execute("SELECT 1 FROM sessions WHERE handle=?", (handle,)).fetchone():
+                    break
+            else:
+                raise ToolError("internal_error", "could not allocate a free session handle")
+            db.execute("INSERT INTO sessions(handle,key_id,key_name,client,kind,purpose,role,native_id,created_at,"
+                       "last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (handle, key_id, key_name, client, kind, purpose, role, native_id, now, now))
+            return dict(db.execute("SELECT * FROM sessions WHERE handle=?", (handle,)).fetchone()), True
+
+    def session_recover(self, *, old: str, key_id: str, key_name: str, client: str, kind: str | None,
+                        purpose: str | None, role: str | None, native_id: str | None,
+                        handle_factory) -> tuple[dict[str, Any], int]:
+        """A new session takes over an earlier one of the same key: a NEW handle that points back (predecessor),
+        the old card marked as handed over (successor), and the old session's OPEN runs move to the new handle.
+        Finished runs keep their old handle, so history stays attributable. Returns (new card, runs moved)."""
+        now = time.time()
+        with self._db() as db:
+            prev = db.execute("SELECT * FROM sessions WHERE handle=? AND key_id=?", (old, key_id)).fetchone()
+            if not prev:
+                raise ToolError("unknown_client_session", f"no session {old!r} of this key to recover")
+            if prev["successor"]:
+                raise ToolError("already_recovered", f"session {old!r} was already taken over by "
+                                f"{prev['successor']!r}; use that handle or register a new session",
+                                successor=prev["successor"])
+            for _ in range(8):
+                handle = handle_factory()
+                if not db.execute("SELECT 1 FROM sessions WHERE handle=?", (handle,)).fetchone():
+                    break
+            else:
+                raise ToolError("internal_error", "could not allocate a free session handle")
+            if native_id and prev["native_id"] == native_id:      # the alias moves with the session
+                db.execute("UPDATE sessions SET native_id=NULL WHERE handle=?", (old,))
+            db.execute("INSERT INTO sessions(handle,key_id,key_name,client,kind,purpose,role,native_id,created_at,"
+                       "last_seen,predecessor) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                       (handle, key_id, key_name, client, kind or prev["kind"], purpose or prev["purpose"],
+                        role or prev["role"], native_id, now, now, old))
+            db.execute("UPDATE sessions SET successor=? WHERE handle=?", (handle, old))
+            moved = db.execute("UPDATE watches SET client_session=? WHERE done=0 AND client_session=?",
+                               (handle, old)).rowcount
+            return dict(db.execute("SELECT * FROM sessions WHERE handle=?", (handle,)).fetchone()), moved
+
+    def session_get(self, handle: str) -> dict[str, Any] | None:
+        with self._db() as db:
+            r = db.execute("SELECT * FROM sessions WHERE handle=?", (handle,)).fetchone()
+        return dict(r) if r else None
+
+    def session_touch(self, handle: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE sessions SET last_seen=? WHERE handle=?", (time.time(), handle))
+
+    def session_update(self, handle: str, **fields: str | None) -> dict[str, Any] | None:
+        cols = [k for k in ("kind", "purpose", "role", "native_id") if k in fields]
+        with self._db() as db:
+            if cols:
+                db.execute(f"UPDATE sessions SET {', '.join(c + '=?' for c in cols)}, last_seen=? WHERE handle=?",
+                           (*[fields[c] for c in cols], time.time(), handle))
+            r = db.execute("SELECT * FROM sessions WHERE handle=?", (handle,)).fetchone()
+        return dict(r) if r else None
+
+    def sessions_list(self, *, key_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._db() as db:
+            q, args = "SELECT * FROM sessions", []
+            if key_id:
+                q += " WHERE key_id=?"
+                args.append(key_id)
+            rows = [dict(r) for r in db.execute(q + " ORDER BY last_seen DESC LIMIT ?", (*args, max(1, min(limit, 200))))]
+            for r in rows:
+                r["open_runs"] = db.execute("SELECT COUNT(*) FROM watches WHERE done=0 AND client_session=?",
+                                            (r["handle"],)).fetchone()[0]
+        return rows
+
+    def session_open_runs(self, handle: str) -> int:
+        now = time.time()
+        with self._db() as db:
+            return db.execute("SELECT COUNT(*) FROM watches WHERE done=0 AND expires_at>? AND client_session=?",
+                              (now, handle)).fetchone()[0]
 
     def get_watch(self, run_id: str) -> dict[str, Any] | None:
         with self._db() as db:

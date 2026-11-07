@@ -509,6 +509,31 @@ secret-looking tokens (`hmcp_…`, `Bearer …`, `sk-…`) are masked.
 | `inbox_ack` | read | toolset `inbox` | acknowledge by `ids` (max 100) or `all=true`; per consumer; touches only the mailbox |
 | `inbox_list` | read | toolset `inbox` | history, newest first, `status`/`source`/`kind`/`before_id`/`consumer`; acked/unread from this consumer's view |
 | `inbox_push` | read | toolset `inbox` **+ `inbox_push` scope** | deliver one event; rate-limited per key |
+| `session_card_set` | read | toolset `inbox` | register this session and get its `client_session` handle (shaped by the kind of client: `cc-…` Claude Code, `cw-…` Cowork, `ai-…` chat, `vo-…` voice), or update its card (`purpose`, `role`, `kind`); `native_id` makes re-registering return the same card; touches only hermcp's own ledger |
+| `session_cards_list` | read | toolset `inbox` | the key's own cards with last_seen and open runs, `client_session` marks yours; `scope=all` (admin) lists every key's cards |
+
+### Client sessions
+
+hermcp keeps the ledger of valid `client_session` handles. A session registers once with `session_card_set`, then
+passes the handle to `chat_send`, `chat_run_steer` and `chat_run_cancel`. What follows from that:
+
+- Runs are attributed: the handle is stored with the run, shown by `runs_active` and written to the audit log, next to
+  the `client` label hermcp derives from the request headers. A handle that hermcp did not issue to this key is
+  refused (`unknown_client_session`, `forbidden`). Without a handle `chat_send` still works and answers with a `hint`.
+- Accident protection, not security: steering, cancelling or interrupting a run that a *different* registered session
+  started is refused with `foreign_session_run` unless `force=true`; the override is echoed as `forced`. Runs with no
+  recorded session are not guarded. Reading is never restricted.
+- Recover: a new chat that continues earlier work calls `session_card_set recover_from=<old handle>`. Without
+  `confirm=true` it only previews (card, open runs, a warning if the old session was active in the last 10 minutes).
+  With it the new session gets a **new** handle that points back (`continues`), the old session's open runs move to it,
+  and the old handle is retired (`taken_over_by`; using it answers `session_handed_over`). Same key only, once per
+  handle; finished runs keep the old handle, so history stays attributable.
+- Limit: `HERMCP_SESSION_MAX_RUNS=8` open runs per session (`session_run_limit`, 0 = off).
+- Cards expire after 30 days without use; at most 100 per key. Purpose and role are free labels and never change what a
+  key may do.
+- Which clients exist, how their handles are shaped and where a client's own session id could come from (header or
+  `native_id`) is one table, `client_profiles.py`. Today no client sends a session id; when one does, naming its
+  header there makes it the alias of the card with no change on the client side.
 
 Why these scopes: none of the four can change Hermes, only the mailbox, so they carry `access=read` —
 a read-only voice key can poll and ack. Producing events is the only part that lets a key write into what

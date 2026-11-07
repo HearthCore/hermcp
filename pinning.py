@@ -32,6 +32,8 @@ OWN = {
     "inbox_poll": "only run-watcher events of runs on the key's profile(s)",
     "inbox_list": "only run-watcher events of runs on the key's profile(s)",
     "inbox_ack": "only such events",
+    "session_card_set": "only the key's own cards in hermcp's ledger; labels, no Hermes state",
+    "session_cards_list": "only the key's own cards (scope=all is admin only)",
     "kanban_list": "forced to tasks assigned to the key's profile(s)",
     "kanban_show": "only tasks assigned to the key's profile(s); links to foreign tasks are counted, not shown",
     "kanban_log": "only worker logs of tasks assigned to the key's profile(s)",
