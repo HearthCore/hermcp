@@ -65,6 +65,7 @@ class Settings:
     inbox_max_events: int = 2000       # hard cap on stored events (oldest acked go first)
     inbox_retention_days: float = 14.0  # acked events older than this are dropped
     inbox_rate_per_min: int = 60       # pushes per key per minute
+    inbox_join_window_min: float = 30.0  # a consumer's first poll delivers only events this young (0 = none)
     inbox_watcher: bool = True         # run watcher: observes runs started via chat_send
     inbox_watch_interval: float = 2.0  # seconds between polls of the Hermes api_server
     inbox_watch_max_per_key: int = 50  # active watched runs per key
@@ -134,6 +135,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         inbox_max_events=int(g("HERMCP_INBOX_MAX_EVENTS", "2000")),
         inbox_retention_days=float(g("HERMCP_INBOX_RETENTION_DAYS", "14")),
         inbox_rate_per_min=int(g("HERMCP_INBOX_RATE_PER_MIN", "60")),
+        inbox_join_window_min=max(0.0, float(g("HERMCP_INBOX_JOIN_WINDOW_MIN", "30"))),
         inbox_watcher=g("HERMCP_INBOX_WATCHER", "1").lower() not in ("0", "false", "no", "off"),
         inbox_watch_interval=max(0.5, float(g("HERMCP_INBOX_WATCH_INTERVAL", "2"))),
         inbox_watch_max_per_key=int(g("HERMCP_INBOX_WATCH_MAX_PER_KEY", "50")),

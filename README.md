@@ -495,9 +495,9 @@ secret-looking tokens (`hmcp_…`, `Bearer …`, `sk-…`) are masked.
 
 | Tool | Access | Scope | Notes |
 |---|---|---|---|
-| `inbox_poll` | read | toolset `inbox` | unread events, oldest first, filters `source`/`kind`/`after_id`/`limit`; does **not** ack |
-| `inbox_ack` | read | toolset `inbox` | acknowledge by `ids` (max 100); touches only the mailbox |
-| `inbox_list` | read | toolset `inbox` | history incl. acked, newest first, `status`/`source`/`kind`/`before_id` |
+| `inbox_poll` | read | toolset `inbox` | unread events (for this consumer), oldest first, filters `source`/`kind`/`after_id`/`limit`/`consumer`/`include_older`; does **not** ack |
+| `inbox_ack` | read | toolset `inbox` | acknowledge by `ids` (max 100) or `all=true`; per consumer; touches only the mailbox |
+| `inbox_list` | read | toolset `inbox` | history, newest first, `status`/`source`/`kind`/`before_id`/`consumer`; acked/unread from this consumer's view |
 | `inbox_push` | read | toolset `inbox` **+ `inbox_push` scope** | deliver one event; rate-limited per key |
 
 Why these scopes: none of the four can change Hermes, only the mailbox, so they carry `access=read` —
@@ -523,9 +523,18 @@ curl -fsS -X POST http://127.0.0.1:9230/inbox -H "Authorization: Bearer $HERMCP_
 Expose `/inbox` through the reverse proxy only if outside sources need it; a script on the same host uses
 `127.0.0.1:9230`.
 
+**Read state is per consumer, not global.** A consumer is the calling key, optionally narrowed by a
+`consumer` label (`[A-Za-z0-9_.:@/-]`, max 48) so several parallel sessions on one key stay independent;
+keys never share state. An ack only affects the acking consumer. A consumer's **first** poll delivers only
+events younger than `HERMCP_INBOX_JOIN_WINDOW_MIN=30` minutes (`0` = only what arrives afterwards); the rest
+is not loaded into the session but reported as `older_unread` (`inbox_poll include_older=true` fetches it,
+`inbox_ack all=true` clears it). A consumer idle longer than the retention period starts fresh. Rows acked
+by older versions stay read for everybody. Upgrade note: existing consumers get their window on their first
+poll after the update, so a long backlog is summarised once instead of replayed.
+
 Storage and limits (env, defaults): SQLite `inbox.db` (0600) in the hermcp data dir, nothing in
-`gateway_state.json` or Hermes files. `HERMCP_INBOX_MAX_EVENTS=2000` (acked events are dropped first, then
-the oldest), `HERMCP_INBOX_RETENTION_DAYS=14` (acked events older than that are dropped),
+`gateway_state.json` or Hermes files. `HERMCP_INBOX_MAX_EVENTS=2000` (events somebody has read are dropped first, then
+the oldest), `HERMCP_INBOX_RETENTION_DAYS=14` (events older than that are dropped, read or not),
 `HERMCP_INBOX_RATE_PER_MIN=60` pushes per key. Rotation runs on every push.
 
 ### Run watcher (automatic run events for Claude)

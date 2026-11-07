@@ -171,7 +171,9 @@ def test_migration_on_old_database(tmp_path):
     c.commit(); c.close()
     box = Inbox(db)
     Inbox(db)                                                        # idempotent
-    ev = box.poll()["events"][0]
+    first = box.poll()                                               # old backlog is summarised for a new consumer ...
+    assert first["events"] == [] and first["older_unread"] == 1
+    ev = box.poll(include_older=True)["events"][0]                   # ... and still fully reachable
     assert ev["summary"] == "old row" and ev["origin"] == "push" and ev["untrusted_fields"][0] == "source"
     assert "run_id" not in ev                                        # watcher fields only on watcher events
     sys_ev = box.push_system(kind="run_finished", summary="x", run_id="r", profile="default", requester="k", dedupe_key="r:f")

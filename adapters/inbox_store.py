@@ -70,8 +70,9 @@ def clean_text(s: str) -> str:
 class Inbox:
     def __init__(self, path: Path, *, max_events: int = 2000, retention_days: float = 14.0,
                  rate_per_min: int = 60, run_max_events: int = 20, watch_max_per_key: int = 50,
-                 watch_ttl_s: float = 86400.0):
+                 watch_ttl_s: float = 86400.0, join_window_min: float = 30.0):
         self.path = Path(path)
+        self.join_window_min = join_window_min
         self.max_events, self.retention_days, self.rate_per_min = max_events, retention_days, rate_per_min
         self.run_max_events, self.watch_max_per_key, self.watch_ttl_s = run_max_events, watch_max_per_key, watch_ttl_s
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +107,14 @@ class Inbox:
             if name not in have_w:
                 db.execute(f"ALTER TABLE watches ADD COLUMN {name} {decl}")
         db.execute("CREATE INDEX IF NOT EXISTS ix_watches_active ON watches(done, key_id)")
+        # Read state is tracked per CONSUMER (a key, optionally narrowed by a session label), not globally:
+        # one session's ack must not hide events from another, and a new session must not start with the
+        # whole backlog. `events.acked` stays for rows acked by older versions (read for everybody).
+        db.execute("""CREATE TABLE IF NOT EXISTS reads (
+            consumer TEXT NOT NULL, event_id INTEGER NOT NULL, acked_at TEXT NOT NULL,
+            PRIMARY KEY (consumer, event_id))""")
+        db.execute("""CREATE TABLE IF NOT EXISTS consumers (
+            consumer TEXT PRIMARY KEY, floor_id INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)""")
 
     def _db(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -133,6 +142,8 @@ class Inbox:
         out = {"id": r["id"], "ts": r["ts"], "source": r["source"], "kind": r["kind"], "summary": r["summary"],
                "ref": r["ref"], "severity": r["severity"], "acked": bool(r["acked"]), "acked_at": r["acked_at"],
                "pushed_by": r["pushed_by"], "origin": r["origin"]}
+        if "my_ack" in r.keys() and r["my_ack"]:      # acked by the asking consumer
+            out["acked"], out["acked_at"] = True, r["my_ack"]
         if system:
             out.update(run_id=r["run_id"], session_id=r["session_id"], profile=r["profile"],
                        approval_id=r["approval_id"], requester=r["requester"], action=r["action"],
@@ -161,11 +172,13 @@ class Inbox:
     def _rotate(self, db: sqlite3.Connection) -> None:
         cutoff = (_now().timestamp() - self.retention_days * 86400)
         old = datetime.fromtimestamp(cutoff, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        db.execute("DELETE FROM events WHERE acked=1 AND acked_at < ?", (old,))
+        db.execute("DELETE FROM events WHERE ts < ?", (old,))      # read state is per consumer: age decides
         over = db.execute("SELECT COUNT(*) FROM events").fetchone()[0] - self.max_events
-        if over > 0:   # acked first (oldest), then unread (oldest) as the last resort
-            db.execute("DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY acked DESC, id ASC LIMIT ?)",
-                       (over,))
+        if over > 0:   # events somebody has read first (oldest), then the rest (oldest) as the last resort
+            db.execute("DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY (acked=1 OR EXISTS "
+                       "(SELECT 1 FROM reads r WHERE r.event_id=events.id)) DESC, id ASC LIMIT ?)", (over,))
+        db.execute("DELETE FROM reads WHERE event_id NOT IN (SELECT id FROM events)")
+        db.execute("DELETE FROM consumers WHERE last_seen < ?", (old,))   # a consumer back after a long gap starts fresh
 
     def push_system(self, *, kind: str, summary: str, run_id: str, profile: str, requester: str,
                     dedupe_key: str, session_id: str | None = None, approval_id: str | None = None,
@@ -290,43 +303,87 @@ class Inbox:
         return f" AND origin IN ({','.join('?' * len(SYSTEM_ORIGINS))}) AND profile IN ({marks})", \
             [*SYSTEM_ORIGINS, *profiles]
 
-    def poll(self, *, source=None, kind=None, limit=20, after_id=0, profiles: list[str] | None = None) -> dict[str, Any]:
-        sc, sa = self._scope_sql(profiles)
-        q, a = "SELECT * FROM events WHERE acked=0 AND id>?" + sc, [after_id, *sa]
-        for col, val in (("source", source), ("kind", kind)):
-            if val:
-                q += f" AND {col}=?"
-                a.append(val)
-        with self._db() as db:
-            rows = db.execute(q + " ORDER BY id ASC LIMIT ?", (*a, limit)).fetchall()
-            total = db.execute("SELECT COUNT(*) FROM events WHERE acked=0" + sc, sa).fetchone()[0]
-        return {"events": [self._row(r) for r in rows], "unread_total": total}
+    # -- per-consumer read state ----------------------------------------------------------
+    def _floor(self, db: sqlite3.Connection, consumer: str) -> int:
+        """Events with id <= floor are 'older backlog' for this consumer: counted, not delivered by poll.
 
-    def ack(self, ids: list[int], profiles: list[str] | None = None) -> dict[str, Any]:
+        A consumer is seen for the first time -> its floor is just before the oldest event inside the join
+        window (HERMCP_INBOX_JOIN_WINDOW_MIN, 0 = only what arrives from now on)."""
+        now = _now()
+        stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = db.execute("SELECT floor_id FROM consumers WHERE consumer=?", (consumer,)).fetchone()
+        if r:
+            db.execute("UPDATE consumers SET last_seen=? WHERE consumer=?", (stamp, consumer))
+            return r[0]
+        cutoff = datetime.fromtimestamp(now.timestamp() - self.join_window_min * 60, timezone.utc) \
+            .strftime("%Y-%m-%dT%H:%M:%SZ")
+        first = db.execute("SELECT MIN(id) FROM events WHERE ts>=?", (cutoff,)).fetchone()[0] \
+            if self.join_window_min > 0 else None       # ts has 1 s resolution: window 0 must not catch "now"
+        floor = first - 1 if first is not None else db.execute("SELECT COALESCE(MAX(id),0) FROM events").fetchone()[0]
+        db.execute("INSERT INTO consumers(consumer,floor_id,first_seen,last_seen) VALUES(?,?,?,?)",
+                   (consumer, floor, stamp, stamp))
+        return floor
+
+    _UNREAD = ("events.acked=0 AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.consumer=? AND r.event_id=events.id)")
+    _MY_ACK = "(SELECT acked_at FROM reads r WHERE r.consumer=? AND r.event_id=events.id) AS my_ack"
+
+    def poll(self, *, source=None, kind=None, limit=20, after_id=0, profiles: list[str] | None = None,
+             consumer: str = "", include_older: bool = False) -> dict[str, Any]:
+        sc, sa = self._scope_sql(profiles)
+        with self._db() as db:
+            floor = self._floor(db, consumer)
+            lo = after_id if include_older else max(after_id, floor)
+            q, a = f"SELECT events.*, {self._MY_ACK} FROM events WHERE {self._UNREAD} AND id>?" + sc, \
+                [consumer, consumer, lo, *sa]
+            for col, val in (("source", source), ("kind", kind)):
+                if val:
+                    q += f" AND {col}=?"
+                    a.append(val)
+            rows = db.execute(q + " ORDER BY id ASC LIMIT ?", (*a, limit)).fetchall()
+            count = f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id{{op}}?" + sc
+            total = db.execute(count.format(op=">"), (consumer, floor, *sa)).fetchone()[0]
+            older = db.execute(count.format(op="<="), (consumer, floor, *sa)).fetchone()[0]
+        out = {"events": [self._row(r) for r in rows], "unread_total": total, "consumer": consumer}
+        if older and not include_older:
+            out["older_unread"] = older
+            out["older_note"] = ("older events from before this consumer's first poll are not delivered; "
+                                 "inbox_poll include_older=true shows them, inbox_ack all=true marks them read")
+        return out
+
+    def ack(self, ids: list[int] | None, profiles: list[str] | None = None, *, consumer: str = "",
+            all_unread: bool = False) -> dict[str, Any]:
         now = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         sc, sa = self._scope_sql(profiles)
-        asked = list(ids)
+        asked = list(ids or [])
         with self._db() as db:
-            if profiles is not None:           # foreign / unknown ids are reported as not_found, never touched
+            floor = self._floor(db, consumer)
+            if all_unread:                      # everything this consumer has not read, older backlog included
+                ids = [r[0] for r in db.execute(
+                    f"SELECT id FROM events WHERE {self._UNREAD}" + sc, (consumer, *sa))]
+                asked = ids
+            elif profiles is not None:          # foreign / unknown ids are reported as not_found, never touched
                 ids = [r[0] for r in db.execute(f"SELECT id FROM events WHERE id IN ({','.join('?' * len(ids))})" + sc,
-                                                [*ids, *sa])] + [0]
+                                                [*ids, *sa])]
+            ids = ids or [0]
             found = {r[0] for r in db.execute(
                 f"SELECT id FROM events WHERE id IN ({','.join('?' * len(ids))})", ids)}
-            db.execute(f"UPDATE events SET acked=1, acked_at=? WHERE acked=0 AND id IN ({','.join('?' * len(ids))})",
-                       (now, *ids))
-            left = db.execute("SELECT COUNT(*) FROM events WHERE acked=0" + sc, sa).fetchone()[0]
-        return {"acked": sorted(found), "not_found": sorted(set(asked) - found), "unread_total": left}
+            db.executemany("INSERT OR IGNORE INTO reads(consumer,event_id,acked_at) VALUES(?,?,?)",
+                           [(consumer, i, now) for i in sorted(found)])
+            left = db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id>?" + sc,
+                              (consumer, floor, *sa)).fetchone()[0]
+        return {"acked": sorted(found), "not_found": sorted(set(asked) - found), "unread_total": left,
+                "consumer": consumer}
 
     def list(self, *, source=None, kind=None, status="all", limit=50, before_id=None,
-             profiles: list[str] | None = None) -> dict[str, Any]:
+             profiles: list[str] | None = None, consumer: str = "") -> dict[str, Any]:
         sc, sa = self._scope_sql(profiles)
-        q, a = "SELECT * FROM events WHERE 1=1" + sc, [*sa]
+        q, a = f"SELECT events.*, {self._MY_ACK} FROM events WHERE 1=1" + sc, [consumer, *sa]
         if before_id:
             q += " AND id<?"
             a.append(before_id)
         if status != "all":
-            q += " AND acked=?"
-            a.append(1 if status == "acked" else 0)
+            q += f" AND {'NOT ' if status == 'unread' else ''}(NOT ({self._UNREAD}))"
+            a.append(consumer)
         for col, val in (("source", source), ("kind", kind)):
             if val:
                 q += f" AND {col}=?"
@@ -334,7 +391,7 @@ class Inbox:
         with self._db() as db:
             rows = db.execute(q + " ORDER BY id DESC LIMIT ?", (*a, limit)).fetchall()
             total = db.execute("SELECT COUNT(*) FROM events WHERE 1=1" + sc, sa).fetchone()[0]
-        return {"events": [self._row(r) for r in rows], "stored_total": total}
+        return {"events": [self._row(r) for r in rows], "stored_total": total, "consumer": consumer}
 
 
 _STORES: dict[str, Inbox] = {}
@@ -344,10 +401,12 @@ def get_inbox(settings) -> Inbox:
     path = settings.data / "inbox.db"
     key = str(path)
     cfg = (settings.inbox_max_events, settings.inbox_retention_days, settings.inbox_rate_per_min,
-           settings.inbox_run_max_events, settings.inbox_watch_max_per_key, settings.inbox_watch_ttl_hours * 3600.0)
+           settings.inbox_run_max_events, settings.inbox_watch_max_per_key, settings.inbox_watch_ttl_hours * 3600.0,
+           settings.inbox_join_window_min)
     st = _STORES.get(key)
     if st is None or (st.max_events, st.retention_days, st.rate_per_min, st.run_max_events, st.watch_max_per_key,
-                      st.watch_ttl_s) != cfg:
+                      st.watch_ttl_s, st.join_window_min) != cfg:
         st = _STORES[key] = Inbox(path, max_events=cfg[0], retention_days=cfg[1], rate_per_min=cfg[2],
-                                  run_max_events=cfg[3], watch_max_per_key=cfg[4], watch_ttl_s=cfg[5])
+                                  run_max_events=cfg[3], watch_max_per_key=cfg[4], watch_ttl_s=cfg[5],
+                                  join_window_min=cfg[6])
     return st
