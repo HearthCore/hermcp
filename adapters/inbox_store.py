@@ -350,6 +350,22 @@ class Inbox:
                                  "inbox_poll include_older=true shows them, inbox_ack all=true marks them read")
         return out
 
+    def digest(self, *, profiles: list[str] | None = None, consumer: str = "", hours: float = 24.0) -> dict[str, Any]:
+        """Counts only (no event text): what this consumer has unread, by kind, and recent failed runs."""
+        sc, sa = self._scope_sql(profiles)
+        since = datetime.fromtimestamp(_now().timestamp() - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._db() as db:
+            floor = self._floor(db, consumer)
+            kinds = {r[0]: r[1] for r in db.execute(
+                f"SELECT kind, COUNT(*) FROM events WHERE {self._UNREAD} AND id>?" + sc + " GROUP BY kind ORDER BY 2 DESC",
+                (consumer, floor, *sa))}
+            older = db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id<=?" + sc,
+                               (consumer, floor, *sa)).fetchone()[0]
+            failed = db.execute("SELECT COUNT(*) FROM events WHERE kind IN ('run_failed','run_lost') AND ts>=?" + sc,
+                                (since, *sa)).fetchone()[0]
+        return {"unread": sum(kinds.values()), "unread_by_kind": kinds, "older_unread": older,
+                "failed_runs_24h": failed, "consumer": consumer}
+
     def ack(self, ids: list[int] | None, profiles: list[str] | None = None, *, consumer: str = "",
             all_unread: bool = False) -> dict[str, Any]:
         now = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -371,6 +387,8 @@ class Inbox:
                            [(consumer, i, now) for i in sorted(found)])
             left = db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id>?" + sc,
                               (consumer, floor, *sa)).fetchone()[0]
+        if all_unread:       # a count, not hundreds of ids
+            return {"acked_count": len(found), "unread_total": left, "consumer": consumer}
         return {"acked": sorted(found), "not_found": sorted(set(asked) - found), "unread_total": left,
                 "consumer": consumer}
 

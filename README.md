@@ -258,10 +258,16 @@ hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, 
 
 `hermes_call` re-runs the full scope check, so it cannot reach a tool the key may not use.
 
-Toolsets (tools per set): `status` 7, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
+Toolsets (tools per set): `status` 8, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
 `plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 12, `providers` 11,
 `approvals` 3, `memory` 4, `ops` 6, `inbox` 5, `admin` 2, `meta` 4. A key only ever sees (and can only
 call) the tools its scopes allow.
+
+`hermes_status` is the level-0 entry point: one call, well under 1 KB (verdict, gateway platforms, reachable
+profiles, runs, pending approvals, your unread inbox by kind, failed runs of the last 24 h) and a `next` list that
+names the tool to open. Information is layered: `hermes_status` → lists (`inbox_poll`, `runs_active`,
+`approvals_pending`) → detail by id (`chat_run_status`, `sessions_messages`); `orchestration_overview` is the whole
+setup and `hermes_health detail=true` the per-profile configuration (off by default since 0.1.x: it is large).
 
 `status_gateway` / `hermes_health` only report platforms the *running* gateway process owns: an entry
 in `gateway_state.json` counts as current only if its `writer_pid` equals the file's gateway `pid`, the

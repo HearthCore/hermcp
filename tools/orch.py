@@ -32,6 +32,38 @@ def _kanban_summary() -> dict:
     return {"config": OV.kanban_config("default"), "boards": OV.kanban_boards()}
 
 
+def approvals_overview(ctx, names, info):
+    """Pending approvals per reachable profile (counts), or the reason the key cannot see them."""
+    if ctx.principal.scopes.approvals and not (ctx.restricted and "default" in names):
+        pending = {}
+        from ..adapters.served import reachable
+        from ..bridge import call as bridge_call, entries_for_profile, resolve as bridge_resolve, socket_path
+        from ..settings import hermes_home
+        for n in names:
+            if reachable(n, info) is not True:
+                continue
+            try:
+                # Same resolver as the approvals tools: on a multiplex gateway every profile answers
+                # on the launch home's shared socket, which lists ALL profiles' approvals.
+                target = bridge_resolve(n, own_socket=socket_path(profile_home(n)), root_home=hermes_home(),
+                                        known_profiles=names)
+                resp = bridge_call(target.socket, {"op": "list", "key_id": ctx.principal.id})
+                if not resp.get("ok"):
+                    pending[n] = f"error: {resp.get('error')}"
+                    continue
+                entries = resp.get("pending", [])
+                if target.shared:      # one socket, every profile's approvals: count only this profile's
+                    entries = entries_for_profile(entries, n)
+                pending[n] = len(entries)
+            except Exception as exc:  # noqa: BLE001
+                pending[n] = f"unavailable: {type(exc).__name__}"
+        meta.note_source("socket")
+        return pending
+    return ("not visible: key lacks the approvals scope, or it is a profile-restricted key bound to "
+            "the launch home (default), whose socket is shared with every profile in multiplex mode; "
+            "approvals_pending returns such a key its own rows")
+
+
 @reg.tool("orchestration_overview", toolset="status", core=True,
           description=("Orientation in ONE call, compact, with provenance in `_meta`: profiles (model, fallback "
                        "models, served / parked, live adapters, MCP servers, toolsets, effective skill counts per "
@@ -101,35 +133,7 @@ def orchestration_overview(ctx, skills=True, plugins_exact=False):
                                            "writer_pid": v["writer_pid"], "stale": True,
                                            "stale_reason": v["stale_reason"]}
                                        for k, v in (gw.get("stale_platforms") or {}).items()}}}
-    if ctx.principal.scopes.approvals and not (ctx.restricted and "default" in names):
-        pending = {}
-        from ..adapters.served import reachable
-        from ..bridge import call as bridge_call, entries_for_profile, resolve as bridge_resolve, socket_path
-        from ..settings import hermes_home
-        for n in names:
-            if reachable(n, info) is not True:
-                continue
-            try:
-                # Same resolver as the approvals tools: on a multiplex gateway every profile answers
-                # on the launch home's shared socket, which lists ALL profiles' approvals.
-                target = bridge_resolve(n, own_socket=socket_path(profile_home(n)), root_home=hermes_home(),
-                                        known_profiles=names)
-                resp = bridge_call(target.socket, {"op": "list", "key_id": ctx.principal.id})
-                if not resp.get("ok"):
-                    pending[n] = f"error: {resp.get('error')}"
-                    continue
-                entries = resp.get("pending", [])
-                if target.shared:      # one socket, every profile's approvals: count only this profile's
-                    entries = entries_for_profile(entries, n)
-                pending[n] = len(entries)
-            except Exception as exc:  # noqa: BLE001
-                pending[n] = f"unavailable: {type(exc).__name__}"
-        meta.note_source("socket")
-        out["approvals_pending"] = pending
-    else:
-        out["approvals_pending"] = ("not visible: key lacks the approvals scope, or it is a profile-restricted key bound to "
-                                    "the launch home (default), whose socket is shared with every profile in multiplex mode; "
-                                    "approvals_pending returns such a key its own rows")
+    out["approvals_pending"] = approvals_overview(ctx, names, info)
     try:
         from .inbox import runs_active
         r = runs_active(ctx)
@@ -138,4 +142,66 @@ def orchestration_overview(ctx, skills=True, plugins_exact=False):
         errors["runs_active"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     if errors:
         out["section_errors"] = errors
+    return out
+
+
+@reg.tool("hermes_status", toolset="status", core=True,
+          description=("START HERE. Level-0 digest in one cheap call (well under 1 KB): `verdict` (ok, degraded, down), "
+                       "gateway state and platforms that are not connected, how many profiles are reachable, runs still "
+                       "going (and how many wait for approval), pending approvals (counts, needs the approvals scope) "
+                       "and YOUR inbox: unread events by kind, `older_unread` backlog and failed runs of the last 24 h. "
+                       "Counts only, never event text. `next` names the tool to call for whatever needs attention; "
+                       "details live one level down (inbox_poll, runs_active, approvals_pending, status_gateway), the "
+                       "whole setup in orchestration_overview, per-profile configuration in hermes_health "
+                       "detail=true."),
+          properties={"consumer": {"type": "string", "minLength": 1, "maxLength": 48,
+                                   "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$",
+                                   "description": "Same consumer label you pass to inbox_poll (see there)"}})
+def hermes_status(ctx, consumer=None):
+    from ..adapters.inbox_store import get_inbox
+    from .inbox import _consumer, _profiles, runs_active
+    gw = scope_gateway(_gateway_state(profile_home("default")), ctx)
+    info = served_info()
+    names = [n for n in list_profile_names() if ctx.principal.scopes.profile_allowed(n)]
+    reach = [n for n in names if n in (gw.get("served_profiles") or [])] if gw.get("state") == "running" else []
+    platforms = gw.get("platforms") or {}
+    bad = {k: v.get("state") for k, v in platforms.items() if v.get("state") != "connected"}
+    state = gw.get("state")
+    verdict = "down" if state != "running" else ("degraded" if gw.get("health") != "ok" or bad or gw.get("attention")
+                                                  else "ok")
+    out: dict = {"verdict": verdict,
+                 "gateway": {"state": state, "pid": gw.get("pid"),
+                             "platforms_connected": len(platforms) - len(bad), "platforms_total": len(platforms),
+                             **({"not_connected": bad} if bad else {}),
+                             **({"attention": gw.get("attention")} if gw.get("attention") else {})},
+                 "profiles": {"reachable": len(reach), "total": len(names),
+                              **({"not_reachable": sorted(set(names) - set(reach))} if set(names) - set(reach) else {})}}
+    try:
+        runs = runs_active(ctx)["runs"]
+        out["runs"] = {"active": len(runs),
+                       "waiting_for_approval": sum(1 for r in runs if "approval" in str(r.get("activity"))
+                                                   or r.get("status") == "waiting_for_approval")}
+    except Exception as exc:  # noqa: BLE001
+        out["runs"] = {"error": f"{type(exc).__name__}"}
+    appr = approvals_overview(ctx, names, info)
+    if isinstance(appr, dict):
+        counts = {n: c for n, c in appr.items() if isinstance(c, int) and c}
+        out["approvals_pending"] = {"total": sum(counts.values()), **({"by_profile": counts} if counts else {})}
+    else:
+        out["approvals_pending"] = "not visible to this key"
+    out["inbox"] = get_inbox(ctx.settings).digest(profiles=_profiles(ctx), consumer=_consumer(ctx, consumer))
+    nxt = []
+    if verdict != "ok":
+        nxt.append("status_gateway")
+    if out["inbox"]["unread"]:
+        nxt.append("inbox_poll")
+    if out["inbox"]["older_unread"]:
+        nxt.append("inbox_ack all=true (or inbox_poll include_older=true)")
+    if out["inbox"]["failed_runs_24h"]:
+        nxt.append("inbox_list kind=run_failed, then chat_run_status <run_id>")
+    if isinstance(out["approvals_pending"], dict) and out["approvals_pending"]["total"]:
+        nxt.append("approvals_pending")
+    if out["runs"].get("active"):
+        nxt.append("runs_active")
+    out["next"] = nxt or ["nothing needs attention"]
     return out

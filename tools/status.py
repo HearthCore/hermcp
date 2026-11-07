@@ -27,12 +27,12 @@ def _pid_alive(pid) -> bool:
                        "listed under `stale_platforms` and never count; `attention` names platforms that need action), "
                        "and which profiles are served. Only profiles in `reachable_profiles` work with the chat tools; "
                        "`inactive_profiles` exist only as configuration, `unknown_profiles` could not be determined. "
-                       "`profile_details` (detail=true, default) gives per profile the model, fallback chain, toolsets, "
+                       "`profile_details` (detail=true; off by default, it is large) gives per profile the model, fallback chain, toolsets, "
                        "platform_toolsets, served / parked, live adapters, MCP set and effective skill counts per "
                        "platform; skills=false skips the skill counts. Every platform entry carries updated_at, "
                        "writer_pid and a stale flag."),
-          properties={"detail": {"type": "boolean", "default": True}, "skills": {"type": "boolean", "default": True}})
-def hermes_health(ctx, detail=True, skills=True):
+          properties={"detail": {"type": "boolean", "default": False}, "skills": {"type": "boolean", "default": True}})
+def hermes_health(ctx, detail=False, skills=True):
     gw = scope_gateway(_gateway_state(profile_home("default")), ctx)
     sp = split_profiles([n for n in list_profile_names() if ctx.principal.scopes.profile_allowed(n)], served_info())
     ver = None
@@ -151,7 +151,7 @@ def status_version(ctx):
     return {"version": cli_text(["--version"], timeout=20).strip()}
 
 
-@reg.tool("status_gateway", toolset="status", profile_aware=True, core=True,
+@reg.tool("status_gateway", toolset="status", profile_aware=True,
           description=("Gateway process state and per-platform connection state of a profile, read from the gateway's "
                        "state file (read-only). `platforms` are the current reports of the running process; "
                        "`stale_platforms` are leftovers of dead processes and are ignored for health; platforms disabled "
