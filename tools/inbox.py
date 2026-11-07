@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from ..adapters.inbox_store import (is_reserved_kind, MAX_KIND, MAX_REF, MAX_SOURCE, MAX_SUMMARY, NOTICE, SEVERITIES, TOKEN_RE,
                                     get_inbox)
 from ..adapters import session_queue
+from ..client_id import clean_handle
 from ..registry import ToolError
 from . import reg
 
@@ -135,10 +136,15 @@ def _iso(epoch):
                       "content. Only runs of your own key are listed (admin keys may pass all_keys). Read the "
                       "result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway's own "
                       "progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher's coarse "
-                      "label is known.",
+                      "label is known. Without client_session the answer carries `session_overview`: the sessions of this "
+                      "key, the runs nobody claimed and how to take over or claim (session_card_set). With your handle "
+                      "your own runs are marked `yours`.",
           properties={"all_keys": {"type": "boolean", "default": False,
-                                   "description": "Admin keys only: include runs started by other keys"}})
-def runs_active(ctx, all_keys=False):
+                                   "description": "Admin keys only: include runs started by other keys"},
+                      "client_session": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,80}$",
+                                         "description": "Your session handle (session_card_set): marks your runs "
+                                                        "`yours` and drops the session_overview"}})
+def runs_active(ctx, all_keys=False, client_session=None):
     if all_keys and ctx.principal.scopes.access != "admin":
         raise ToolError("forbidden", "all_keys needs access=admin")
     now = time.time()
@@ -160,11 +166,39 @@ def runs_active(ctx, all_keys=False):
     _gateway_progress(ctx, runs)
     for r in runs:
         r.pop("_started", None)
-    return {"count": len(runs), "runs": runs,
+        if client_session and r.get("client_session") == client_session:
+            r["yours"] = True
+    out = {"count": len(runs), "runs": runs,
             "note": "idle_seconds = seconds since the gateway last reported anything for the run; a high value "
                     "on a running run means no progress signal, not necessarily a problem. queue_position: 0 = "
                     "running now, n = n-th in line in its session; queue_length = turns waiting in that session "
                     "(chat_session_queue shows them)."}
+    if not clean_handle(client_session):
+        overview = _session_overview(ctx, runs)
+        if overview:
+            out["session_overview"] = overview
+    return out
+
+
+def _session_overview(ctx, runs: list[dict]) -> dict | None:
+    """Situation report for a caller that passed no client_session: who is around, which runs nobody claimed."""
+    box = get_inbox(ctx.settings)
+    cards = [r for r in box.sessions_list(key_id=ctx.principal.id, limit=8) if not r.get("successor")]
+    free = [r for r in box.unclaimed_runs(ctx.principal.id) if not ctx.restricted or ctx.own(r["profile"])]
+    if not cards and not free and not runs:
+        return None
+    return {
+        "you_passed_no_client_session": True,
+        "sessions": [{"client_session": c["handle"], "client": c["client"], "kind": c.get("kind"),
+                      "purpose": c.get("purpose"), "last_seen": _iso(c["last_seen"]), "open_runs": c["open_runs"]}
+                     for c in cards],
+        "unclaimed_runs": [r["run_id"] for r in free[:10]],
+        "next": ("hermcp cannot tell which of these runs are yours. Are you one of the sessions above (new chat, "
+                 "compacted context)? Then take it over: session_card_set recover_from=<handle> (preview, then "
+                 "confirm=true). If you are new, register with session_card_set and pass the handle as "
+                 "client_session. Runs nobody claims (unclaimed_runs): claim the ones you started with "
+                 "session_card_set claim_runs=[run_ids] (preview, then confirm=true)."),
+    }
 
 
 def _gateway_progress(ctx, runs: list[dict]) -> None:

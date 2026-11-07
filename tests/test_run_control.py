@@ -482,3 +482,74 @@ def test_recover_moves_open_runs_and_the_old_handle_is_retired(rig):
     assert ok and "forced" not in r
     ok, e = rig.call(t, "chat_send", message="x", client_session=old)
     assert not ok and e["code"] == "session_handed_over" and e["successor"] == new
+
+
+def test_runs_active_without_handle_gives_the_situation_report(rig):
+    t = rig.tok()
+    handle = _register(rig, t, purpose="orchestrator")
+    mine = rig.call(t, "chat_send", message="with handle", client_session=handle)[1]
+    loose = rig.call(t, "chat_send", message="no handle")[1]
+    ok, r = rig.call(t, "runs_active")
+    assert ok
+    ov = r["session_overview"]
+    assert ov["you_passed_no_client_session"] is True
+    assert [s["client_session"] for s in ov["sessions"]] == [handle] and ov["sessions"][0]["open_runs"] == 1
+    assert ov["unclaimed_runs"] == [loose["run_id"]] and "recover_from" in ov["next"] and "claim_runs" in ov["next"]
+    # with a handle: no overview, own runs are marked
+    ok, r = rig.call(t, "runs_active", client_session=handle)
+    assert ok and "session_overview" not in r
+    assert {x["run_id"]: x.get("yours") for x in r["runs"]}[mine["run_id"]] is True
+
+
+def test_claim_unclaimed_runs_needs_confirm_and_never_steals(rig):
+    t = rig.tok()
+    other = _register(rig, t, purpose="someone else")
+    owned = rig.call(t, "chat_send", message="owned", client_session=other)[1]
+    loose = rig.call(t, "chat_send", message="loose")[1]
+    box = get_inbox(rig.settings)
+    ok, r = rig.call(t, "session_card_set", claim_unclaimed=True)
+    assert ok and r["claim"] == "preview" and r["applied"] is False
+    assert [x["run_id"] for x in r["runs"]] == [loose["run_id"]]
+    assert not box.get_watch(loose["run_id"])["client_session"]                 # preview changed nothing
+    ok, e = rig.call(t, "session_card_set", claim_runs=[owned["run_id"]], confirm=True)
+    assert not ok and e["code"] == "not_claimable"                              # owned by another session
+    assert box.get_watch(owned["run_id"])["client_session"] == other
+    ok, r = rig.call(t, "session_card_set", claim_runs=[loose["run_id"]], confirm=True, purpose="claimer")
+    assert ok and r["applied"] is True and r["claimed"] == 1
+    new = r["card"]["client_session"]
+    assert new != other and box.get_watch(loose["run_id"])["client_session"] == new
+    ok, r = rig.call(t, "runs_active", client_session=new)
+    assert ok and not r["session_overview"]["unclaimed_runs"] if "session_overview" in r else True
+
+
+def test_claim_into_an_existing_handle(rig):
+    t = rig.tok()
+    mine = _register(rig, t, purpose="me")
+    loose = rig.call(t, "chat_send", message="loose")[1]
+    ok, r = rig.call(t, "session_card_set", client_session=mine, claim_unclaimed=True, confirm=True)
+    assert ok and r["claimed"] == 1 and r["card"]["client_session"] == mine
+    assert get_inbox(rig.settings).get_watch(loose["run_id"])["client_session"] == mine
+    ok, e = rig.call(t, "session_card_set", client_session="nope", claim_unclaimed=True, confirm=True)
+    assert not ok and e["code"] == "unknown_client_session"
+
+
+def test_former_owner_is_told_about_takeover_and_forced_access(rig):
+    t = rig.tok()
+    box = get_inbox(rig.settings)
+    old = _register(rig, t, purpose="orchestrator")
+    run = rig.call(t, "chat_send", message="long", client_session=old)[1]
+    GW.runs[run["run_id"]].update(status="running")
+    intruder = _register(rig, t, purpose="intruder")
+    ok, _ = rig.call(t, "chat_run_steer", run_id=run["run_id"], message="x", client_session=intruder, force=True,
+                     dry_run=True)
+    assert ok and not [e for e in box.poll(limit=50)["events"] if e["kind"] == "foreign_run_forced"]  # dry run: silent
+    ok, r = rig.call(t, "chat_run_steer", run_id=run["run_id"], message="x", client_session=intruder, force=True)
+    assert ok and r["forced"]["run_session"] == old
+    ok, r = rig.call(t, "session_card_set", recover_from=old, confirm=True)
+    new = r["card"]["client_session"]
+    kinds = {e["kind"]: e for e in box.poll(limit=50)["events"]}
+    assert old in kinds["foreign_run_forced"]["summary"] and run["run_id"] == kinds["foreign_run_forced"]["ref"]
+    assert old in kinds["session_taken_over"]["summary"] and new in kinds["session_taken_over"]["summary"]
+    assert kinds["session_taken_over"]["origin"] == "watcher"                      # hermcp-written, not a push
+    ok, e = rig.call(t, "inbox_push", source="x", kind="session_taken_over", summary="fake")
+    assert not ok                                                                   # callers cannot fake the kind

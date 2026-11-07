@@ -69,13 +69,24 @@ def _card(row: dict, *, you: bool = False, show_key: bool = False) -> dict:
                                        "you only get a preview."},
                       "confirm": {"type": "boolean", "default": False,
                                   "description": "Apply a recover_from (otherwise it is only previewed)"},
+                      "claim_runs": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,120}$"},
+                                     "maxItems": 50,
+                                     "description": "Claim these open runs of this key that no session owns yet (they "
+                                     "were started without client_session). Preview first; confirm=true applies. "
+                                     "runs_active lists them under session_overview.unclaimed_runs."},
+                      "claim_unclaimed": {"type": "boolean", "default": False,
+                                          "description": "Claim ALL open runs of this key that no session owns"},
                       "native_id": {"type": "string", "pattern": NATIVE_RE.pattern,
                                     "description": "The client's own session id, if it knows one (alias for this card)"}})
 def session_card_set(ctx, client_session=None, kind=None, purpose=None, role=None, native_id=None,
-                     recover_from=None, confirm=False):
+                     recover_from=None, confirm=False, claim_runs=None, claim_unclaimed=False):
     box = get_inbox(ctx.settings)
     p = ctx.principal
     native = native_id or p.native_session or None
+    if claim_runs or claim_unclaimed:
+        if recover_from:
+            raise ToolError("invalid_arguments", "claim_runs and recover_from are separate steps; do one at a time")
+        return _claim(ctx, box, client_session, kind, purpose, role, native, claim_runs, claim_unclaimed, confirm)
     if recover_from:
         if client_session:
             raise ToolError("invalid_arguments", "recover_from registers a new session; do not pass client_session")
@@ -99,6 +110,11 @@ def session_card_set(ctx, client_session=None, kind=None, purpose=None, role=Non
             old=recover_from, key_id=p.id, key_name=p.name, client=p.client or "unknown", kind=kind,
             purpose=_clean(purpose), role=_clean(role), native_id=native,
             handle_factory=lambda: new_handle(p.client or "unknown", kind or old["kind"]))
+        box.push_ledger(
+            kind="session_taken_over", ref=recover_from, severity="warning" if idle < 600 else "info",
+            summary=f"Session {recover_from} was taken over by {row['handle']} ({moved} open runs moved). If this "
+                    "chat is still working as that session, stop: its handle is retired (session_handed_over). "
+                    "Register anew with session_card_set, or ask the new session; both appear in session_cards_list.")
         return {"created": True, "recovered": {"from": recover_from, "open_runs_moved": moved},
                 "card": _card(row, you=True), "usage": USAGE}
     if client_session:
@@ -119,6 +135,48 @@ def session_card_set(ctx, client_session=None, kind=None, purpose=None, role=Non
         row = box.session_update(row["handle"], **{k: v for k, v in (("kind", kind), ("purpose", _clean(purpose)),
                                                                       ("role", _clean(role))) if v is not None})
     return {"created": created, "card": _card(row, you=True), "usage": USAGE}
+
+
+def _claim(ctx, box, client_session, kind, purpose, role, native, claim_runs, claim_unclaimed, confirm):
+    """Attach unclaimed open runs (started without a handle) to a session: yours if you pass client_session,
+    otherwise a new card is registered first. Runs another session owns are never touched (use recover for that)."""
+    p = ctx.principal
+    free = [r for r in box.unclaimed_runs(p.id) if not ctx.restricted or ctx.own(r["profile"])]
+    by_id = {r["run_id"]: r for r in free}
+    if claim_runs:
+        missing = [i for i in claim_runs if i not in by_id]
+        if missing:
+            raise ToolError("not_claimable", "these runs are not open and unclaimed runs of this key: "
+                            + ", ".join(missing[:10]) + ". Runs owned by a session move with recover_from; "
+                            "runs_active shows what is claimable", not_claimable=missing[:10])
+        chosen = [by_id[i] for i in claim_runs]
+    else:
+        chosen = free
+    if client_session:
+        row = box.session_get(client_session)
+        if not row or row["key_id"] != p.id:
+            raise ToolError("unknown_client_session", f"no session {client_session!r} of this key; "
+                            "session_cards_list shows yours")
+    now = time.time()
+    runs = [{"run_id": r["run_id"], "profile": r["profile"], "age_seconds": int(now - r["started_at"])} for r in chosen]
+    if not confirm:
+        return {"claim": "preview", "applied": False, "runs": runs, "count": len(runs),
+                "next": "repeat with confirm=true to claim them"
+                        + ("" if client_session else " (without client_session you get a new card for them; pass "
+                           "your handle to attach them to your existing session)")
+                        + ". Claim only runs you started: another chat of the same key may own them."}
+    if not chosen:
+        return {"claim": "applied", "applied": False, "claimed": 0, "runs": [], "note": "nothing to claim"}
+    if client_session:
+        row = box.session_update(client_session, **{k: v for k, v in (("purpose", _clean(purpose)),
+                                                                       ("role", _clean(role))) if v is not None})
+    else:
+        row, _ = box.session_register(
+            key_id=p.id, key_name=p.name, client=p.client or "unknown", kind=kind, purpose=_clean(purpose),
+            role=_clean(role), native_id=native, handle_factory=lambda: new_handle(p.client or "unknown", kind))
+    n = box.claim_runs(key_id=p.id, handle=row["handle"], client=p.client or None, run_ids=[r["run_id"] for r in chosen])
+    return {"claim": "applied", "applied": True, "claimed": n, "runs": runs, "card": _card(row, you=True),
+            "usage": USAGE}
 
 
 @reg.tool("session_cards_list", toolset="inbox",
