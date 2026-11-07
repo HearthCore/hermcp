@@ -3,7 +3,8 @@ see whether a client already sends a stable session or conversation identifier.
 
 Off by default (HERMCP_DEBUG_CAPTURE=1) and self-expiring (HERMCP_DEBUG_CAPTURE_HOURS, default 12 h after start).
 Only authenticated requests are recorded. Never recorded: the Authorization header and other credential
-headers, tool argument VALUES (only their names), client IPs (presence only). Everything else is passed through
+headers (only a sha256 fingerprint of the bearer token, never the token), tool argument VALUES (only their
+names), client IPs (presence only). Everything else is passed through
 the central secret masker and capped. File: <data>/capture.jsonl (0600, trimmed to the newest N records).
 """
 from __future__ import annotations
@@ -49,6 +50,16 @@ def _clip(v: Any, depth: int = 0) -> Any:
     if isinstance(v, (int, float, bool)) or v is None:
         return v
     return f"<{type(v).__name__}>"
+
+
+def auth_fingerprint(headers: dict[str, str]) -> str | None:
+    """Short sha256 fingerprint of the bearer token (never the token): equal token -> equal fp. Lets us see whether
+    parallel sessions of one client share a credential (e.g. an OAuth token per connector)."""
+    for name, val in headers.items():
+        if name.lower() == "authorization":
+            token = val.partition(" ")[2].strip()
+            return hashlib.sha256(token.encode()).hexdigest()[:10] if token else None
+    return None
 
 
 def clean_headers(headers: dict[str, str]) -> dict[str, Any]:
@@ -100,13 +111,14 @@ class Capture:
         return self.enabled and time.time() < self.expires_at
 
     def record(self, *, method: str, path: str, headers: dict[str, str], messages: list[Any], key_name: str,
-               key_id: str) -> None:
+               key_id: str, auth_kind: str | None = None) -> None:
         """Never raises: a debug aid must not break a request."""
         if not self.active:
             return
         try:
             rec = {"ts": round(time.time(), 3), "http": method, "path": path, "key_name": key_name,
-                   "key_id": key_id, "headers": clean_headers(headers),
+                   "key_id": key_id, "auth_kind": auth_kind, "auth_fp": auth_fingerprint(headers),
+                   "headers": clean_headers(headers),
                    "messages": [summarize_message(m) for m in messages[:20]]}
             line = json.dumps(rec, ensure_ascii=False, default=str)
             with self._lock:
@@ -155,7 +167,7 @@ def _meta_paths(obj: Any, prefix: str = "") -> list[str]:
 
 
 def report(records: list[dict], *, last: int = 10) -> dict[str, Any]:
-    """Group by client (User-Agent + clientInfo) and surface everything that could carry a session id."""
+    """Group by client (x-anthropic-client + User-Agent) and surface everything that could carry a session id."""
     clients: dict[str, dict[str, Any]] = {}
     for r in records:
         h = r.get("headers") or {}
@@ -164,14 +176,19 @@ def report(records: list[dict], *, last: int = 10) -> dict[str, Any]:
             if m.get("clientInfo"):
                 info = m["clientInfo"]
         ua = h.get("user-agent", "")
-        c = clients.setdefault(ua or "(no user-agent)", {
-            "user_agent": ua, "requests": 0, "keys": set(), "client_info": None, "http_methods": set(),
+        label = " | ".join(x for x in (str(h.get("x-anthropic-client", "")), ua) if x)
+        c = clients.setdefault(label or "(no user-agent)", {
+            "user_agent": ua, "auth_fps": {}, "auth_kinds": set(), "requests": 0, "keys": set(), "client_info": None, "http_methods": set(),
             "header_names": set(), "non_standard_headers": {}, "mcp_session_id_seen": False,
             "meta_paths": set(), "rpc_methods": set(), "tools_called": set(),
             "first_ts": r.get("ts"), "last_ts": r.get("ts")})
         c["requests"] += 1
         c["last_ts"] = r.get("ts")
         c["keys"].add(r.get("key_name"))
+        if r.get("auth_fp"):
+            c["auth_fps"][r["auth_fp"]] = c["auth_fps"].get(r["auth_fp"], 0) + 1
+        if r.get("auth_kind"):
+            c["auth_kinds"].add(r["auth_kind"])
         c["http_methods"].add(r.get("http"))
         if info:
             c["client_info"] = info
@@ -189,7 +206,7 @@ def report(records: list[dict], *, last: int = 10) -> dict[str, Any]:
             c["meta_paths"].update(_meta_paths(m.get("params_meta") or {}))
     out = []
     for c in clients.values():
-        out.append({**c, "keys": sorted(c["keys"]), "http_methods": sorted(c["http_methods"]),
+        out.append({**c, "auth_kinds": sorted(c["auth_kinds"]), "keys": sorted(c["keys"]), "http_methods": sorted(c["http_methods"]),
                     "header_names": sorted(c["header_names"]), "rpc_methods": sorted(c["rpc_methods"]),
                     "tools_called": sorted(c["tools_called"]), "meta_paths": sorted(c["meta_paths"]),
                     "non_standard_headers": {k: sorted(v)[:5] for k, v in sorted(c["non_standard_headers"].items())}})

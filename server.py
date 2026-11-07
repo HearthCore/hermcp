@@ -198,7 +198,8 @@ class HermcpApp:
     def _capture(self, req: Request, principal: Principal, messages: list) -> None:
         if self.capture.active:     # discovery aid, see capture.py; never affects the request
             self.capture.record(method=req.method, path=req.url.path, headers=dict(req.headers), messages=messages,
-                                key_name=principal.name, key_id=principal.id)
+                                key_name=principal.name, key_id=principal.id,
+                                auth_kind="oauth" if principal.name.endswith(" (oauth)") else "key")
 
     async def inbox_http(self, req: Request) -> Response:
         """POST /inbox — same auth/scope as MCP (Bearer key), same fields as the inbox_push tool."""

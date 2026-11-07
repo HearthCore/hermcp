@@ -113,3 +113,22 @@ def test_bad_capture_never_breaks_requests(home, monkeypatch):
     monkeypatch.setattr("hermcp.capture.summarize_message", lambda m: 1 / 0)
     c = TestClient(app.app)
     assert rpc(c, mk(app, "a", access="admin"), "ping").status_code == 200
+
+
+def test_auth_fingerprint_distinguishes_tokens_without_storing_them(home):
+    app = make_app(home, HERMCP_DEBUG_CAPTURE="1")
+    c = TestClient(app.app)
+    t1 = mk(app, "k1", access="admin")
+    t2 = mk(app, "k2", access="admin")
+    hdr = {"x-anthropic-client": "ClaudeAI", "user-agent": "Claude-User"}
+    rpc(c, t1, "ping", headers=hdr)
+    rpc(c, t1, "ping", id_=2, headers=hdr)
+    rpc(c, t2, "ping", id_=3, headers=hdr)
+    raw = (app.settings.data / "capture.jsonl").read_text()
+    assert t1 not in raw and t2 not in raw
+    recs = read_records(app.settings.data / "capture.jsonl")
+    assert recs[0]["auth_fp"] == recs[1]["auth_fp"] != recs[2]["auth_fp"]
+    assert recs[0]["auth_kind"] == "key"
+    rep = report(recs)
+    assert len(rep["clients"]) == 1 and rep["clients"][0]["user_agent"] == "Claude-User"
+    assert sorted(rep["clients"][0]["auth_fps"].values()) == [1, 2]
