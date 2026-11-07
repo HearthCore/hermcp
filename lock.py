@@ -9,10 +9,13 @@ The lock file also carries metadata (pid, role, port, started, argv) so a second
 say exactly *who* is already running and what to do about it — and so `hermes hermcp status`
 can answer "plugin instance or systemd instance?" without guessing.
 
-Exit code contract for `serve`:
-  0   clean shutdown
-  75  EX_TEMPFAIL — another instance holds the lock (systemd: Restart=on-failure +
-      RestartPreventExitStatus=75 keeps it from flapping)
+Exit code contract:
+  0   clean shutdown / success
+  75  EX_TEMPFAIL — another instance holds the lock. systemd: Restart=on-failure +
+      RestartPreventExitStatus=75 keeps it from flapping.
+  78  EX_CONFIG — the configuration is invalid (bad systemd scope, port, ...).
+      Restarting cannot fix that either, so the unit parks as well and the owner
+      reads the one readable line in the journal instead of a 5 s flap loop.
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ import time
 from pathlib import Path
 
 EX_TEMPFAIL = 75
+EX_CONFIG = 78
 
 
 def lock_path(data_dir: Path) -> Path:

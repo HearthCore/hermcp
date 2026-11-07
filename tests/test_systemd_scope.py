@@ -192,3 +192,33 @@ def test_no_uid_is_hardcoded_in_the_deploy_files():
     root = Path(__file__).resolve().parents[1] / "deploy"
     for f in (root / "hermcp.service", root / "hermcp.service.template"):
         assert "/run/user/" not in f.read_text(encoding="utf-8"), f.name
+
+
+# -- follow-ups from the review of the scope settings (issue #12) ----------------------------------
+def test_invalid_configuration_exits_78(monkeypatch):
+    """A bad scope must not exit 1: 78 (EX_CONFIG) is what the unit excludes from restarts."""
+    from hermcp import cli
+    from hermcp.lock import EX_CONFIG
+    monkeypatch.setenv("HERMCP_SYSTEMD_SCOPE", "global")
+    assert cli.main(["status"]) == EX_CONFIG
+
+
+def test_units_park_on_config_errors_too():
+    """Both shipped units must list 78 next to 75, or systemd flaps every 5 s on a typo."""
+    import pathlib
+    deploy = pathlib.Path(__file__).parent.parent / "deploy"
+    for name in ("hermcp.service", "hermcp.service.template"):
+        assert "RestartPreventExitStatus=75 78" in (deploy / name).read_text(), name
+
+
+def test_hermes_bin_tolerates_an_invalid_scope(monkeypatch):
+    """doctor reports the scope itself; the binary lookup must not add a second FAIL row."""
+    from hermcp.adapters import common as C
+    monkeypatch.setenv("HERMCP_SYSTEMD_SCOPE", "global")
+    assert isinstance(C.hermes_bin(), str)
+
+
+def test_restart_unit_candidates_tolerate_an_invalid_scope(monkeypatch):
+    from hermcp import restart_units
+    monkeypatch.setenv("HERMCP_SELF_SYSTEMD_SCOPE", "global")
+    assert isinstance(restart_units._candidate_bins(), list)

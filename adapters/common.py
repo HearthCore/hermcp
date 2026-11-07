@@ -52,7 +52,10 @@ def ensure_hermes_importable() -> None:
 
 
 def hermes_bin() -> str:
-    cfg = load_settings().hermes_bin
+    # Lenient on purpose: doctor calls this while it is already reporting the invalid
+    # scope as its own readable row. A strict load would add a second, confusing
+    # "hermes internals: ConfigError" line right next to it.
+    cfg = load_settings(strict=False).hermes_bin
     if cfg:
         return cfg
     for cand in (Path(sys.executable).parent / "hermes", agent_dir() / "venv" / "bin" / "hermes"):

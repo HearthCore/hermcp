@@ -172,6 +172,13 @@ polkit.addRule(function(action, subject) {
 Keep `NoNewPrivileges=yes` in the unit: polkit works over D-Bus and needs no setuid helper. Do not use wildcards on
 the unit or the verb.
 
+**Transient timers are a second permission.** The self-restart does not only restart the unit, it first creates a
+transient timer with `systemd-run` — and that is a *different* right than restarting a unit. A non-root account
+therefore also needs the right to create transient timers in the system manager; a polkit rule for `restart
+hermcp.service` alone does not cover it, and `systemd-run` fails with "Interactive authentication required".
+Either run hermcp as root, widen the rule to the transient units, or put both scopes on `user` (see the table
+above), where no authorization is needed.
+
 ### 4. Run it as a service
 
 The server must live **outside** the gateway's process tree:
@@ -289,8 +296,11 @@ enabled. In an agent shell that exports a foreign `PYTHONPATH`, prefix it with `
 
 **Exit codes.** `0` success, `1` on a failed check (`doctor`, `selftest`, `profile-keys`), `2` when a
 command refuses to act (stopping a systemd-managed instance without `--force`, `install-service
---enable-now` while a hand-started instance holds the lock, usage errors), and `75` (`EX_TEMPFAIL`)
-from `serve` when another instance holds the lock or the port — never an automatic retry loop.
+--enable-now` while a hand-started instance holds the lock, usage errors), `75` (`EX_TEMPFAIL`)
+from `serve` when another instance holds the lock or the port, and `78` (`EX_CONFIG`) when the
+environment is invalid (for example a typo in `HERMCP_SYSTEMD_SCOPE`). Both 75 and 78 are listed in
+the unit's `RestartPreventExitStatus`, so systemd parks the unit on them — never an automatic retry
+loop that cannot fix either cause.
 
 ## Setup with an agent
 
@@ -849,9 +859,11 @@ Exactly one may serve — an `flock` on `~/.hermes/plugin-data/hermcp/serve.lock
 with metadata (pid, role `standalone|systemd`, host, port, start time, argv).
 
 - A second `serve` prints who holds it and the next step, then exits **75 (EX_TEMPFAIL)**.
-- The unit uses `Restart=on-failure` + `RestartPreventExitStatus=75`, so it parks with a
-  readable message instead of restart-looping. A preflight port probe converts "port taken
-  by a foreign process" into the same exit code (a raw bind error would exit 1 and flap).
+- The unit uses `Restart=on-failure` + `RestartPreventExitStatus=75 78`, so it parks with a
+  readable message instead of restart-looping. `75` covers a taken port, `78` an invalid
+  configuration — a restart cannot fix a typo in `.env` either, it would just flap every 5 s.
+  A preflight port probe converts "port taken by a foreign process" into exit `75` (a raw bind
+  error would exit `1` and flap).
 - Migration both ways:
   - hand-started → systemd: `hermes hermcp stop` then `systemctl enable --now hermcp`
   - systemd → hand-started: `systemctl stop hermcp` then `hermes hermcp serve`

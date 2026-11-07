@@ -8,6 +8,7 @@ import time
 
 from .keys import KeyError_, KeyStore, parse_expiry
 from .scopes import ScopeError, Scopes
+from .lock import EX_CONFIG
 from .settings import load_settings, ConfigError
 
 
@@ -474,7 +475,7 @@ def dispatch(args) -> int:
         return 1
     except ConfigError as exc:
         print(f"error: invalid configuration: {exc}\nrun `hermes hermcp doctor` for the full check", file=sys.stderr)
-        return 1
+        return EX_CONFIG
     print("usage: hermes hermcp {serve,keys,oauth,profile-keys,doctor,selftest,docs,status,stop,install-service}",
           file=sys.stderr)
     return 2

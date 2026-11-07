@@ -40,11 +40,12 @@ Environment="HERMES_HOME=%h/.hermes"
 Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # on-failure, not always: `systemctl stop` stays stopped. Exit 75 (EX_TEMPFAIL) means
-# "another hermcp instance already owns the lock/port"; RestartPreventExitStatus=75 parks
+# "another hermcp instance already owns the lock/port"; 78 = invalid configuration.
+# RestartPreventExitStatus parks on both instead of flapping every 5 s.
 # the unit with a readable message instead of flapping. Migrate with: hermes hermcp stop
 Restart=on-failure
 RestartSec=5
-RestartPreventExitStatus=75
+RestartPreventExitStatus=75 78
 StandardOutput=journal
 StandardError=journal
 
