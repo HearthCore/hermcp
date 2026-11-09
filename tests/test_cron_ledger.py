@@ -59,6 +59,9 @@ def _doc(home, job_id, stamp, text):
 @pytest.fixture()
 def led(home):
     from hermcp.tools import load_all
+    cfg = yaml.safe_load((home / "config.yaml").read_text()) or {}
+    cfg["timezone"] = "Europe/Berlin"
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
     reg = load_all()
     for n in ("p1", "p2"):
         (home / "profiles" / n).mkdir(parents=True, exist_ok=True)
@@ -101,7 +104,7 @@ def test_list_rows_have_the_shared_ledger_shape_and_session(led):
     a, b = rows["e1"], rows["e2"]
     assert a["run_id"] == "e1" and a["job_name"] == "Agent job" and a["platform"] == "cron"
     assert a["status"] == "completed" and a["session_id"] == "local-sess-1"
-    assert a["has_output"] is True and a["output_size"] > 0 and a["duration_s"] == 4.4
+    assert a["has_output"] is True and a["output_size"] > 0 and abs(a["duration_s"] - 4.4) < 0.001
     assert a["user_id"] is None and a["chat_context"] is None and a["client_session"] is None
     assert b["session_id"] is None and b["has_output"] is False and b["error"] == "HTTP 429 from upstream"
 
