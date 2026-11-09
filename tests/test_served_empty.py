@@ -47,3 +47,35 @@ def test_non_empty_roster_unchanged(home):
     require_served("default")
     with pytest.raises(ToolError):
         require_served("researcher")
+
+
+def _invoke(home, tool, principal=None, **args):
+    from hermcp.registry import Principal
+    from hermcp.scopes import Scopes
+    from hermcp.settings import load_settings
+    from hermcp.tools import load_all
+    who = principal or Principal("k", "admin-key", Scopes(access="admin"))
+    r = load_all().invoke(tool, args, who, load_settings({"HERMES_HOME": str(home)}), None)
+    assert r["ok"], r
+    return r["result"]
+
+
+def test_hermes_status_agrees_with_profiles_list_on_empty_roster(home):
+    _state(home, [])
+    status = _invoke(home, "hermes_status")["profiles"]
+    listed = _invoke(home, "profiles_list", detail=False, skills=False)
+    assert listed["reachable_profiles"] == ["default"]
+    assert status["reachable"] == len(listed["reachable_profiles"]) == 1
+    assert status["total"] == len(listed["profiles"])
+    assert "default" not in status.get("not_reachable", [])
+
+
+def test_hermes_status_empty_roster_respects_key_scope(home):
+    from hermcp.registry import Principal
+    from hermcp.scopes import Scopes
+    _state(home, [])
+    only_default = Principal("kd", "default-key", Scopes(access="write", profiles=["default"]))
+    assert _invoke(home, "hermes_status", only_default)["profiles"] == {"reachable": 1, "total": 1}
+    only_other = Principal("ko", "researcher-key", Scopes(access="write", profiles=["researcher"]))
+    assert _invoke(home, "hermes_status", only_other)["profiles"] == {
+        "reachable": 0, "total": 1, "not_reachable": ["researcher"]}

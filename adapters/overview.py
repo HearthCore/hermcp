@@ -141,8 +141,24 @@ def gateway_home() -> Path:
     return hermes_home()
 
 
+def _kanban_counts(db: Path) -> dict[str, int]:
+    """Task count per status from one board database (read-only); {"error": -1} if it cannot be read."""
+    try:
+        meta.note_file(db)
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        try:
+            return {st: n for st, n in con.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status")}
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return {"error": -1}
+
+
 def kanban_boards() -> list[dict[str, Any]]:
-    """Boards with task counts, read straight from the board databases (read-only; the CLI needs ~3 s)."""
+    """Boards with task counts, read straight from the board databases (read-only; the CLI needs ~3 s).
+
+    The `default` board always exists in Hermes: its database is <home>/kanban.db and its board.json is optional
+    metadata (a fresh home has none), so it is listed from the database when no board.json produced it."""
     root = hermes_home() / "kanban" / "boards"
     rows = []
     for slug_dir in sorted(root.iterdir()) if root.is_dir() else []:
@@ -154,16 +170,12 @@ def kanban_boards() -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
         db = hermes_home() / "kanban.db" if b.get("slug") == "default" else slug_dir / "kanban.db"
-        counts: dict[str, int] = {}
-        try:
-            meta.note_file(db)
-            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
-            try:
-                counts = {st: n for st, n in con.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status")}
-            finally:
-                con.close()
-        except sqlite3.Error:
-            counts = {"error": -1}
+        counts = _kanban_counts(db)
         rows.append({"slug": b.get("slug"), "archived": bool(b.get("archived")), "counts": counts,
                      "total": sum(v for v in counts.values() if v > 0), "board_created_at": b.get("created_at")})
+    default_db = hermes_home() / "kanban.db"
+    if default_db.is_file() and not any(r["slug"] == "default" for r in rows):
+        counts = _kanban_counts(default_db)
+        rows.insert(0, {"slug": "default", "archived": False, "counts": counts,
+                        "total": sum(v for v in counts.values() if v > 0), "board_created_at": None})
     return rows
