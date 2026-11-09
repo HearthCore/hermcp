@@ -17,7 +17,7 @@ hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, 
 `hermes_call` re-runs the full scope check, so it cannot reach a tool the key may not use.
 
 Toolsets (tools per set): `status` 8, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
-`plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 12, `providers` 11,
+`plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 13, `providers` 11,
 `approvals` 3, `memory` 4, `ops` 6, `inbox` 7, `admin` 3, plus the 4 `meta` tools. A key only ever
 sees (and can only call) the tools its scopes allow; the live truth for a key is `hermes_whoami`, and
 `hermes hermcp docs` regenerates the full catalog. These numbers move with every feature release —
@@ -132,6 +132,39 @@ only credential-pool rotation of the same provider remains. A `base_url` alone a
 - Fallback chain: `models_fallbacks` (read, same data as `hermes fallback list`) is open to read keys;
   `models_fallback_add` / `models_fallback_remove` (incl. `clear`) now need `access=admin` plus the `approvals` scope and
   accept `dry_run`.
+
+### Cron ledger
+
+Two read-only tools answer "what did the cron jobs do?" without starting an agent turn:
+
+- `cron_runs` lists recent runs from `<profile>/cron/executions.db` (row id = `run_id`) and joins names from
+  `jobs.json` and sessions from `state.db`. Filters: `job_id` (exact), `status`, `since` (ISO 8601), `limit`
+  (default 20, max 100), `has_session`. A row carries `run_id`, `job_id`, `job_name`, `platform`, `status`,
+  `started_at`, `finished_at`, `duration_s`, `session_id`, `has_output`, `output_size`, `error` (cut at 200
+  chars) and `delivery_outcome`; no run text. `platform` is the fixed value `cron`; `user_id`, `chat_context`,
+  `client` and `client_session` are part of the row schema for the shared ledger but are `null` for cron.
+- `cron_run_output` returns one run (metadata plus the saved output document) by `run_id`. `max_chars`
+  (default 8000, max 50000) and `offset`/`next_offset` page through a long document; `include_prompt=false`
+  drops the `## Prompt` section of an agent run. A missing document (retention, removed job) is
+  `output_missing=true` with a message, not an error. Text is `untrusted: true` and passes the central
+  redaction.
+
+Output documents are matched to a run with the Hermes dashboard's rule (`_execution_contains`):
+`floor(claimed_at) <= doc_ts <= finished_at + 300 s`, filename seconds interpreted in the profile's configured
+`timezone:`. `match` is therefore `heuristic`; `ambiguous=true` when more than one document falls in the
+window (the likeliest writer is still returned). Agent runs get their session from
+`session_admissions.request_id = "cron:<job_id>:<execution_id>"` joined to `sessions.source='cron'`; script
+(`no_agent`) runs have none.
+
+Ledger status values are Hermes execution states (`completed`, `failed`, `cancelled`, `missed`, `running`);
+the filter additionally accepts `ok` (= completed) and `error` (= failed). `silent` is not a persisted ledger
+state — a silent run is a `completed` row whose output contains `[SILENT]`. Loose legacy files in the output
+root (`<job_id>_YYYYMMDD_HHMMSS.txt`) are not guessed at. Paths are never taken from the client: `job_id`
+must match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, filenames come from a directory listing and are resolved inside the
+output root, and the database is opened `mode=ro`.
+
+The Hermes execution ledger has no `output_file` column; a future upstream improvement could record the exact
+path per run and remove the heuristic. This plugin deliberately does not patch Hermes.
 
 ### Notable tools
 
