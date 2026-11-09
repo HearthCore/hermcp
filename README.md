@@ -45,7 +45,7 @@ selftest` against a live install. Each row links to the section that documents i
 
 | Feature | What you get | Where |
 |---|---|---|
-| 144 tools, 18 toolsets | Full Hermes control surface behind one `/mcp` endpoint; 46 tools advertised, the rest through `hermes_search_tools` | [Tool surface](docs/tool-surface.md) |
+| 145 tools, 19 toolsets | Full Hermes control surface behind one `/mcp` endpoint; 42 tools advertised, the rest through `hermes_search_tools` | [Tool surface](docs/tool-surface.md) |
 | Per-key scopes | `access` + `toolsets` + `profiles` + explicit flags (`approvals`, `secrets_write`, `dangerous`, `inbox_push`, `approvals_always`); hidden tools never appear in `tools/list` | [Keys and scopes](docs/keys-and-scopes.md) |
 | Profile-bound keys | A key limited to one profile; global/admin tools and every indirect path (kanban, sessions, cron, skills, logs, approvals, inbox) closed | [Profile-bound keys](docs/profile-bound-keys.md) |
 | Key lifecycle | `keys create / list / policy / show / revoke / rotate / rename / scopes`; rename and scope changes keep the token valid | [CLI](docs/cli.md) |
@@ -55,6 +55,7 @@ selftest` against a live install. Each row links to the section that documents i
 | Approval hooks | `pre_approval_request` / `post_approval_response` land in the inbox as `approval_pending` / `approval_resolved` | [Approval hooks](docs/inbox-and-runs.md#approval-hooks-telegram-and-cli-approvals-in-the-inbox) |
 | Starting and steering runs | `chat_send` (idempotent via `request_key`), `chat_run_steer`, `chat_run_cancel`, `chat_session_queue` | [Starting runs](docs/inbox-and-runs.md#starting-runs-chat_send) |
 | Client sessions | Session cards, `client_session` handles, run attribution, foreign-run guard, `recover_from`, claim of unclaimed runs, situation report | [Client sessions](docs/client-sessions.md) |
+| Cron ledger | `cron_runs` (lean metadata from `executions.db`) and `cron_run_output` (full saved output by run id, paged, redacted); session attribution, scope filtering, untrusted marking | [Cron ledger](docs/tool-surface.md#cron-ledger) |
 | Event inbox + run watcher | Status-only mailbox with per-consumer read state; the watcher turns run status into `needs_approval` / `run_finished` / `run_failed` / `run_cancelled` / `run_lost` | [Event inbox](docs/inbox-and-runs.md) |
 | Per-profile api_server keys | `profile-keys status / setup / rotate`, never printing a key | [Per-profile api_server keys](docs/profile-keys.md) |
 | Output redaction | Every result and audit line redacted centrally; write tools return changes, never values | [Output redaction](docs/tool-surface.md#output-redaction) |

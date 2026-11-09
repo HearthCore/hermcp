@@ -340,20 +340,22 @@ def test_secrets_status_never_returns_values(rig, monkeypatch):
 
 
 def test_cron_runs_structured_and_outputs(rig):
-    (rig.home / "cron" / "output" / "abcdef012345").mkdir(parents=True)
-    (rig.home / "cron" / "output" / "abcdef012345" / "2026-10-25_10-00-00.md").write_text("answer token=" + S)
+    (rig.home / "cron" / "output" / "abcdef012345aaaa").mkdir(parents=True)
+    (rig.home / "cron" / "output" / "abcdef012345aaaa" / "2026-10-25_10-00-09.md").write_text("answer token=" + S)
     db = sqlite3.connect(rig.home / "cron" / "executions.db")
     db.execute("CREATE TABLE executions (id TEXT, job_id TEXT, source TEXT, process_id TEXT, pid INT, process_started_at INT,"
                " status TEXT, claimed_at TEXT, started_at TEXT, finished_at TEXT, error TEXT, handoff_pending INT,"
                " handoff_started_at REAL, delivery_outcome TEXT, scheduled_instant TEXT, progress_at TEXT)")
-    db.execute("INSERT INTO executions VALUES ('e1','abcdef012345aaaa','s','p',1,1,'failed','2026-10-25T10:00:00','2026-10-25T10:00:01',"
-               "'2026-10-25T10:00:09','HTTP 429',0,NULL,'sent','2026-10-25T10:00:00',NULL)")
+    db.execute("INSERT INTO executions VALUES ('e1','abcdef012345aaaa','s','p',1,1,'failed','2026-10-25T10:00:00',"
+               "'2026-10-25T10:00:01','2026-10-25T10:00:09','HTTP 429',0,NULL,'sent','2026-10-25T10:00:00',NULL)")
     db.commit()
     db.close()
-    r = rig.ok("cron_runs", job_id="abcdef012345", include_output=True)
-    assert r["executions"][0]["status"] == "failed" and r["executions"][0]["error"] == "HTTP 429"
-    assert "answer" in r["outputs"][0]["content"] and S not in json.dumps(r)
-    assert rig.call("cron_runs", include_output=True)["ok"] is False
+    r = rig.ok("cron_runs", job_id="abcdef012345aaaa")
+    assert r["runs"][0]["status"] == "failed" and r["runs"][0]["error"] == "HTTP 429"
+    assert r["runs"][0]["has_output"] is True
+    out = rig.ok("cron_run_output", run_id="e1")
+    assert "answer" in out["output"]["content"] and S not in json.dumps(out)
+    assert rig.call("cron_runs", job_id="../escape")["error"]["code"] == "invalid_arguments"
 
 
 def test_kanban_show_adds_worker_log_and_kanban_log(rig):
