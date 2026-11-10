@@ -291,6 +291,32 @@ function render(d){
   (gw.stale_platforms||[]).forEach(function(x){chips.appendChild(chip("",x.name+" · verwaist",x.reason||""));});
   gcard.appendChild(chips);root.appendChild(gcard);
 
+  var cl = d.clients || {}, groups = cl.clients || [];
+  var clcard=el("section","card"),clhd=el("div","hd");
+  clhd.appendChild(el("h3",null,"Clients und Sessions"));
+  clhd.appendChild(el("span","sub",groups.length+" Clients"+(d.kanban_url?" · ":"")));
+  if(d.kanban_url) clhd.lastChild.appendChild(link(d.kanban_url,"Kanban-Board"));
+  clcard.appendChild(clhd);
+  if(groups.length){
+    var rowsC=[];
+    groups.forEach(function(g){ g.sessions.forEach(function(s,i){
+      rowsC.push(row([i===0?g.client:"",
+        el("span",null,(s.kind||"—")+(s.role?" · "+s.role:"")),
+        el("span",null,s.purpose||"—"),
+        el("span","pill "+(s.state==="active"?"ok":""),s.state==="active"?"aktiv":"ruhig"),
+        el("span","num",ago(s.last_seen)||"—"),
+        el("span","num",s.open_runs.length?(s.open_runs.length+" offen ("+
+          s.open_runs.map(function(r){return r.profile;}).join(", ")+")"):"—"),
+        el("span","mono",s.client_session)]));
+    }); });
+    clcard.appendChild(table(["Client","Art","Auftrag","Status","zuletzt","Runs","Handle"],rowsC));
+  } else clcard.appendChild(el("div","empty","Keine Sessions registriert."));
+  clcard.appendChild(el("div","legend","aktiv = in den letzten "+(cl.active_window_minutes||15)+
+    " Minuten gesehen oder mit offenen Runs · "+(cl.unclaimed_count?(cl.unclaimed_count+
+    " offene Runs ohne Session · "):"")+(cl.handed_over_hidden?(cl.handed_over_hidden+
+    " übernommene Sessions ausgeblendet · "):"")+"Karten sind Beschriftungen, keine Berechtigungen."));
+  root.appendChild(clcard);
+
   var scard=el("section","card"),shd=el("div","hd");
   shd.appendChild(el("h3",null,"Sessions und Runs"));
   shd.appendChild(el("span","sub",sessions.length+" Einträge · "+(d.profiles||[]).length+" Profile"));

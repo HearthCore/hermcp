@@ -27,6 +27,11 @@ passes the handle to `chat_send`, `chat_run_steer` and `chat_run_cancel`. What f
   readable `label` ("Cowork · code · Ledger bauen") — in `runs_active` and on the run events of `inbox_poll` /
   `inbox_list`, and on failed agent runs of the Ledger page. It is read from the session card when asked, nothing is
   stored twice. A key sees this for its own sessions; admin keys see it for every key. Runs without a session carry none.
+- Overview for humans: `clients_overview` answers "which client serves which session" in one call — sessions grouped by
+  client with kind, purpose, role, `state` (active: seen within 15 minutes or has open runs), last seen and the open
+  runs, plus `unclaimed_runs` and a short speakable `summary`. `scope=own` (default) covers this key's sessions,
+  `scope=all` every key's (admin). Profile-restricted keys see only runs of their profiles. The Ledger page shows the
+  same view ([ledger.md](ledger.md#clients-and-sessions)).
 - Claim: `session_card_set claim_runs=[run_ids]` (or `claim_unclaimed=true`) attaches open runs that were started
   without a handle to your session (`client_session=<handle>`, or a new card if you pass none). Preview first,
   `confirm=true` applies. Runs another session owns are never claimable (`not_claimable`); that goes through recover.

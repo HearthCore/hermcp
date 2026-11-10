@@ -82,6 +82,7 @@ class Settings:
     ledger: bool = False             # serve the read-only situation page at /ledger; off by default
     ledger_auth: str = "key"         # "key" (default) | "none" (only from private/loopback addresses)
     ledger_base_url: str = ""        # where session links point (desktop app); empty = from Hermes config
+    ledger_kanban_url: str = ""      # opt-in: where the page's Kanban link points (e.g. the desktop app's board view)
     ledger_poll_seconds: int = 15    # page polling interval
     ledger_window_hours: int = 24    # cron ledger / failed-run window
     ledger_cache_ttl: float = 8.0    # server-side cache per payload
@@ -189,6 +190,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger=g("HERMCP_LEDGER", "").lower() in ("1", "true", "yes", "on"),
         ledger_auth=(g("HERMCP_LEDGER_AUTH", "key").strip().lower() or "key"),
         ledger_base_url=g("HERMCP_LEDGER_BASE_URL", "").rstrip("/"),
+        ledger_kanban_url=g("HERMCP_LEDGER_KANBAN_URL", "").strip(),
         ledger_poll_seconds=max(5, int(g("HERMCP_LEDGER_POLL_SECONDS", "15"))),
         ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
         ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),

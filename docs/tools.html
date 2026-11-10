@@ -43,9 +43,9 @@ footer{color:var(--dim);font-size:11px;padding:0 26px 40px;max-width:1180px}
 <div class='sub'>What an MCP client sees. Generated from the live registry (hermcp 0.1.0). Regenerate: <code>python -m hermcp docs</code></div></header>
 <div class='wrap'>
 <div class='grid'>
-<div class='stat'><b>145</b>tools total</div>
+<div class='stat'><b>146</b>tools total</div>
 <div class='stat'><b>42</b>advertised directly</div>
-<div class='stat'><b>74</b>read</div>
+<div class='stat'><b>75</b>read</div>
 <div class='stat'><b>44</b>write</div>
 <div class='stat'><b>27</b>admin</div>
 <div class='stat'><b>19</b>toolsets</div>
@@ -1352,7 +1352,26 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
   },
   &quot;additionalProperties&quot;: false
 }</pre></details></div>
-<h2>inbox <em>(7)</em></h2>
+<h2>inbox <em>(8)</em></h2>
+<div class='card' data-h='clients_overview inbox read which client serves which session, in one call: sessions grouped by client (cowork, claudeai, claude code, ...), each with kind, purpose, role, last_seen, `state` (active: seen within `active_window_minutes` or has open runs; otherwise idle) and its open runs (run_id, profile, age, activity). `unclaimed_runs` were started without a session. `summary` is one short sentence per client, meant to be read out. default scope=own covers the sessions of this key; scope=all covers every key and needs access=admin. sessions that were handed over are counted in `handed_over_hidden`, not listed. profile-restricted keys see only runs of their profiles. cards are labels, never permissions. '>
+<div class='name'>clients_overview</div>
+<div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span></div>
+<p class='desc'>Which client serves which session, in one call: sessions grouped by client (Cowork, ClaudeAI, Claude Code, ...), each with kind, purpose, role, last_seen, `state` (active: seen within `active_window_minutes` or has open runs; otherwise idle) and its open runs (run_id, profile, age, activity). `unclaimed_runs` were started without a session. `summary` is one short sentence per client, meant to be read out. Default scope=own covers the sessions of this key; scope=all covers every key and needs access=admin. Sessions that were handed over are counted in `handed_over_hidden`, not listed. Profile-restricted keys see only runs of their profiles. Cards are labels, never permissions.</p>
+<details><summary>input schema</summary>
+<pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;scope&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;enum&quot;: [
+        &quot;own&quot;,
+        &quot;all&quot;
+      ],
+      &quot;default&quot;: &quot;own&quot;
+    }
+  },
+  &quot;additionalProperties&quot;: false
+}</pre></details></div>
 <div class='card' data-h='inbox_ack inbox read mark inbox events as read for this consumer (key + optional label; other consumers keep their own unread state). pass `ids`, or all=true to mark everything unread, backlog included. unknown ids come back in `not_found`. only touches the mailbox. core'>
 <div class='name'>inbox_ack</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span></div>
