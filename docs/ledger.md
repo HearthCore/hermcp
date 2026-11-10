@@ -76,6 +76,33 @@ stored in a browser. The intended direction is per-user OIDC for the page (sign-
 existing identity provider, a principal per user, scopes from groups) so `AUTH=key` can go away for
 humans and `AUTH=none` stays what it is: a private-network convenience. Not implemented yet.
 
+## Aufräumen in der Ansicht (nur im Browser)
+
+Fehler verschwinden nicht sofort, nur weil sie erledigt sind. Die Seite bietet deshalb zwei rein
+lokale Aufräum-Wege — **ohne Schreibpfad**:
+
+* **Ausblenden** pro Eintrag, plus „Alle ausblenden“ im Block. Der Zustand liegt in
+  `localStorage` (`hermcp.ledger.dismissed.v1`, Schlüssel = Run-ID), also **pro Browser** und nicht
+  serverseitig. Ist der Speicher nicht verfügbar (privater Modus, Richtlinie), sagt die Seite das und
+  das Ausblenden gilt nur für die aktuelle Ansicht. Beim Laden werden IDs, die das Zeitfenster
+  verlassen haben, aus dem Speicher entfernt (kein Wildwuchs). Eine Zeile „N ausgeblendet“ bietet
+  „anzeigen“/„wieder einblenden“ und „Zurücksetzen“.
+* **Überholt**: ein fehlgeschlagener Cron-Lauf gilt als erledigt, wenn derselbe Job (`job_id`)
+  danach wieder erfolgreich lief — abgeleitet rein lesend aus dem Ledger (`cron_runs`, ein Aufruf pro
+  betroffenem Job). Solche Läufe verschwinden nicht still, sondern stehen in der eingeklappten Gruppe
+  „Überholt (Job lief danach wieder ok)“ und zählen nicht als Aufmerksamkeit. Schlägt der Nachschlag
+  fehl, bleibt der Lauf sichtbar (ein Fehler wird nie auf Verdacht versteckt).
+
+**Offene Freigaben lassen sich nicht ausblenden** — sie sind actionable; das ist Absicht.
+
+Die Zähler oben („Fehlschläge 24 h“, „Braucht Aufmerksamkeit“) rechnen ausgeblendete und überholte
+Einträge heraus. Es gibt dafür keinen Endpunkt: die Seite bleibt strukturell read-only, der Principal
+bleibt `access=read`, nichts an Hermes-Daten (Cron-Ledger, Sessions, `executions.db`) wird geändert.
+
+**Ausblick:** Sobald es eine Authentifizierung pro User gibt (OIDC, siehe oben), kann ein
+serverseitiges Quittieren pro User und Eintrag dazukommen — dann würde das Ledger selbst aufräumen und
+der Zustand wäre geräteübergreifend. Nicht Teil dieser Version.
+
 ## Read-only, by construction
 
 Every value comes from the registry's existing **read** tools, invoked with a principal derived from

@@ -78,6 +78,10 @@ class FakeRegistry:
                 "mode": "multiplex-shared", "count": 1, "hidden_other_profiles": 2,
                 "pending": [{"session_key": "sess:default", "request_id": "req-1",
                              "command": "rm -rf /tmp/x", "description": "cleanup"}]}}
+        if name == "cron_runs" and args.get("job_id"):
+            job = args["job_id"]
+            rows = [r for r in TOOLS["cron_runs"]["runs"] if r.get("job_id") == job]
+            return {"ok": True, "result": {"count": len(rows), "runs": rows}}
         if name == "cron_runs" and args.get("status") == "error":
             return {"ok": True, "result": {"count": 1, "runs": [
                 {"run_id": "r2", "job_id": "j2", "job_name": "relay", "status": "error",
@@ -173,6 +177,7 @@ def test_overview_assembles_every_section():
     assert payload["sections"]["approvals"]["count"] == 1
     assert payload["sections"]["approvals"]["hidden"] == 2
     assert payload["attention"]["failed_cron_count"] == 1
+    assert payload["attention"]["superseded_count"] == 0
     assert payload["attention"]["failed_chat_count"] == 1
     assert payload["errors"] == {}
     # every read went out with the read-only principal
@@ -426,3 +431,59 @@ def test_no_write_tool_is_reachable_from_the_page(home):
     ledger_part = src[src.index("-- ledger"):src.index("async def mcp")]
     for verb in ("registry.invoke", "chat_send", "chat_run_", "kanban_", "config_set"):
         assert verb not in ledger_part, verb
+
+
+# ---------------------------------------------------------------------------
+# superseded: a failure the same job already recovered from (read-only derivation)
+# ---------------------------------------------------------------------------
+
+class SupersededRegistry(FakeRegistry):
+    """``relay`` failed at 06:00 and ran fine again at 07:30; ``watchdog`` kept failing."""
+
+    def invoke(self, name, args, principal, settings, audit, via=""):
+        if name == "cron_runs" and args.get("job_id") == "j2":
+            return {"ok": True, "result": {"count": 1, "runs": [
+                {"run_id": "r3", "job_id": "j2", "job_name": "relay", "status": "completed",
+                 "started_at": "2026-11-10T07:30:00+01:00"}]}}
+        if name == "cron_runs" and args.get("job_id") == "j9":
+            return {"ok": True, "result": {"count": 1, "runs": [
+                {"run_id": "r9", "job_id": "j9", "job_name": "stuck", "status": "error",
+                 "started_at": "2026-11-10T07:40:00+01:00"}]}}
+        if name == "cron_runs" and args.get("status") == "error":
+            return {"ok": True, "result": {"count": 2, "runs": [
+                {"run_id": "r2", "job_id": "j2", "job_name": "relay", "status": "error",
+                 "started_at": "2026-11-10T06:00:00+01:00", "error": "timeout"},
+                {"run_id": "r8", "job_id": "j9", "job_name": "stuck", "status": "error",
+                 "started_at": "2026-11-10T07:00:00+01:00", "error": "boom"}]}}
+        return super().invoke(name, args, principal, settings, audit, via)
+
+
+def test_a_failure_whose_job_ran_ok_afterwards_moves_to_superseded():
+    payload = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)
+    att = payload["attention"]
+    assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
+    assert att["failed_cron_count"] == 1
+    assert [r["run_id"] for r in att["superseded_cron_runs"]] == ["r2"]
+    assert att["superseded_count"] == 1
+    assert att["superseded_cron_runs"][0]["ok_after"].startswith("2026-11-10T07:30")
+    # superseded runs do not count as attention; the still-failing one does
+    assert att["total"] == 1 + 1 + 1          # failing cron + failing chat + approval
+
+
+def test_a_broken_superseded_lookup_never_hides_a_failure():
+    class Broken(FakeRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "cron_runs" and args.get("job_id"):
+                return {"ok": False, "error": {"code": "internal_error", "message": "ledger broke"}}
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    payload = LB.build_overview(Broken(), make_principal(), make_settings(), CONFIG)
+    assert payload["attention"]["failed_cron_count"] == 1
+    assert payload["attention"]["superseded_count"] == 0
+    assert "cron_superseded" in payload["errors"]
+
+
+def test_superseded_entries_are_part_of_the_page_but_not_of_the_badge():
+    page = LB.page_html(15)
+    assert "superseded_cron_runs" in page          # rendered in the collapsed group
+    assert "attentionCount" in page                # the badge counts active only
