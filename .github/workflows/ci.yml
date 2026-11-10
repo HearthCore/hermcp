@@ -44,3 +44,18 @@ jobs:
           uv pip install pytest pyyaml ruamel.yaml
       - name: Run tests
         run: hermes-agent/.venv/bin/python -m pytest hermcp/tests -q -p no:cacheprovider
+
+  bundle:
+    # The Ledger page's script is plain JS with the dismiss logic in pure helpers;
+    # these tests run it in node (no browser).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: hermcp
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run page-script tests
+        working-directory: hermcp
+        run: node --test tests/test_ledger_js.mjs

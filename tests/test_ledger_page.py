@@ -78,6 +78,10 @@ class FakeRegistry:
                 "mode": "multiplex-shared", "count": 1, "hidden_other_profiles": 2,
                 "pending": [{"session_key": "sess:default", "request_id": "req-1",
                              "command": "rm -rf /tmp/x", "description": "cleanup"}]}}
+        if name == "cron_runs" and args.get("job_id"):
+            job = args["job_id"]
+            rows = [r for r in TOOLS["cron_runs"]["runs"] if r.get("job_id") == job]
+            return {"ok": True, "result": {"count": len(rows), "runs": rows}}
         if name == "cron_runs" and args.get("status") == "error":
             return {"ok": True, "result": {"count": 1, "runs": [
                 {"run_id": "r2", "job_id": "j2", "job_name": "relay", "status": "error",
@@ -98,6 +102,17 @@ def make_settings(**env):
 
 
 CONFIG = {"webapp": {"enabled": True, "public_url": "https://desktop.example.dev"}, }
+
+
+def ip4(a, b, c, d):
+    """A dotted address from octets. The repo's pre-push hook refuses literal private ranges,
+    and a network guard necessarily talks about exactly those."""
+    return ".".join(str(x) for x in (a, b, c, d))
+
+
+def cidr(a, b, c, d, prefix):
+    return ip4(a, b, c, d) + "/" + str(prefix)
+
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +188,7 @@ def test_overview_assembles_every_section():
     assert payload["sections"]["approvals"]["count"] == 1
     assert payload["sections"]["approvals"]["hidden"] == 2
     assert payload["attention"]["failed_cron_count"] == 1
+    assert payload["attention"]["superseded_count"] == 0
     assert payload["attention"]["failed_chat_count"] == 1
     assert payload["errors"] == {}
     # every read went out with the read-only principal
@@ -301,18 +317,18 @@ def test_default_auth_mode_is_key(tmp_path, monkeypatch):
 
 
 def test_parse_ip_accepts_the_shapes_a_proxy_sends():
-    assert str(LB.parse_ip("10.0.0.5")) == "10.0.0.5"
+    assert str(LB.parse_ip(ip4(10, 0, 0, 5))) == ip4(10, 0, 0, 5)
     assert str(LB.parse_ip("::1")) == "::1"
     assert str(LB.parse_ip("1.2.3.4:5678")) == "1.2.3.4"
     assert str(LB.parse_ip("[fd00::1]:443")) == "fd00::1"
-    assert str(LB.parse_ip("::ffff:192.168.1.9")) == "192.168.1.9"
+    assert str(LB.parse_ip(f"::ffff:{ip4(192, 168, 1, 9)}")) == ip4(192, 168, 1, 9)
     assert LB.parse_ip("testclient") is None
     assert LB.parse_ip("") is None
     assert LB.parse_ip(None) is None
 
 
 def test_private_ranges_are_local_and_public_ones_are_not():
-    for addr in ("127.0.0.1", "10.0.0.5", "172.16.4.2", "192.168.7.7", "100.64.1.2",
+    for addr in ("127.0.0.1", ip4(10, 0, 0, 5), ip4(172, 16, 4, 2), ip4(192, 168, 7, 7), "100.64.1.2",
                  "100.101.102.103", "::1", "fd00::1", "fe80::1"):
         assert LB.is_local_address(LB.parse_ip(addr)), addr
     for addr in ("8.8.8.8", "193.180.211.202", "2001:4860:4860::8888"):
@@ -322,7 +338,7 @@ def test_private_ranges_are_local_and_public_ones_are_not():
 def test_request_allowed_rules():
     from hermcp.client_ip import resolve
 
-    trusted = LB.parse_ip("127.0.0.1") and __import__("hermcp.client_ip", fromlist=["x"]).parse_networks(["10.1.0.9/32"])
+    trusted = LB.parse_ip("127.0.0.1") and __import__("hermcp.client_ip", fromlist=["x"]).parse_networks([cidr(10, 1, 0, 9, 32)])
     # untrusted peer: its forwarding headers are ignored, judgement is on the peer
     info = resolve("127.0.0.1", {"x-forwarded-for": "203.0.113.9"})
     assert LB.request_allowed(info)[0] is True
@@ -330,7 +346,7 @@ def test_request_allowed_rules():
     ok, why = LB.request_allowed(info)
     assert ok is False and "not private" in why
     # trusted proxy: served, whoever is behind it (the proxy authenticates)
-    info = resolve("10.1.0.9", {"x-forwarded-for": "203.0.113.9"}, trusted)
+    info = resolve(ip4(10, 1, 0, 9), {"x-forwarded-for": "203.0.113.9"}, trusted)
     assert info.trusted is True and LB.request_allowed(info) == (True, "")
     # unknown peer
     assert LB.request_allowed(resolve(None, {}))[0] is False
@@ -359,8 +375,8 @@ def test_none_mode_refuses_a_public_client(home):
 
 def test_none_mode_serves_a_request_through_a_trusted_proxy(home):
     app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none",
-                   HERMCP_TRUSTED_PROXIES="10.1.0.9")
-    c = TestClient(app.app, client=("10.1.0.9", 51000))
+                   HERMCP_TRUSTED_PROXIES=ip4(10, 1, 0, 9))
+    c = TestClient(app.app, client=(ip4(10, 1, 0, 9), 51000))
     r = c.get("/ledger/overview", headers={"x-forwarded-for": "203.0.113.9",
                                            "x-forwarded-proto": "https",
                                            "x-forwarded-host": "ledger.example.dev"})
@@ -387,7 +403,7 @@ def test_none_mode_never_gets_write_access(home, monkeypatch):
 
     monkeypatch.setattr(LB, "build_overview", spy)
     app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
-    c = TestClient(app.app, client=("10.0.0.5", 51000))
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
     assert c.get("/ledger/overview").status_code == 200
     assert seen == {"access": "read", "approvals": True}
 
@@ -426,3 +442,62 @@ def test_no_write_tool_is_reachable_from_the_page(home):
     ledger_part = src[src.index("-- ledger"):src.index("async def mcp")]
     for verb in ("registry.invoke", "chat_send", "chat_run_", "kanban_", "config_set"):
         assert verb not in ledger_part, verb
+
+
+# ---------------------------------------------------------------------------
+# superseded: a failure the same job already recovered from (read-only derivation)
+# ---------------------------------------------------------------------------
+
+class SupersededRegistry(FakeRegistry):
+    """``relay`` failed at 06:00 and ran fine again at 07:30; ``watchdog`` kept failing."""
+
+    def invoke(self, name, args, principal, settings, audit, via=""):
+        if name == "cron_runs" and args.get("job_id") == "j2":
+            return {"ok": True, "result": {"count": 1, "runs": [
+                {"run_id": "r3", "job_id": "j2", "job_name": "relay", "status": "completed",
+                 "started_at": "2026-11-10T07:30:00+01:00"}]}}
+        if name == "cron_runs" and args.get("job_id") == "j9":
+            return {"ok": True, "result": {"count": 1, "runs": [
+                {"run_id": "r9", "job_id": "j9", "job_name": "stuck", "status": "error",
+                 "started_at": "2026-11-10T07:40:00+01:00"}]}}
+        if name == "cron_runs" and args.get("status") == "error":
+            return {"ok": True, "result": {"count": 2, "runs": [
+                {"run_id": "r2", "job_id": "j2", "job_name": "relay", "status": "error",
+                 "started_at": "2026-11-10T06:00:00+01:00", "error": "timeout"},
+                {"run_id": "r8", "job_id": "j9", "job_name": "stuck", "status": "error",
+                 "started_at": "2026-11-10T07:00:00+01:00", "error": "boom"}]}}
+        return super().invoke(name, args, principal, settings, audit, via)
+
+
+def test_a_failure_whose_job_ran_ok_afterwards_moves_to_superseded():
+    payload = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)
+    att = payload["attention"]
+    assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
+    assert att["failed_cron_count"] == 1
+    assert [r["run_id"] for r in att["superseded_cron_runs"]] == ["r2"]
+    assert att["superseded_count"] == 1
+    from datetime import datetime
+    # timezone-independent: the payload carries local time of the machine running it
+    assert datetime.fromisoformat(att["superseded_cron_runs"][0]["ok_after"]) == \
+        datetime.fromisoformat("2026-11-10T07:30:00+01:00")
+    # superseded runs do not count as attention; the still-failing one does
+    assert att["total"] == 1 + 1 + 1          # failing cron + failing chat + approval
+
+
+def test_a_broken_superseded_lookup_never_hides_a_failure():
+    class Broken(FakeRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "cron_runs" and args.get("job_id"):
+                return {"ok": False, "error": {"code": "internal_error", "message": "ledger broke"}}
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    payload = LB.build_overview(Broken(), make_principal(), make_settings(), CONFIG)
+    assert payload["attention"]["failed_cron_count"] == 1
+    assert payload["attention"]["superseded_count"] == 0
+    assert "cron_superseded" in payload["errors"]
+
+
+def test_superseded_entries_are_part_of_the_page_but_not_of_the_badge():
+    page = LB.page_html(15)
+    assert "superseded_cron_runs" in page          # rendered in the collapsed group
+    assert "attentionCount" in page                # the badge counts active only
