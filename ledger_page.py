@@ -39,6 +39,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+from .adapters import clients_view
+from .adapters.inbox_store import get_inbox
 from .client_ip import parse_ip
 from .registry import Principal
 from .scopes import Scopes
@@ -503,6 +505,11 @@ def build_overview(registry, principal: Principal, settings, hermes_config: Dict
                    request_base: str = "", window_hours: int = WINDOW_HOURS_DEFAULT) -> Dict[str, Any]:
     """Everything the page shows, one dict. Sections fail independently."""
     started = time.time()
+    # whose sessions to list: every key's for an admin caller or the private-network page, else the caller's own
+    see_all = principal.scopes.access == "admin" or principal.id == PAGE_PRINCIPAL_ID
+    restricted = principal.scopes.profiles and "*" not in principal.scopes.profiles
+    allowed = set(principal.scopes.profiles) if restricted else None
+    caller_id = principal.id
     principal = read_only_principal(principal)
     errors: Dict[str, str] = {}
     targets = link_targets(settings, hermes_config, request_base)
@@ -519,6 +526,14 @@ def build_overview(registry, principal: Principal, settings, hermes_config: Dict
         errors["profiles"] = str(exc)
         profiles = ["default"]
     payload["profiles"] = profiles
+    kanban = (getattr(settings, "ledger_kanban_url", "") or "").strip()
+    payload["kanban_url"] = kanban if _http_ok(kanban) else None
+    try:
+        payload["clients"] = clients_view.build(get_inbox(settings), key_id=None if see_all else caller_id,
+                                                allowed_profiles=allowed)
+    except Exception as exc:  # noqa: BLE001 - a broken ledger db must not take the page down
+        errors["clients"] = str(exc)
+        payload["clients"] = {"clients": [], "unclaimed_runs": [], "unclaimed_count": 0, "summary": ""}
     payload["gateway"] = _gateway(registry, principal, settings, errors)
     approvals = _approvals(registry, principal, settings, profiles, errors)
     sessions = _sessions(registry, principal, settings, profiles, targets, errors)
