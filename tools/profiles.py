@@ -22,7 +22,7 @@ def _meta(name):
 
 
 def _summary(name, info=None):
-    import yaml
+    from .. import _yaml as yaml
     home = profile_home(name)
     model = None
     try:

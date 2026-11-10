@@ -34,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-import yaml
+from .. import _yaml as yaml
 
 from .. import meta
 from ..redact import redact_text

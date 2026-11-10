@@ -83,7 +83,7 @@ def _probe(profile: str, op: str, args: dict | None = None, **env: str) -> dict:
 
 
 def _raw_yaml(profile: str) -> dict:
-    import yaml
+    from . import _yaml as yaml
     from .adapters.common import profile_home
     return yaml.safe_load((profile_home(profile) / "config.yaml").read_text()) or {}
 
@@ -425,7 +425,7 @@ def check_redaction_and_paths(rep: Report, rig: Rig) -> None:
 # -- change visible on the next call (throw-away HERMES_HOME, child process) ---------------------------------
 def _mutation_child(home: str) -> list[dict]:
     """Runs with HERMES_HOME=<tmp>: edits files between calls, in the same long-lived process."""
-    import yaml
+    from . import _yaml as yaml
     rows: list[dict] = []
     rig = Rig()
     h = Path(home)

@@ -6,6 +6,7 @@ import socket
 import sys
 from pathlib import Path
 
+from . import _yaml
 from .keys import KeyStore
 from .settings import hermes_home, load_settings, scope_errors
 
@@ -39,12 +40,13 @@ def run() -> int:
     pp = os.environ.get("PYTHONPATH", "")
     if pp and "site-packages" in pp:
         warn("PYTHONPATH points at a site-packages dir", f"{pp[:80]} -- it can shadow the Hermes venv (mcp import)")
-    for mod in ("starlette", "uvicorn", "yaml", "mcp.server.auth.provider"):
+    for mod in ("starlette", "uvicorn", "hermcp._yaml", "mcp.server.auth.provider"):
         try:
             __import__(mod)
             row(True, f"import {mod}")
         except Exception as exc:  # noqa: BLE001 - a broken native ext raises more than ImportError
             row(False, f"import {mod}", f"{type(exc).__name__}: {exc}")
+    print(f"[info] yaml backend: {_yaml.BACKEND} (PyYAML when installed, ruamel.yaml otherwise)")
     row(hermes_home().is_dir(), "HERMES_HOME", str(hermes_home()))
     try:
         from .adapters.common import ensure_hermes_importable, hermes_bin, list_profile_names, profile_home
@@ -102,8 +104,7 @@ def run() -> int:
 
     # -- approvals bridge (agent half) per profile -----------------------------------------
     try:
-        import yaml
-        cfg = yaml.safe_load((hermes_home() / "config.yaml").read_text(encoding="utf-8")) or {}
+        cfg = _yaml.safe_load((hermes_home() / "config.yaml").read_text(encoding="utf-8")) or {}
         enabled = ((cfg.get("plugins") or {}).get("enabled")) or []
         if "hermcp" in enabled:
             row(True, "plugins.enabled contains hermcp")

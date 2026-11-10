@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
+from .. import _yaml as yaml
 
 from ..redact import Label, _nest, diff_changes, redact, scrub
 from ..registry import AdapterError, ToolError
