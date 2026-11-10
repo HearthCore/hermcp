@@ -1,6 +1,7 @@
 """`hermes hermcp doctor`: installation checks. Read-only; exit 1 when a hard check fails."""
 from __future__ import annotations
 
+import importlib
 import os
 import socket
 import sys
@@ -40,12 +41,23 @@ def run() -> int:
     pp = os.environ.get("PYTHONPATH", "")
     if pp and "site-packages" in pp:
         warn("PYTHONPATH points at a site-packages dir", f"{pp[:80]} -- it can shadow the Hermes venv (mcp import)")
-    for mod in ("starlette", "uvicorn", "hermcp._yaml", "mcp.server.auth.provider"):
+    for mod in ("starlette", "uvicorn", "mcp.server.auth.provider"):
         try:
             __import__(mod)
             row(True, f"import {mod}")
         except Exception as exc:  # noqa: BLE001 - a broken native ext raises more than ImportError
             row(False, f"import {mod}", f"{type(exc).__name__}: {exc}")
+    # The yaml shim is our own module, so its absolute name is whatever the host mounted us as:
+    # `hermcp._yaml` for `python -m hermcp`, `hermes_plugins.hermcp._yaml` when Hermes loads the
+    # plugin (hermes_cli.plugins_loader). Resolve it through __package__ like tools/__init__.py does —
+    # a hard-coded `hermcp._yaml` FAILs wherever no top-level `hermcp` exists, though the shim imported
+    # fine as part of this package.
+    shim = f"{__package__}._yaml" if __package__ else _yaml.__name__
+    try:
+        importlib.import_module(shim)
+        row(True, f"import {shim}")
+    except Exception as exc:  # noqa: BLE001
+        row(False, f"import {shim}", f"{type(exc).__name__}: {exc}")
     print(f"[info] yaml backend: {_yaml.BACKEND} (PyYAML when installed, ruamel.yaml otherwise)")
     row(hermes_home().is_dir(), "HERMES_HOME", str(hermes_home()))
     try:
