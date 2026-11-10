@@ -23,6 +23,8 @@ from starlette.routing import Route
 from . import __version__
 from .audit import AuditLog
 from .capture import Capture, FILE_NAME as CAPTURE_FILE
+from . import client_ip
+from .client_ip import ClientInfo
 from . import ledger_page as LB
 from .keys import KeyStore
 from .client_id import derive_client
@@ -151,12 +153,17 @@ class HermcpApp:
                     await task
 
     # -- helpers ------------------------------------------------------------------------
+    def client_info(self, req: Request) -> ClientInfo:
+        """Who the client is — forwarding headers only from a configured trusted proxy."""
+        return client_ip.resolve(
+            req.client.host if req.client else None,
+            req.headers,
+            client_ip.parse_networks(self.settings.trusted_proxies),
+            req.url.scheme,
+        )
+
     def client_ip(self, req: Request) -> str:
-        if self.settings.trust_proxy:
-            xff = req.headers.get("x-forwarded-for", "")
-            if xff:
-                return xff.split(",")[0].strip()
-        return req.client.host if req.client else "?"
+        return self.client_info(req).ip or "?"
 
     def host_ok(self, req: Request) -> bool:
         host = req.headers.get("host", "")
@@ -192,7 +199,7 @@ class HermcpApp:
         return JSONResponse({"status": "ok", "name": "hermcp", "version": __version__})
 
     # -- ledger (opt-in, read-only) ----------------------------------------------------
-    LAGEBILD_COOKIE = "hermcp_ledger"
+    LEDGER_COOKIE = "hermcp_ledger"
 
     def _ledger_principal(self, req: Request):
         """(principal, token_from_query). Cookie or ?key= stand in for the bearer header.
@@ -207,7 +214,7 @@ class HermcpApp:
         principal = self.authenticate(req)
         if principal is not None:
             return principal, ""
-        token = req.query_params.get("key") or req.cookies.get(self.LAGEBILD_COOKIE) or ""
+        token = req.query_params.get("key") or req.cookies.get(self.LEDGER_COOKIE) or ""
         if not token:
             return None, ""
         rec = self.keystore.authenticate(token)
@@ -232,8 +239,9 @@ class HermcpApp:
         """None when the request may be served, else the 403 to send (auth=none only)."""
         if self.settings.ledger_auth != "none":
             return None
-        peer = req.client.host if req.client else None
-        ok, why = LB.request_allowed(peer, req.headers)
+        info = self.client_info(req)
+        peer = info.peer or "?"
+        ok, why = LB.request_allowed(info)
         if ok:
             return None
         log.warning("ledger: refused unauthenticated request from %s (%s)", peer, why)
@@ -254,8 +262,8 @@ class HermcpApp:
                 status_code=401, media_type="text/html")
         if from_query:      # trade the key in the URL for an HttpOnly cookie, then drop it from the address
             resp = RedirectResponse("/ledger", status_code=303)
-            resp.set_cookie(self.LAGEBILD_COOKIE, from_query, httponly=True, samesite="strict",
-                            secure=req.url.scheme == "https", path="/ledger")
+            resp.set_cookie(self.LEDGER_COOKIE, from_query, httponly=True, samesite="strict",
+                            secure=self.client_info(req).proto == "https", path="/ledger")
             return resp
         return Response(LB.page_html(self.settings.ledger_poll_seconds), media_type="text/html")
 
@@ -274,7 +282,7 @@ class HermcpApp:
         principal, _ = self._ledger_principal(req)
         if principal is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
-        base = str(req.base_url).rstrip("/")
+        base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
         window = int(self.settings.ledger_window_hours or 24)
         payload, age = self._ledger_cached(
             ("overview", principal.id, base, window),

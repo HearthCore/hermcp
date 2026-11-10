@@ -56,7 +56,8 @@ class Settings:
     hermes_api_url: str = "http://127.0.0.1:8642"
     hermes_api_key: str = ""
     hermes_bin: str = ""
-    trust_proxy: bool = False
+    trust_proxy: bool = False          # DEPRECATED: does not widen anything; use trusted_proxies
+    trusted_proxies: list[str] = field(default_factory=list)  # peers whose forwarding headers are believed
     call_timeout: float = 60.0
     auth_fail_limit: int = 10          # failures per window per IP
     auth_fail_window: float = 60.0
@@ -108,13 +109,22 @@ class Settings:
         return data_dir()
 
 
-LAGEBILD_AUTH_MODES = ("key", "none")
+LEDGER_AUTH_MODES = ("key", "none")
+
+
+def proxy_errors(s: "Settings") -> list[str]:
+    """One readable line per trusted-proxy entry that is not an address or CIDR."""
+    from .client_ip import invalid_networks
+    bad = invalid_networks(s.trusted_proxies)
+    if not bad:
+        return []
+    return [f"HERMCP_TRUSTED_PROXIES: not an address or CIDR: {', '.join(bad)}"]
 
 
 def ledger_errors(s: "Settings") -> list[str]:
     """One readable line per invalid Ledger setting (empty list = fine)."""
-    if s.ledger_auth not in LAGEBILD_AUTH_MODES:
-        return [f"HERMCP_LEDGER_AUTH must be one of {list(LAGEBILD_AUTH_MODES)}, got {s.ledger_auth!r}"]
+    if s.ledger_auth not in LEDGER_AUTH_MODES:
+        return [f"HERMCP_LEDGER_AUTH must be one of {list(LEDGER_AUTH_MODES)}, got {s.ledger_auth!r}"]
     return []
 
 
@@ -157,6 +167,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         hermes_api_key=g("HERMES_API_KEY", ""),
         hermes_bin=g("HERMCP_HERMES_BIN", ""),
         trust_proxy=g("HERMCP_TRUST_PROXY", "").lower() in ("1", "true", "yes"),
+        trusted_proxies=_csv(g("HERMCP_TRUSTED_PROXIES", "")),
         call_timeout=float(g("HERMCP_CALL_TIMEOUT", "60")),
         oauth_dcr=g("HERMCP_OAUTH_DCR", "").lower() in ("1", "true", "yes"),
         inbox_max_events=int(g("HERMCP_INBOX_MAX_EVENTS", "2000")),
@@ -182,7 +193,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
         ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),
     )
-    bad = scope_errors(s) + ledger_errors(s)
+    bad = scope_errors(s) + ledger_errors(s) + proxy_errors(s)
     if bad:
         if strict:
             raise ConfigError("; ".join(bad))
@@ -190,7 +201,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         for attr in ("systemd_scope", "self_systemd_scope"):
             if getattr(s, attr) not in SCOPES:
                 setattr(s, attr, "system")
-        if s.ledger_auth not in LAGEBILD_AUTH_MODES:
+        if s.ledger_auth not in LEDGER_AUTH_MODES:
             s.ledger_auth = "key"
     hosts = _csv(g("HERMCP_ALLOWED_HOSTS", ""))
     if not hosts:

@@ -59,10 +59,58 @@ Evidence: `rule.ts:17-37` (path clause), `rule.ts:83-107` (priority),
 
 X-Forwarded headers: Traefik adds `X-Forwarded-For`, `X-Forwarded-Host`,
 `X-Forwarded-Proto` (and `X-Forwarded-Port`/`-Server`). It does **not** set
-`X-Real-IP` (that's an nginx convention) — use `X-Forwarded-For`. hermcp's
-`client_ip()` reads `X-Forwarded-For` when `HERMCP_TRUST_PROXY=1`
-(`server.py:76-81`), which is how the per-IP failed-auth limiter works behind
-the proxy.
+`X-Real-IP` (that's an nginx convention) — use `X-Forwarded-For`.
+
+## Trusted proxies — the only place forwarding headers are believed
+
+`HERMCP_TRUSTED_PROXIES` is a comma-separated list of the proxies whose forwarding
+headers hermcp trusts (`hermcp/client_ip.py`). **Empty by default: then every
+forwarding header is ignored**, whatever a caller writes about itself.
+
+```ini
+# Exactly the addresses of your proxies — not a whole subnet.
+# One entry per proxy instance/IP; a bare address means /32 (or /128 for IPv6).
+HERMCP_TRUSTED_PROXIES=10.1.0.9            # e.g. the Traefik/Pangolin instance in front of hermcp
+# HERMCP_TRUSTED_PROXIES=10.1.0.9,10.1.0.10
+# HERMCP_TRUSTED_PROXIES=fd00::9
+```
+
+Rules, in code and not by convention:
+
+* The peer is **not** in the list → `X-Forwarded-For`, `Forwarded`, `X-Real-IP`,
+  `X-Forwarded-Proto` and `X-Forwarded-Host` are dropped. The client address is the TCP
+  peer; the scheme is the request's; links use the `Host` header. A spoofed
+  `X-Forwarded-For: 127.0.0.1` from the internet changes nothing.
+* The peer **is** in the list → `X-Forwarded-For` is read **right to left** and the first
+  address that is not itself a trusted proxy is the client. A client can prepend any
+  address it likes; the entries the trusted proxies appended are the ones that count.
+  RFC 7239 `Forwarded` is used when `X-Forwarded-For` is absent; `X-Forwarded-Proto` and
+  `X-Forwarded-Host` shape the cookie's `Secure` flag and the base URL of generated links.
+* Unparsable entries (`unknown`, `_hidden`, junk) are skipped, never turned into an address.
+  A chain of only trusted proxies falls back to its leftmost address.
+
+`HERMCP_TRUST_PROXY` (the old boolean) is **deprecated**: it no longer widens anything.
+Rate limiting and the failed-auth limiter use the resolved client address, so per-IP
+limits stay per real client behind the proxy.
+
+**List exact addresses, not networks.** A `/24` trusts every container that ever lands in
+that subnet; if Pangolin/Traefik runs in Docker, pin the entry to the address the proxy
+actually uses toward hermcp (or its fixed container IP), and update the list when it
+moves. A wrong list is either useless (no entry matches → headers ignored) or too open
+(a whole network can spoof).
+
+### What this means for the Ledger page
+
+With `HERMCP_LEDGER_AUTH=none` the Ledger has no key, so its guard is the network rule:
+loopback/private clients, plus **anything arriving through a trusted proxy** — the proxy
+owns authentication for that route (Pangolin SSO in front of `/ledger`). Direct requests
+from public addresses stay refused.
+
+That is a deliberate trade, and the responsibility sits with the edge configuration: if
+Pangolin's auth is switched off for the `/ledger` route, the page is public, because
+hermcp then sees a trusted proxy and serves. hermcp cannot tell an authenticated from an
+unauthenticated proxy request. Keep the proxy list tight, keep the route authenticated,
+and treat "auth off for a route" as publishing that route.
 
 ### Authorization header survives — with one condition
 
@@ -143,8 +191,8 @@ HERMCP_ALLOWED_HOSTS=mcp.example.com,127.0.0.1,localhost
 HERMCP_HOST=127.0.0.1
 HERMCP_PORT=9230
 
-# Trust X-Forwarded-For for the per-IP failed-auth limiter (set by Traefik).
-HERMCP_TRUST_PROXY=1
+# The proxy whose forwarding headers are believed (exact address, no subnet).
+HERMCP_TRUSTED_PROXIES=10.1.0.9
 
 # Upstream Hermes control API (same host, loopback) + its key.
 HERMES_API_URL=http://127.0.0.1:8642
@@ -255,8 +303,8 @@ WantedBy=multi-user.target
 
 **Rate limiting**
 - hermcp already rate-limits failed auth per IP (in-memory token bucket,
-  `auth_fail_limit`/`auth_fail_window` in `settings.py`; needs
-  `HERMCP_TRUST_PROXY=1` to see the real client IP via `X-Forwarded-For`).
+  `auth_fail_limit`/`auth_fail_window` in `settings.py`; the counted address is the
+  resolved client, i.e. the real one behind a configured `HERMCP_TRUSTED_PROXIES`).
 - Pangolin's Traefik can add a `ratelimit` middleware if you want a proxy-level
   cap, but that is not required for correctness.
 

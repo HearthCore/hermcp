@@ -91,7 +91,8 @@ def make_principal(**sc):
 
 
 def make_settings(**env):
-    base = {"HERMES_HOME": "/tmp/hermcp-ledger-test"}
+    # "key" is pinned: a local .env (this host runs AUTH=none) must not decide a test
+    base = {"HERMES_HOME": "/tmp/hermcp-ledger-test", "HERMCP_LEDGER_AUTH": "key"}
     base.update(env)
     return load_settings(base)
 
@@ -246,7 +247,7 @@ def test_page_is_absent_unless_enabled(home):
 
 
 def test_page_requires_a_key_and_then_keeps_a_cookie(home):
-    app = make_app(home, HERMCP_LEDGER="1")
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="key")
     c = TestClient(app.app)
     token = app.keystore.create("ledger", Scopes(access="read", profiles=["*"]))[1]
 
@@ -254,7 +255,7 @@ def test_page_requires_a_key_and_then_keeps_a_cookie(home):
 
     trade = c.get("/ledger", params={"key": token}, follow_redirects=False)
     assert trade.status_code == 303
-    assert app.LAGEBILD_COOKIE in c.cookies          # key traded for a cookie
+    assert app.LEDGER_COOKIE in c.cookies          # key traded for a cookie
     assert token not in trade.text
 
     page = c.get("/ledger")
@@ -273,7 +274,7 @@ def test_page_requires_a_key_and_then_keeps_a_cookie(home):
 
 
 def test_bearer_header_works_for_the_json_endpoints(home):
-    app = make_app(home, HERMCP_LEDGER="1")
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="key")
     c = TestClient(app.app)
     token = app.keystore.create("ledger", Scopes(access="read", profiles=["*"]))[1]
     r = c.get("/ledger/overview", headers={"Authorization": f"Bearer {token}"})
@@ -285,9 +286,12 @@ def test_bearer_header_works_for_the_json_endpoints(home):
 # HERMCP_LEDGER_AUTH=none: no key, but only from private addresses
 # ---------------------------------------------------------------------------
 
-def test_default_auth_mode_is_key():
-    assert make_settings().ledger_auth == "key"
-    assert make_settings(HERMCP_LEDGER_AUTH="none").ledger_auth == "none"
+def test_default_auth_mode_is_key(tmp_path, monkeypatch):
+    """No config at all (no .env, no env var) must mean key — never "open"."""
+    import hermcp.settings as st
+    monkeypatch.setattr(st, "PKG_DIR", tmp_path)          # no .env in sight
+    assert st.load_settings({"HERMES_HOME": "/tmp/x"}).ledger_auth == "key"
+    assert st.load_settings({"HERMES_HOME": "/tmp/x", "HERMCP_LEDGER_AUTH": "none"}).ledger_auth == "none"
     # an unknown value is a config error, not a silent "none"
     import pytest
 
@@ -316,15 +320,20 @@ def test_private_ranges_are_local_and_public_ones_are_not():
 
 
 def test_request_allowed_rules():
-    assert LB.request_allowed("127.0.0.1", {}) == (True, "")
-    assert LB.request_allowed("10.0.0.5", {})[0] is True
-    ok, why = LB.request_allowed("8.8.8.8", {})
+    from hermcp.client_ip import resolve
+
+    trusted = LB.parse_ip("127.0.0.1") and __import__("hermcp.client_ip", fromlist=["x"]).parse_networks(["10.1.0.9/32"])
+    # untrusted peer: its forwarding headers are ignored, judgement is on the peer
+    info = resolve("127.0.0.1", {"x-forwarded-for": "203.0.113.9"})
+    assert LB.request_allowed(info)[0] is True
+    info = resolve("203.0.113.9", {"x-forwarded-for": "127.0.0.1"})
+    ok, why = LB.request_allowed(info)
     assert ok is False and "not private" in why
-    ok, why = LB.request_allowed("127.0.0.1", {"x-forwarded-for": "203.0.113.9"})
-    assert ok is False and "forwarded" in why
-    ok, why = LB.request_allowed("127.0.0.1", {"x-forwarded-for": "10.0.0.5"})
-    assert ok is False and "proxy" in why          # a proxy without a trusted-proxy config
-    assert LB.request_allowed(None, {})[0] is False  # unknown client
+    # trusted proxy: served, whoever is behind it (the proxy authenticates)
+    info = resolve("10.1.0.9", {"x-forwarded-for": "203.0.113.9"}, trusted)
+    assert info.trusted is True and LB.request_allowed(info) == (True, "")
+    # unknown peer
+    assert LB.request_allowed(resolve(None, {}))[0] is False
 
 
 def test_none_mode_serves_the_page_without_a_key_from_loopback(home):
@@ -348,13 +357,22 @@ def test_none_mode_refuses_a_public_client(home):
         assert "not private" in r.json()["reason"]
 
 
-def test_none_mode_refuses_a_forwarded_public_address(home):
+def test_none_mode_serves_a_request_through_a_trusted_proxy(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none",
+                   HERMCP_TRUSTED_PROXIES="10.1.0.9")
+    c = TestClient(app.app, client=("10.1.0.9", 51000))
+    r = c.get("/ledger/overview", headers={"x-forwarded-for": "203.0.113.9",
+                                           "x-forwarded-proto": "https",
+                                           "x-forwarded-host": "ledger.example.dev"})
+    assert r.status_code == 200
+    assert r.json()["links"]["base_url"].startswith("https://ledger.example.dev")
+
+
+def test_none_mode_ignores_a_spoofed_forwarded_address(home):
+    """An untrusted peer cannot talk itself into or out of the private check."""
     app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
-    c = TestClient(app.app, client=("127.0.0.1", 51000))
-    for header in ("x-forwarded-for", "x-real-ip"):
-        r = c.get("/ledger/overview", headers={header: "203.0.113.9"})
-        assert r.status_code == 403, header
-    r = c.get("/ledger", headers={"forwarded": "for=203.0.113.9;proto=https"})
+    c = TestClient(app.app, client=("203.0.113.9", 51000))
+    r = c.get("/ledger/overview", headers={"x-forwarded-for": "127.0.0.1"})
     assert r.status_code == 403
 
 

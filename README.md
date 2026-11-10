@@ -46,6 +46,7 @@ selftest` against a live install. Each row links to the section that documents i
 | Feature | What you get | Where |
 |---|---|---|
 | 145 tools, 19 toolsets | Full Hermes control surface behind one `/mcp` endpoint; 42 tools advertised, the rest through `hermes_search_tools` | [Tool surface](docs/tool-surface.md) |
+| Trusted proxies | `HERMCP_TRUSTED_PROXIES`: forwarding headers (`X-Forwarded-For`/`Forwarded`/`X-Real-IP`/`-Proto`/`-Host`) are believed only from a configured proxy, read right to left; otherwise ignored entirely | [Reverse proxy](docs/deployment.md#trusted-proxies--the-only-place-forwarding-headers-are-believed) |
 | Per-key scopes | `access` + `toolsets` + `profiles` + explicit flags (`approvals`, `secrets_write`, `dangerous`, `inbox_push`, `approvals_always`); hidden tools never appear in `tools/list` | [Keys and scopes](docs/keys-and-scopes.md) |
 | Profile-bound keys | A key limited to one profile; global/admin tools and every indirect path (kanban, sessions, cron, skills, logs, approvals, inbox) closed | [Profile-bound keys](docs/profile-bound-keys.md) |
 | Key lifecycle | `keys create / list / policy / show / revoke / rotate / rename / scopes`; rename and scope changes keep the token valid | [CLI](docs/cli.md) |
