@@ -115,12 +115,26 @@ seam, not of the buttons. There is no approve, start, stop, retry or config path
 |---|---|
 | Gateway state, version, active agents, every platform and stale writers | `status_gateway`, `hermes_status` |
 | Sessions per reachable profile: profile, platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
+| Clients and sessions: sessions grouped by client with kind, purpose, state, last seen and open runs | hermcp's own session cards and run watches (same data as `clients_overview`) |
 | Cron ledger of the last `HERMCP_LEDGER_WINDOW_HOURS` (default 24): job, status, start, duration, delivery outcome, session id, link for agent runs | `cron_runs` |
 | Pending approvals (per profile), failed cron runs, failed agent runs — called out above the fold | `approvals_pending`, `cron_runs status=error`, `inbox_list kind=run_failed` |
 | Cron job configuration (toggle on the page) | `cron_list include=all` |
 
 `approvals_pending` needs the `approvals` scope; the read-only principal sets it because that scope
 only *opens the listing* — answering needs write access and stays impossible.
+
+## Clients and sessions
+
+The block "Clients und Sessions" answers *which client serves which session, and what for*: one row per
+session, grouped by client (Cowork, ClaudeAI, Claude Code, ...) with kind, purpose, a state (**aktiv** = seen within
+15 minutes or has open runs, otherwise **ruhig**), when it was last seen, its open runs by profile and the
+handle. Runs started without a session are only counted ("offene Runs ohne Session"); sessions that were
+taken over are counted, not listed. It is built from hermcp's own session cards and run watches, never from
+Hermes state, and cards stay labels, not permissions.
+
+Whose sessions are listed: with a key, an admin key sees every key's sessions and any other key its own; with
+`HERMCP_LEDGER_AUTH=none` (the private-network page) all of them. The same data, speakable, is the tool
+`clients_overview` (see [client-sessions.md](client-sessions.md)).
 
 ## Session links: where they point, and why
 
@@ -153,6 +167,7 @@ Why those shapes:
 | `HERMCP_LEDGER` | off | mount `/ledger` at all |
 | `HERMCP_LEDGER_AUTH` | `key` | `key` (cookie handshake) or `none` (no key, private clients only) |
 | `HERMCP_LEDGER_BASE_URL` | empty | where session links point (desktop app); empty = from the Hermes config |
+| `HERMCP_LEDGER_KANBAN_URL` | empty | where the "Kanban-Board" link in the Clients block points. Empty = derived from the session-link target: in desktop mode `{base}/#/kanban`; in dashboard mode there is no link (the dashboard's board route is not known). Only `http(s)` addresses are used; it is a board link, not a per-task link |
 | `HERMCP_LEDGER_POLL_SECONDS` | 15 | page polling interval (min 5) |
 | `HERMCP_LEDGER_WINDOW_HOURS` | 24 | cron ledger / failed-run window |
 | `HERMCP_LEDGER_CACHE_TTL` | 8 | server-side cache per payload, so several open tabs cost one read |

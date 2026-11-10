@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+from ..adapters import clients_view
 from ..adapters.inbox_store import get_inbox
 from ..client_profiles import KINDS, NATIVE_RE, new_handle
 from ..redact import redact_text
@@ -194,3 +195,22 @@ def session_cards_list(ctx, scope="own", client_session=None, limit=50):
     cards = [_card(r, you=(r["handle"] == client_session), show_key=(scope == "all")) for r in rows]
     return {"scope": scope, "count": len(cards), "cards": cards}
 
+
+
+@reg.tool("clients_overview", toolset="inbox",
+          description=("Which client serves which session, in one call: sessions grouped by client (Cowork, ClaudeAI, "
+                       "Claude Code, ...), each with kind, purpose, role, last_seen, `state` (active: seen within "
+                       "`active_window_minutes` or has open runs; otherwise idle) and its open runs (run_id, profile, "
+                       "age, activity). `unclaimed_runs` were started without a session. `summary` is one short "
+                       "sentence per client, meant to be read out. Default scope=own covers the sessions of this key; "
+                       "scope=all covers every key and needs access=admin. Sessions that were handed over are counted "
+                       "in `handed_over_hidden`, not listed. Profile-restricted keys see only runs of their profiles. "
+                       "Cards are labels, never permissions."),
+          properties={"scope": {"type": "string", "enum": ["own", "all"], "default": "own"}})
+def clients_overview(ctx, scope="own"):
+    if scope == "all" and ctx.principal.scopes.access != "admin":
+        raise ToolError("forbidden", "scope=all needs access=admin")
+    allowed = set(ctx.principal.scopes.profiles) if ctx.restricted else None
+    out = clients_view.build(get_inbox(ctx.settings), key_id=None if scope == "all" else ctx.principal.id,
+                             allowed_profiles=allowed)
+    return {"scope": scope, **out}
