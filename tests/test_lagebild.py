@@ -224,6 +224,7 @@ def test_jobs_payload_omits_prompts():
 def test_page_html_carries_the_poll_interval_and_no_secrets():
     page = LB.page_html(30)
     assert "setInterval" in page and "*1000" in page
+    assert "/lagebild/overview" in page and "/lagebild/jobs" in page
     assert "__POLL__" not in page
     assert "hmcp_" not in page
 
@@ -238,7 +239,7 @@ def make_app(home, **env):
 
 
 def test_page_is_absent_unless_enabled(home):
-    app = make_app(home)
+    app = make_app(home, HERMCP_LAGEBILD="0")   # explicit: a local .env must not decide this
     c = TestClient(app.app)
     assert c.get("/lagebild").status_code == 404
     assert c.get("/lagebild/overview").status_code == 404
@@ -251,10 +252,14 @@ def test_page_requires_a_key_and_then_keeps_a_cookie(home):
 
     assert c.get("/lagebild").status_code == 401
 
-    page = c.get("/lagebild", params={"key": token})
+    trade = c.get("/lagebild", params={"key": token}, follow_redirects=False)
+    assert trade.status_code == 303
+    assert app.LAGEBILD_COOKIE in c.cookies          # key traded for a cookie
+    assert token not in trade.text
+
+    page = c.get("/lagebild")
     assert page.status_code == 200
     assert "Lagebild" in page.text
-    assert app.LAGEBILD_COOKIE in c.cookies          # key traded for a cookie
     assert token not in page.text
 
     # the cookie alone is enough for the page and the JSON endpoints

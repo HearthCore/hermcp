@@ -682,8 +682,8 @@ var jobs=null;
 function getJSON(url){return fetch(url,{credentials:"same-origin",headers:{"Accept":"application/json"}})
  .then(function(r){if(!r.ok)throw new Error(r.status+" "+r.statusText);return r.json();});}
 function load(){
-  var p=getJSON("overview");
-  if(jobsOpen) p=Promise.all([p,getJSON("jobs").catch(function(e){
+  var p=getJSON("/lagebild/overview");
+  if(jobsOpen) p=Promise.all([p,getJSON("/lagebild/jobs").catch(function(e){
     return {jobs:[],count:0,errors:{"jobs":String(e)}};})]).then(function(r){jobs=r[1];return r[0];});
   p.then(render).catch(function(e){
     root.textContent="";

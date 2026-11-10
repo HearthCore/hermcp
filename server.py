@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from . import __version__
@@ -225,13 +225,12 @@ class HermcpApp:
                 "<p>Diese Seite braucht einen hermcp-Schlüssel: <code>/lagebild?key=hmcp_…</code> "
                 "(wird einmal eingelöst und dann als Cookie gehalten).</p>",
                 status_code=401, media_type="text/html")
-        page = LB.page_html(self.settings.lagebild_poll_seconds)
-        if from_query:      # trade the key in the URL for an HttpOnly cookie, then drop it
-            resp = Response(page, media_type="text/html")
+        if from_query:      # trade the key in the URL for an HttpOnly cookie, then drop it from the address
+            resp = RedirectResponse("/lagebild", status_code=303)
             resp.set_cookie(self.LAGEBILD_COOKIE, from_query, httponly=True, samesite="strict",
                             secure=req.url.scheme == "https", path="/lagebild")
             return resp
-        return Response(page, media_type="text/html")
+        return Response(LB.page_html(self.settings.lagebild_poll_seconds), media_type="text/html")
 
     async def lagebild_overview(self, req: Request) -> Response:
         principal, _ = self._lagebild_principal(req)
