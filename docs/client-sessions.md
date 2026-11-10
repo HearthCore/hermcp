@@ -23,6 +23,10 @@ passes the handle to `chat_send`, `chat_run_steer` and `chat_run_cancel`. What f
 - Situation report: `runs_active` without `client_session` adds `session_overview` — the sessions of this key, the runs
   nobody claimed and what to do next (are you one of these? `recover_from`; new? register; your own unclaimed runs?
   `claim_runs`). With your handle the overview is gone and your runs are marked `yours`. Reading stays open to everyone.
+- In plain words: a run started under a registered session carries `session` with `client`, `kind`, `purpose` and one
+  readable `label` ("Cowork · code · Ledger bauen") — in `runs_active` and on the run events of `inbox_poll` /
+  `inbox_list`, and on failed agent runs of the Ledger page. It is read from the session card when asked, nothing is
+  stored twice. A key sees this for its own sessions; admin keys see it for every key. Runs without a session carry none.
 - Claim: `session_card_set claim_runs=[run_ids]` (or `claim_unclaimed=true`) attaches open runs that were started
   without a handle to your session (`client_session=<handle>`, or a new card if you pass none). Preview first,
   `confirm=true` applies. Runs another session owns are never claimable (`not_claimable`); that goes through recover.

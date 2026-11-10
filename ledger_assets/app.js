@@ -150,7 +150,8 @@ function failureItem(r, kind){
   it.appendChild(document.createTextNode(
     dayClock(kind === "cron" ? r.started_at : r.at) + " · " +
     (kind === "cron" ? (r.job_name || r.job_id || "?") : (r.profile || "?")) + " · " +
-    (kind === "cron" ? (r.error || "Fehler") : (r.summary || "ohne Meldung")) + " "));
+    (kind === "cron" ? (r.error || "Fehler") : (r.summary || "ohne Meldung")) +
+    (kind !== "cron" && r.session ? " · von " + r.session : "") + " "));
   if(r.url) it.appendChild(link(r.url,"Session"));
   it.appendChild(button("dismiss","Ausblenden",function(){ dismiss(idOf(r)); }));
   return it;
