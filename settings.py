@@ -78,6 +78,11 @@ class Settings:
     debug_capture_hours: float = 12.0  # recording stops by itself this long after start
     systemd_scope: str = "system"      # "system" | "user": manager of the Hermes gateway unit (gateway_restart)
     self_systemd_scope: str = "system"  # "system" | "user": manager of hermcp.service itself (hermcp_restart)
+    lagebild: bool = False             # serve the read-only situation page at /lagebild; off by default
+    lagebild_base_url: str = ""        # where session links point (desktop app); empty = from Hermes config
+    lagebild_poll_seconds: int = 15    # page polling interval
+    lagebild_window_hours: int = 24    # cron ledger / failed-run window
+    lagebild_cache_ttl: float = 8.0    # server-side cache per payload
 
     invalid_scopes: list[str] = field(default_factory=list)   # set by load_settings(strict=False) only
 
@@ -149,6 +154,11 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         debug_capture_hours=float(g("HERMCP_DEBUG_CAPTURE_HOURS", "12")),
         systemd_scope=g("HERMCP_SYSTEMD_SCOPE", "system").strip().lower() or "system",
         self_systemd_scope=g("HERMCP_SELF_SYSTEMD_SCOPE", "system").strip().lower() or "system",
+        lagebild=g("HERMCP_LAGEBILD", "").lower() in ("1", "true", "yes", "on"),
+        lagebild_base_url=g("HERMCP_LAGEBILD_BASE_URL", "").rstrip("/"),
+        lagebild_poll_seconds=max(5, int(g("HERMCP_LAGEBILD_POLL_SECONDS", "15"))),
+        lagebild_window_hours=max(1, int(g("HERMCP_LAGEBILD_WINDOW_HOURS", "24"))),
+        lagebild_cache_ttl=max(0.0, float(g("HERMCP_LAGEBILD_CACHE_TTL", "8"))),
     )
     bad = scope_errors(s)
     if bad:
