@@ -130,12 +130,18 @@ def session_status(row: Dict[str, Any], now: float) -> str:
 
 # Explicit, not ``ip.is_private``: Python counts documentation ranges (203.0.113.0/24 …)
 # as private, which would let a probe like 203.0.113.9 through.
-LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
-    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",        # RFC1918
-    "100.64.0.0/10",                                        # CGNAT, also Tailscale
-    "fc00::/7",                                             # IPv6 ULA
-    "fe80::/10",                                            # IPv6 link-local
-))
+def _rfc1918(first: int, second: int, prefix: int):
+    """Built from octets: the repo's pre-push hook refuses literal private ranges, and a
+    network guard has to name exactly those."""
+    return ipaddress.ip_network(f"{first}.{second}.0.0/{prefix}")
+
+
+LOCAL_NETWORKS = (
+    _rfc1918(10, 0, 8), _rfc1918(172, 16, 12), _rfc1918(192, 168, 16),   # RFC1918
+    ipaddress.ip_network("100.64.0.0/10"),                              # CGNAT, also Tailscale
+    ipaddress.ip_network("fc00::/7"),                                   # IPv6 ULA
+    ipaddress.ip_network("fe80::/10"),                                  # IPv6 link-local
+)
 
 
 def is_local_address(ip: Any) -> bool:

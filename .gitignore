@@ -6,3 +6,7 @@ logs/
 .test-key
 .env
 logs/*.log
+
+# local env backups (never committed: they hold host values)
+.env.bak-*
+.env.*.bak*
