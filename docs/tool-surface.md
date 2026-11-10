@@ -172,6 +172,9 @@ path per run and remove the heuristic. This plugin deliberately does not patch H
   request_key}` at once (`wait_seconds` 0-20, default 0, optional short wait; the whole call stays under 35 s).
   Read the result with `chat_run_status` or the inbox. `request_key` (optional, generated if omitted) is the retry
   handle: see [Starting runs](inbox-and-runs.md#starting-runs-chat_send).
+  `model`, `provider` and `model_options` (all optional) pick the model for that one run; see
+  [Model per run](inbox-and-runs.md#model-per-run-model-provider-model_options) (a request, not a guarantee: read
+  `runtime` in `chat_run_status`; refused with `mode=steer`).
   `client_session` (optional) is a handle your session picks for itself (Claude Code and Cowork can use their own
   session id; chat or voice any stable label). hermcp stores it with the run and in the audit log, next to a `client`
   label derived from the request headers (`x-anthropic-client`, else the User-Agent), and `runs_active` shows both.

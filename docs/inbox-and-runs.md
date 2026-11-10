@@ -127,6 +127,45 @@ request_key}` (plus `replayed: true` on a replay; with `wait_seconds` > 0 and a 
   same `request_key` starts a new run; a start the gateway refused before admitting the run does not consume the key.
 - Anything after the POST (watch registration, status read) is guarded: an error there never hides the `run_id`.
 
+#### Model per run (`model`, `provider`, `model_options`)
+
+`chat_send` takes three optional parameters that are passed 1:1 into the `POST /v1/runs` body, so one run can use a
+different model without touching the global default, `config.yaml` or the profiles (hermcp never creates profiles for this).
+
+| Parameter | Meaning |
+|---|---|
+| `model` | model id for this run (1-200 characters, one line) |
+| `provider` | provider id (`[A-Za-z0-9_.-]`, max 80), as listed by `providers_list` |
+| `model_options` | only what Hermes decodes: `reasoning` `{enabled, effort}`, `reasoning_effort`, `service_tier`, `fast` |
+
+`effort` is one of `none, minimal, low, medium, high, xhigh, max, ultra` (Hermes' own list, rev `83f882d7bab6`).
+Anything else in `model_options` (`api_key`, `base_url`, headers, any transport or auth override, typos) is refused with
+`invalid_arguments`, because Hermes would drop it silently and the caller would believe it was applied. Contradicting
+pairs are refused as well (`reasoning` + `reasoning_effort`, `service_tier` + `fast`, `enabled: false` + an effort),
+since Hermes would let one of them win unseen. Credentials always come from the profile's configured provider.
+
+```json
+{"message": "Fasse die Ergebnisse zusammen.", "provider": "example-provider", "model": "example-model",
+ "model_options": {"reasoning": {"effort": "low"}}}
+```
+
+- **Without these parameters nothing changes:** the body stays `{input[, session_id]}`.
+- **It is a request, not a guarantee.** Hermes ranks, from high to low: confirmed browser lock, a session's `/model`
+  override, the model stored with the session, `model_routes` alias, the per-request provider/model, the global default.
+  On an existing `session_id` the run may therefore use another model. `chat_send` adds a `route_note` then.
+- **What really ran:** `chat_run_status` returns Hermes' `runtime` object unchanged: `runtime.provider` / `runtime.model`
+  / `runtime.route_source` (`global`, `raw_request`, `model_routes`, `session`) are what served the run,
+  `runtime.requested` is what was asked. The top-level `model` of a run is only the request-side value, so never use it to
+  confirm the route. `chat_send` shows the asked route as `requested_route` and, when `wait_seconds` catches the finished
+  run, also its `runtime`.
+- **`mode=steer`** starts no run, so combined with any of the three parameters it is refused (`invalid_arguments`, nothing
+  is sent). `mode=queue` and `mode=interrupt` start a run and accept them.
+- **`dry_run`** shows `requested_route` and starts nothing; it validates like the real call.
+- **Idempotency:** the three fields are part of the body the gateway fingerprints. A retry with the same `request_key` and
+  the same route replays the original run; the same `request_key` with another `model`, `provider` or `model_options` (or
+  adding or dropping them) is refused as `request_key_conflict` and never confirmed as a repeat. Use a new `request_key`
+  for another model choice.
+
 ### Steering, cancelling and replacing runs
 
 Hermes 0.22.5 gives the api_server native control doors, and hermcp uses exactly those (nothing is reimplemented):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
 
@@ -39,10 +40,114 @@ UNCONFIRMED_NEXT = ("The start request got no usable answer, so the run may or m
                     "call chat_send again with the SAME request_key and the SAME message (it will not start a second run).")
 
 
+# ---- per-run model route (model / provider / model_options) --------------------------------------------------
+# Hermes contract (gateway/platforms/api_server.py `_request_agent_overrides`, api_server_request_options.py, rev
+# 83f882d7bab6): POST /v1/runs reads `model`, `provider` and `model_options` from the body. Of `model_options` the
+# gateway decodes ONLY reasoning ({enabled, effort}), reasoning_effort, service_tier and fast; everything else is
+# silently dropped there. hermcp is stricter: an unknown key is refused, so a typo or a smuggled credential never
+# looks like it was applied.
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+MODEL_OPTION_KEYS = ("reasoning", "reasoning_effort", "service_tier", "fast")
+MODEL = {"type": "string", "minLength": 1, "maxLength": 200,
+         "description": "Model id for THIS run only (e.g. the id Hermes lists in models_current / providers_list). "
+                        "Never changes the global default or any profile. Without provider Hermes resolves it against "
+                        "the profile's current provider. A request: on an existing session_id Hermes may rank a stored "
+                        "model binding or /model override higher; chat_run_status `runtime` shows what ran. Not allowed "
+                        "with mode=steer."}
+PROVIDER = {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,80}$",
+            "description": "Provider id for THIS run only (as in providers_list). Credentials always come from the "
+                           "profile's configured provider; they cannot be passed here."}
+MODEL_OPTIONS = {"type": "object", "additionalProperties": False,
+                 "description": "Per-run model options Hermes supports: reasoning {enabled, effort}, reasoning_effort, "
+                                "service_tier, fast. Nothing else is accepted (no credentials, base_url, headers or other "
+                                "transport/auth overrides).",
+                 "properties": {
+                     "reasoning": {"type": "object", "additionalProperties": False,
+                                   "properties": {"enabled": {"type": "boolean"},
+                                                  "effort": {"type": "string", "enum": list(REASONING_EFFORTS)}}},
+                     "reasoning_effort": {"type": "string", "enum": list(REASONING_EFFORTS)},
+                     "service_tier": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,32}$"},
+                     "fast": {"type": "boolean"}}}
+ROUTE_CAVEAT = ("The model route is a REQUEST. Hermes ranks a session's stored model binding or a /model override "
+                "above a per-request model, so on an existing session_id the run may use another model. What was "
+                "really used is `runtime` in chat_run_status (`runtime.requested` = what was asked, "
+                "`runtime.model` / `runtime.provider` = what served the run).")
+
+
+def _bad_option(msg: str):
+    return ToolError("invalid_arguments", "model_options: " + msg, allowed=list(MODEL_OPTION_KEYS))
+
+
+def normalize_model_options(opts) -> dict:
+    """Validate model_options against the supported Hermes contract and return a canonical copy.
+    Unknown keys are refused, as are contradicting combinations the gateway would resolve silently."""
+    if opts is None:
+        return {}
+    if not isinstance(opts, dict):
+        raise _bad_option("must be an object")
+    unknown = sorted(set(opts) - set(MODEL_OPTION_KEYS))
+    if unknown:
+        raise _bad_option(f"unsupported key(s) {', '.join(map(str, unknown))}. Only {', '.join(MODEL_OPTION_KEYS)} are "
+                          "passed to Hermes; credentials, base_url, headers and other transport/auth overrides are "
+                          "never accepted")
+    out: dict = {}
+    if "reasoning" in opts:
+        r = opts["reasoning"]
+        if not isinstance(r, dict) or set(r) - {"enabled", "effort"}:
+            raise _bad_option("reasoning must be an object with only enabled (boolean) and effort")
+        if "enabled" in r and not isinstance(r["enabled"], bool):
+            raise _bad_option("reasoning.enabled must be a boolean")
+        if "effort" in r and r["effort"] not in REASONING_EFFORTS:
+            raise _bad_option(f"reasoning.effort must be one of {list(REASONING_EFFORTS)}")
+        if r.get("enabled") is False and r.get("effort") not in (None, "none"):
+            raise _bad_option("reasoning.enabled=false contradicts reasoning.effort; send only one of them")
+        out["reasoning"] = {k: r[k] for k in ("enabled", "effort") if k in r}
+    if "reasoning_effort" in opts:
+        if opts["reasoning_effort"] not in REASONING_EFFORTS:
+            raise _bad_option(f"reasoning_effort must be one of {list(REASONING_EFFORTS)}")
+        if "reasoning" in out:
+            raise _bad_option("send either reasoning or reasoning_effort, not both (Hermes would let one silently "
+                              "win)")
+        out["reasoning_effort"] = opts["reasoning_effort"]
+    if "service_tier" in opts:
+        t = opts["service_tier"]
+        if not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,32}", t):
+            raise _bad_option("service_tier must be a short id (letters, digits, _ . -)")
+        out["service_tier"] = t
+    if "fast" in opts:
+        if not isinstance(opts["fast"], bool):
+            raise _bad_option("fast must be a boolean")
+        if "service_tier" in out:
+            raise _bad_option("send either service_tier or fast, not both (Hermes would let service_tier silently win)")
+        out["fast"] = opts["fast"]
+    return out
+
+
+def model_route(model=None, provider=None, model_options=None) -> dict:
+    """The validated per-run route as it goes into the /v1/runs body; {} when nothing was asked."""
+    route: dict = {}
+    for name, val, pat in (("model", model, None), ("provider", provider, r"[A-Za-z0-9_.-]{1,80}")):
+        if val is None:
+            continue
+        if not isinstance(val, str) or not val.strip() or len(val.strip()) > 200 or re.search(r"[\x00-\x1f]", val) \
+                or (pat and not re.fullmatch(pat, val.strip())):
+            raise ToolError("invalid_arguments", f"{name} must be a non-empty single-line string"
+                            + (" (letters, digits, _ . -)" if pat else ""))
+        route[name] = val.strip()
+    opts = normalize_model_options(model_options)
+    if model_options is not None and not opts:
+        raise _bad_option("is empty; leave it out or set at least one of " + ", ".join(MODEL_OPTION_KEYS))
+    if opts:
+        route["model_options"] = opts
+    return route
+
+
 def idempotency_key(principal_id: str, profile: str, request_key: str) -> str:
     """Gateway Idempotency-Key for a request_key. The gateway scopes keys per (profile, API key) and compares a
     fingerprint of the body, so the same request_key + same message replays the original run (24 h, durable);
-    the same request_key with another message or session_id is refused (HTTP 409)."""
+    the same request_key with another message, session_id, model, provider or model_options is refused (HTTP 409):
+    those fields are part of the request body the gateway fingerprints, so a changed model route is never confirmed as a
+    repeat of the original run."""
     return "hermcp-" + hashlib.sha256(f"{principal_id}\0{profile}\0{request_key}".encode()).hexdigest()[:40]
 
 
@@ -66,8 +171,9 @@ def _start_run(ctx, body: dict, idem: str):
                 return {**out, "run_id": run_id}, bool(out.get("replayed"))
             return None, "the gateway accepted the request but returned no run_id"
         if code == 409:
-            raise ToolError("request_key_conflict", "this request_key was already used with a different message or "
-                            "session_id; use a new request_key for a new message")
+            raise ToolError("request_key_conflict", "this request_key was already used with a different message, "
+                            "session_id or model route (model / provider / model_options); use a new request_key "
+                            "for a new message or another model choice")
         if code in (401, 403):
             raise hapi.auth_error(ctx.settings, ctx.profile, code)
         if code is not None and code < 500:
@@ -96,7 +202,9 @@ MODE = {"type": "string", "enum": list(MODES), "default": "queue",
                       "running run instead, mode=interrupt replaces the running run. "
                       "If status is start_unconfirmed, check chat_conversations and inbox_poll first, then retry with "
                       "the same request_key and message; that never starts a second run. wait_seconds (0-20, default 0) "
-                      "optionally waits for a short answer.",
+                      "optionally waits for a short answer. "
+                      "Optional model, provider, model_options pick the model for this run only; a request, not a guarantee "
+                      "(an existing session may keep its own): see `runtime` in chat_run_status. Refused with mode=steer.",
           properties={"message": {"type": "string", "minLength": 1, "maxLength": 20000},
                       "session_id": {"type": "string", "description": "Continue an existing session"},
                       "mode": MODE,
@@ -105,16 +213,22 @@ MODE = {"type": "string", "enum": list(MODES), "default": "queue",
                       "force": FORCE,
                       "wait_seconds": {"type": "integer", "minimum": 0, "maximum": MAX_WAIT, "default": 0,
                                        "description": "Seconds to wait for the answer (0 = return at once, max 20). "
-                                                      "Long tasks: leave at 0 and read the result later."}},
+                                                      "Long tasks: leave at 0 and read the result later."},
+                      "model": MODEL, "provider": PROVIDER, "model_options": MODEL_OPTIONS},
           required=["message"])
 def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, mode="queue", client_session=None,
-              force=False):
+              force=False, model=None, provider=None, model_options=None):
     started = time.monotonic()
     require_served(ctx.profile)
     _resolve_session(ctx, client_session)
     mode = mode or "queue"
     if mode not in MODES:
-        raise ToolError("invalid_arguments", f"mode must be one of {list(MODES)}")
+        raise ToolError("invalid_arguments", f"mode={mode!r} is invalid: mode must be one of {list(MODES)}")
+    route = model_route(model, provider, model_options)
+    if route and mode == "steer":
+        raise ToolError("invalid_arguments", "mode=steer injects text into a run that already runs and starts no new "
+                        f"run, so it cannot change the model ({', '.join(route)} given). Nothing was sent. Leave the "
+                        "model parameters out, or use mode=queue / mode=interrupt to start a run with that model.")
     if mode != "queue" and not session_id:
         raise ToolError("invalid_arguments", f"mode={mode} needs session_id (the session whose running run it "
                                              "targets); without a session there is nothing to steer or interrupt")
@@ -134,7 +248,7 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
                             f"(limit {limit}, HERMCP_SESSION_MAX_RUNS). Wait for some to finish or cancel them.",
                             open_runs=open_runs, limit=limit)
     request_key = request_key or "req-" + uuid.uuid4().hex[:24]
-    body = {"input": message, **({"session_id": session_id} if session_id else {})}
+    body = {"input": message, **({"session_id": session_id} if session_id else {}), **route}
     if ctx.dry_run:
         extra = {}
         if mode == "interrupt":
@@ -144,12 +258,19 @@ def chat_send(ctx, message, session_id=None, request_key=None, wait_seconds=0, m
                                   "nothing runs in this session now: plain start, nothing to stop"}
         return ctx.plan("start agent run", profile=ctx.profile, session_id=session_id, chars=len(message),
                         request_key=request_key, endpoint=f"{ctx.settings.hermes_api_url}/v1/runs",
+                        **({"requested_route": route, "route_note": ROUTE_CAVEAT if session_id else
+                            "new session: the request applies unless a profile-level model lock overrides it"}
+                           if route else {}),
                         watch="the run would be registered with the inbox run watcher", **extra)
     base = {"run_id": None, "session_id": session_id, "profile": ctx.profile, "request_key": request_key,
             **({"client": ctx.principal.client} if ctx.principal.client else {}),
             **({"client_session": client_session} if client_session else {})}
     if mode != "queue":
         base["mode"] = mode
+    if route:
+        base["requested_route"] = route
+        if session_id:
+            base["route_note"] = ROUTE_CAVEAT
     if forced:
         base["forced"] = forced
     if not client_session:
@@ -349,7 +470,7 @@ def _observe(ctx, out: dict, wait: int, started: float) -> None:
             if isinstance(st.get("session_id"), str):
                 out["session_id"] = st["session_id"]
             if status.lower() in DONE:
-                for k in ("output", "error"):
+                for k in ("output", "error", "runtime"):
                     if st.get(k) is not None:
                         out[k] = st[k]
                 return
@@ -436,7 +557,9 @@ def _own_run(ctx, run_id):
           description=("Read a run started with chat_send: `status` (queued, running, waiting_for_approval, stopping, "
                        "completed, failed, cancelled or interrupted), `output` once it is finished and, while it waits "
                        "for approval, `approval` with the request_id and the offered choices. This is the authoritative "
-                       "source for approval request_ids. The profile must be reachable."),
+                       "source for approval request_ids. `runtime` (the route actually used; `runtime.requested` = what "
+                       "chat_send asked for) is passed through as Hermes reports it, while the top-level `model` is "
+                       "only the requested value. The profile must be reachable."),
           properties={"run_id": RUN}, required=["run_id"])
 def chat_run_status(ctx, run_id):
     _own_run(ctx, run_id)

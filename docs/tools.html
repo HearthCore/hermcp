@@ -359,10 +359,10 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
     &quot;run_id&quot;
   ]
 }</pre></details></div>
-<div class='card' data-h='chat_run_status chat read read a run started with chat_send: `status` (queued, running, waiting_for_approval, stopping, completed, failed, cancelled or interrupted), `output` once it is finished and, while it waits for approval, `approval` with the request_id and the offered choices. this is the authoritative source for approval request_ids. the profile must be reachable. core'>
+<div class='card' data-h='chat_run_status chat read read a run started with chat_send: `status` (queued, running, waiting_for_approval, stopping, completed, failed, cancelled or interrupted), `output` once it is finished and, while it waits for approval, `approval` with the request_id and the offered choices. this is the authoritative source for approval request_ids. `runtime` (the route actually used; `runtime.requested` = what chat_send asked for) is passed through as hermes reports it, while the top-level `model` is only the requested value. the profile must be reachable. core'>
 <div class='name'>chat_run_status</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span><span class='b'>profile-aware</span></div>
-<p class='desc'>Read a run started with chat_send: `status` (queued, running, waiting_for_approval, stopping, completed, failed, cancelled or interrupted), `output` once it is finished and, while it waits for approval, `approval` with the request_id and the offered choices. This is the authoritative source for approval request_ids. The profile must be reachable.</p>
+<p class='desc'>Read a run started with chat_send: `status` (queued, running, waiting_for_approval, stopping, completed, failed, cancelled or interrupted), `output` once it is finished and, while it waits for approval, `approval` with the request_id and the offered choices. This is the authoritative source for approval request_ids. `runtime` (the route actually used; `runtime.requested` = what chat_send asked for) is passed through as Hermes reports it, while the top-level `model` is only the requested value. The profile must be reachable.</p>
 <details><summary>input schema</summary>
 <pre>{
   &quot;type&quot;: &quot;object&quot;,
@@ -455,10 +455,10 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
     &quot;run_id&quot;
   ]
 }</pre></details></div>
-<div class='card' data-h='chat_send chat write start an agent run on a profile with reachable=true (see profiles_list) and return at once with run_id, session_id, status, watch and request_key; it does not wait for the answer. read the result with chat_run_status or wait for run_finished / run_failed / needs_approval in inbox_poll (the run is registered as `watch`). every call with a new message starts a new run (mode=queue; it waits behind runs of the same session). mode=steer feeds the message into the running run instead, mode=interrupt replaces the running run. if status is start_unconfirmed, check chat_conversations and inbox_poll first, then retry with the same request_key and message; that never starts a second run. wait_seconds (0-20, default 0) optionally waits for a short answer. core'>
+<div class='card' data-h='chat_send chat write start an agent run on a profile with reachable=true (see profiles_list) and return at once with run_id, session_id, status, watch and request_key; it does not wait for the answer. read the result with chat_run_status or wait for run_finished / run_failed / needs_approval in inbox_poll (the run is registered as `watch`). every call with a new message starts a new run (mode=queue; it waits behind runs of the same session). mode=steer feeds the message into the running run instead, mode=interrupt replaces the running run. if status is start_unconfirmed, check chat_conversations and inbox_poll first, then retry with the same request_key and message; that never starts a second run. wait_seconds (0-20, default 0) optionally waits for a short answer. optional model, provider, model_options pick the model for this run only; a request, not a guarantee (an existing session may keep its own): see `runtime` in chat_run_status. refused with mode=steer. core'>
 <div class='name'>chat_send</div>
 <div class='badges'><span class='b' style='color:#d29922;border-color:#d29922'>write</span><span class='b' style='color:#3fb950;border-color:#3fb950'>core</span><span class='b'>profile-aware</span></div>
-<p class='desc'>Start an agent run on a profile with reachable=true (see profiles_list) and return at once with run_id, session_id, status, watch and request_key; it does not wait for the answer. Read the result with chat_run_status or wait for run_finished / run_failed / needs_approval in inbox_poll (the run is registered as `watch`). Every call with a new message starts a new run (mode=queue; it waits behind runs of the same session). mode=steer feeds the message into the running run instead, mode=interrupt replaces the running run. If status is start_unconfirmed, check chat_conversations and inbox_poll first, then retry with the same request_key and message; that never starts a second run. wait_seconds (0-20, default 0) optionally waits for a short answer.</p>
+<p class='desc'>Start an agent run on a profile with reachable=true (see profiles_list) and return at once with run_id, session_id, status, watch and request_key; it does not wait for the answer. Read the result with chat_run_status or wait for run_finished / run_failed / needs_approval in inbox_poll (the run is registered as `watch`). Every call with a new message starts a new run (mode=queue; it waits behind runs of the same session). mode=steer feeds the message into the running run instead, mode=interrupt replaces the running run. If status is start_unconfirmed, check chat_conversations and inbox_poll first, then retry with the same request_key and message; that never starts a second run. wait_seconds (0-20, default 0) optionally waits for a short answer. Optional model, provider, model_options pick the model for this run only; a request, not a guarantee (an existing session may keep its own): see `runtime` in chat_run_status. Refused with mode=steer.</p>
 <details><summary>input schema</summary>
 <pre>{
   &quot;type&quot;: &quot;object&quot;,
@@ -503,6 +503,66 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;maximum&quot;: 20,
       &quot;default&quot;: 0,
       &quot;description&quot;: &quot;Seconds to wait for the answer (0 = return at once, max 20). Long tasks: leave at 0 and read the result later.&quot;
+    },
+    &quot;model&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1,
+      &quot;maxLength&quot;: 200,
+      &quot;description&quot;: &quot;Model id for THIS run only (e.g. the id Hermes lists in models_current / providers_list). Never changes the global default or any profile. Without provider Hermes resolves it against the profile&#x27;s current provider. A request: on an existing session_id Hermes may rank a stored model binding or /model override higher; chat_run_status `runtime` shows what ran. Not allowed with mode=steer.&quot;
+    },
+    &quot;provider&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;pattern&quot;: &quot;^[A-Za-z0-9_.-]{1,80}$&quot;,
+      &quot;description&quot;: &quot;Provider id for THIS run only (as in providers_list). Credentials always come from the profile&#x27;s configured provider; they cannot be passed here.&quot;
+    },
+    &quot;model_options&quot;: {
+      &quot;type&quot;: &quot;object&quot;,
+      &quot;additionalProperties&quot;: false,
+      &quot;description&quot;: &quot;Per-run model options Hermes supports: reasoning {enabled, effort}, reasoning_effort, service_tier, fast. Nothing else is accepted (no credentials, base_url, headers or other transport/auth overrides).&quot;,
+      &quot;properties&quot;: {
+        &quot;reasoning&quot;: {
+          &quot;type&quot;: &quot;object&quot;,
+          &quot;additionalProperties&quot;: false,
+          &quot;properties&quot;: {
+            &quot;enabled&quot;: {
+              &quot;type&quot;: &quot;boolean&quot;
+            },
+            &quot;effort&quot;: {
+              &quot;type&quot;: &quot;string&quot;,
+              &quot;enum&quot;: [
+                &quot;none&quot;,
+                &quot;minimal&quot;,
+                &quot;low&quot;,
+                &quot;medium&quot;,
+                &quot;high&quot;,
+                &quot;xhigh&quot;,
+                &quot;max&quot;,
+                &quot;ultra&quot;
+              ]
+            }
+          }
+        },
+        &quot;reasoning_effort&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;enum&quot;: [
+            &quot;none&quot;,
+            &quot;minimal&quot;,
+            &quot;low&quot;,
+            &quot;medium&quot;,
+            &quot;high&quot;,
+            &quot;xhigh&quot;,
+            &quot;max&quot;,
+            &quot;ultra&quot;
+          ]
+        },
+        &quot;service_tier&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;pattern&quot;: &quot;^[A-Za-z0-9_.-]{1,32}$&quot;
+        },
+        &quot;fast&quot;: {
+          &quot;type&quot;: &quot;boolean&quot;
+        }
+      }
     },
     &quot;profile&quot;: {
       &quot;type&quot;: &quot;string&quot;,
