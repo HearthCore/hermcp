@@ -476,7 +476,10 @@ def test_a_failure_whose_job_ran_ok_afterwards_moves_to_superseded():
     assert att["failed_cron_count"] == 1
     assert [r["run_id"] for r in att["superseded_cron_runs"]] == ["r2"]
     assert att["superseded_count"] == 1
-    assert att["superseded_cron_runs"][0]["ok_after"].startswith("2026-11-10T07:30")
+    from datetime import datetime
+    # timezone-independent: the payload carries local time of the machine running it
+    assert datetime.fromisoformat(att["superseded_cron_runs"][0]["ok_after"]) == \
+        datetime.fromisoformat("2026-11-10T07:30:00+01:00")
     # superseded runs do not count as attention; the still-failing one does
     assert att["total"] == 1 + 1 + 1          # failing cron + failing chat + approval
 
