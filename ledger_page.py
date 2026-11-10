@@ -239,14 +239,16 @@ def link_targets(settings, hermes_config: Dict[str, Any], request_base: str = ""
 
 def kanban_url(settings, targets: Dict[str, Any]) -> Optional[str]:
     """Where the page's Kanban link points: an explicit HERMCP_LEDGER_KANBAN_URL wins; otherwise, in desktop link
-    mode, the desktop app's board view is derived from its base URL ({base}/#/kanban). The web dashboard's board
-    route is not known, so in dashboard mode there is no link unless it is configured."""
+    mode, the desktop app's board view is derived from its base URL ({base}/#/kanban); in dashboard mode the web
+    dashboard's board route is used ({base}/kanban?profile=default). Neither app has a per-task URL."""
     explicit = (getattr(settings, "ledger_kanban_url", "") or "").strip()
     if explicit:
         return explicit if _http_ok(explicit) else None
     base = targets.get("base_url")
     if targets.get("kind") == "desktop" and _http_ok(base):
         return f"{base.rstrip('/')}/#/kanban"
+    if targets.get("kind") == "dashboard" and _http_ok(base):
+        return f"{base.rstrip('/')}/kanban?profile=default"
     return None
 
 

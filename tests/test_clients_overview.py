@@ -117,6 +117,7 @@ def test_kanban_link_is_derived_from_the_desktop_target_unless_configured():
     explicit = type("S", (), {"ledger_kanban_url": "https://board.example.dev/k"})()
     bad = type("S", (), {"ledger_kanban_url": "javascript:alert(1)"})()
     assert LB.kanban_url(unset, desktop) == "https://desktop.example.dev/#/kanban"
-    assert LB.kanban_url(unset, dash) is None and LB.kanban_url(unset, none) is None
+    assert LB.kanban_url(unset, dash) == "https://hermes.example.dev/kanban?profile=default"
+    assert LB.kanban_url(unset, none) is None
     assert LB.kanban_url(explicit, desktop) == "https://board.example.dev/k"       # explicit wins
     assert LB.kanban_url(bad, desktop) is None                                      # never falls back past a bad value
