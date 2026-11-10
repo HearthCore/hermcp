@@ -300,6 +300,13 @@ def cron_run_view(run: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any
     }
 
 
+def session_view(brief: Any) -> Optional[str]:
+    """One plain line (client · kind · purpose) of the session card a run was started under, or None."""
+    if not isinstance(brief, dict):
+        return None
+    return clean(redacted(brief.get("label")), 120)
+
+
 def failed_run_view(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
     event = event if isinstance(event, dict) else {}
     profile = event.get("profile") if isinstance(event.get("profile"), str) else None
@@ -312,6 +319,7 @@ def failed_run_view(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str,
         "session_id": session_id,
         "url": build_link(targets, profile or "default", session_id),
         "summary": clean(redacted(event.get("summary")), 160),
+        "session": session_view(event.get("session")),
     }
 
 

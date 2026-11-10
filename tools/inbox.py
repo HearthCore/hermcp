@@ -53,7 +53,16 @@ def _profiles(ctx):
     return list(ctx.principal.scopes.profiles) if ctx.restricted else None
 
 
-def _wrap(payload: dict) -> dict:
+def _wrap(payload: dict, ctx=None) -> dict:
+    """Wrap events as untrusted data. With ctx, events of runs started under a registered session also carry
+    `session`: client, kind and purpose of that session in plain words (read from hermcp's own session cards)."""
+    if ctx is not None and isinstance(payload.get("events"), list):
+        admin = ctx.principal.scopes.access == "admin"
+        by_run = get_inbox(ctx.settings).run_sessions([e.get("run_id") for e in payload["events"] if e.get("run_id")],
+                                                      key_id=None if admin else ctx.principal.id)
+        for e in payload["events"]:
+            if e.get("run_id") in by_run:
+                e["session"] = by_run[e["run_id"]]
     return {"untrusted": True, "notice": NOTICE, **payload}
 
 
@@ -74,7 +83,7 @@ def _wrap(payload: dict) -> dict:
 def inbox_poll(ctx, source=None, kind=None, limit=20, after_id=0, consumer=None, include_older=False):
     return _wrap(get_inbox(ctx.settings).poll(source=source, kind=kind, limit=limit, after_id=after_id,
                                               profiles=_profiles(ctx), consumer=_consumer(ctx, consumer),
-                                              include_older=include_older))
+                                              include_older=include_older), ctx)
 
 
 @reg.tool("inbox_ack", toolset="inbox", core=True,
@@ -95,7 +104,8 @@ def inbox_ack(ctx, ids=None, all=False, consumer=None):
 
 @reg.tool("inbox_list", toolset="inbox",
           description="Inbox history, newest first, including acknowledged events; acked/unread is from this "
-                      "consumer's point of view (untrusted data).",
+                      "consumer's point of view (untrusted data). Events of runs started under one of your registered "
+                      "sessions carry `session` (client, kind, purpose); admin keys see it for every key.",
           properties={"source": SRC, "kind": KIND, "consumer": CONSUMER,
                       "status": {"type": "string", "enum": ["all", "unread", "acked"], "default": "all"},
                       "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
@@ -103,7 +113,7 @@ def inbox_ack(ctx, ids=None, all=False, consumer=None):
 def inbox_list(ctx, source=None, kind=None, status="all", limit=50, before_id=None, consumer=None):
     return _wrap(get_inbox(ctx.settings).list(source=source, kind=kind, status=status, limit=limit,
                                               before_id=before_id, profiles=_profiles(ctx),
-                                              consumer=_consumer(ctx, consumer)))
+                                              consumer=_consumer(ctx, consumer)), ctx)
 
 
 @reg.tool("inbox_push", toolset="inbox", core=True, requires_inbox_push=True,
@@ -138,7 +148,8 @@ def _iso(epoch):
                       "progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher's coarse "
                       "label is known. Without client_session the answer carries `session_overview`: the sessions of this "
                       "key, the runs nobody claimed and how to take over or claim (session_card_set). With your handle "
-                      "your own runs are marked `yours`.",
+                      "your own runs are marked `yours`. A run started under a registered session also carries "
+                      "`session`: client, kind and purpose of that session in plain words (`label`).",
           properties={"all_keys": {"type": "boolean", "default": False,
                                    "description": "Admin keys only: include runs started by other keys"},
                       "client_session": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,80}$",
@@ -164,8 +175,12 @@ def runs_active(ctx, all_keys=False, client_session=None):
              **({"started_by": r["key_name"]} if all_keys else {})} for r in rows]
     _queue_positions(runs)
     _gateway_progress(ctx, runs)
+    briefs = get_inbox(ctx.settings).run_sessions([r["run_id"] for r in runs],
+                                                  key_id=None if all_keys else ctx.principal.id)
     for r in runs:
         r.pop("_started", None)
+        if r["run_id"] in briefs:
+            r["session"] = briefs[r["run_id"]]
         if client_session and r.get("client_session") == client_session:
             r["yours"] = True
     out = {"count": len(runs), "runs": runs,

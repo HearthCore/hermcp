@@ -53,6 +53,17 @@ WATCH_NEW_COLUMNS = (("activity", "TEXT"), ("activity_at", "REAL"), ("control", 
                      ("client", "TEXT"), ("client_session", "TEXT"))
 
 
+def session_brief(row: dict[str, Any]) -> dict[str, Any]:
+    """Plain-language identity of a session card: who (client, kind) and what for (purpose), plus one `label` line
+    a human can read at a glance. Cards are free labels; nothing here is a permission."""
+    label = " · ".join(str(x) for x in (row.get("client"), row.get("kind"), row.get("purpose")) if x)
+    out = {"client_session": row["handle"], "client": row.get("client"), "kind": row.get("kind"),
+           "purpose": row.get("purpose"), "label": label}
+    if row.get("role"):
+        out["role"] = row["role"]
+    return out
+
+
 def is_reserved_kind(kind: str) -> bool:
     """Kinds only the plugin itself may write: external pushers can never fake them."""
     return kind in WATCHER_KINDS or kind in HOOK_KINDS or kind in LEDGER_KINDS or kind.startswith("run_")
@@ -438,6 +449,20 @@ class Inbox:
         with self._db() as db:
             return db.execute("SELECT COUNT(*) FROM watches WHERE done=0 AND expires_at>? AND client_session=?",
                               (now, handle)).fetchone()[0]
+
+    def run_sessions(self, run_ids: list[str], key_id: str | None = None) -> dict[str, dict[str, Any]]:
+        """{run_id: session_brief} for runs that were started under a registered session (others are absent).
+        With key_id only sessions of that key are resolved, like session_cards_list scope=own."""
+        ids = [r for r in dict.fromkeys(run_ids) if r][:500]
+        if not ids:
+            return {}
+        marks = ",".join("?" * len(ids))
+        with self._db() as db:
+            rows = db.execute(
+                f"SELECT w.run_id AS run_id, s.* FROM watches w JOIN sessions s ON s.handle=w.client_session "
+                f"WHERE w.run_id IN ({marks})" + (" AND s.key_id=?" if key_id else ""),
+                (*ids, *([key_id] if key_id else []))).fetchall()
+        return {r["run_id"]: session_brief(dict(r)) for r in rows}
 
     def get_watch(self, run_id: str) -> dict[str, Any] | None:
         with self._db() as db:
