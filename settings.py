@@ -56,7 +56,8 @@ class Settings:
     hermes_api_url: str = "http://127.0.0.1:8642"
     hermes_api_key: str = ""
     hermes_bin: str = ""
-    trust_proxy: bool = False
+    trust_proxy: bool = False          # DEPRECATED: does not widen anything; use trusted_proxies
+    trusted_proxies: list[str] = field(default_factory=list)  # peers whose forwarding headers are believed
     call_timeout: float = 60.0
     auth_fail_limit: int = 10          # failures per window per IP
     auth_fail_window: float = 60.0
@@ -78,11 +79,12 @@ class Settings:
     debug_capture_hours: float = 12.0  # recording stops by itself this long after start
     systemd_scope: str = "system"      # "system" | "user": manager of the Hermes gateway unit (gateway_restart)
     self_systemd_scope: str = "system"  # "system" | "user": manager of hermcp.service itself (hermcp_restart)
-    lagebild: bool = False             # serve the read-only situation page at /lagebild; off by default
-    lagebild_base_url: str = ""        # where session links point (desktop app); empty = from Hermes config
-    lagebild_poll_seconds: int = 15    # page polling interval
-    lagebild_window_hours: int = 24    # cron ledger / failed-run window
-    lagebild_cache_ttl: float = 8.0    # server-side cache per payload
+    ledger: bool = False             # serve the read-only situation page at /ledger; off by default
+    ledger_auth: str = "key"         # "key" (default) | "none" (only from private/loopback addresses)
+    ledger_base_url: str = ""        # where session links point (desktop app); empty = from Hermes config
+    ledger_poll_seconds: int = 15    # page polling interval
+    ledger_window_hours: int = 24    # cron ledger / failed-run window
+    ledger_cache_ttl: float = 8.0    # server-side cache per payload
 
     invalid_scopes: list[str] = field(default_factory=list)   # set by load_settings(strict=False) only
 
@@ -107,6 +109,25 @@ class Settings:
         return data_dir()
 
 
+LEDGER_AUTH_MODES = ("key", "none")
+
+
+def proxy_errors(s: "Settings") -> list[str]:
+    """One readable line per trusted-proxy entry that is not an address or CIDR."""
+    from .client_ip import invalid_networks
+    bad = invalid_networks(s.trusted_proxies)
+    if not bad:
+        return []
+    return [f"HERMCP_TRUSTED_PROXIES: not an address or CIDR: {', '.join(bad)}"]
+
+
+def ledger_errors(s: "Settings") -> list[str]:
+    """One readable line per invalid Ledger setting (empty list = fine)."""
+    if s.ledger_auth not in LEDGER_AUTH_MODES:
+        return [f"HERMCP_LEDGER_AUTH must be one of {list(LEDGER_AUTH_MODES)}, got {s.ledger_auth!r}"]
+    return []
+
+
 def scope_errors(s: "Settings") -> list[str]:
     """One readable line per invalid systemd scope value (empty list = fine)."""
     out = []
@@ -127,6 +148,16 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
     and `scope_errors(settings)` tells what was wrong."""
     merged = _read_dotenv(PKG_DIR / ".env")
     merged.update(os.environ if env is None else env)
+    # Deprecated: the page was called "Lagebild" for one day. Old names still work
+    # where the new one is unset; the new name always wins.
+    for old_name, new_name in (("HERMCP_LAGEBILD", "HERMCP_LEDGER"),
+                               ("HERMCP_LAGEBILD_AUTH", "HERMCP_LEDGER_AUTH"),
+                               ("HERMCP_LAGEBILD_BASE_URL", "HERMCP_LEDGER_BASE_URL"),
+                               ("HERMCP_LAGEBILD_POLL_SECONDS", "HERMCP_LEDGER_POLL_SECONDS"),
+                               ("HERMCP_LAGEBILD_WINDOW_HOURS", "HERMCP_LEDGER_WINDOW_HOURS"),
+                               ("HERMCP_LAGEBILD_CACHE_TTL", "HERMCP_LEDGER_CACHE_TTL")):
+        if old_name in merged and new_name not in merged:
+            merged[new_name] = merged[old_name]
     g = merged.get
     s = Settings(
         host=g("HERMCP_HOST", "127.0.0.1"),
@@ -136,6 +167,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         hermes_api_key=g("HERMES_API_KEY", ""),
         hermes_bin=g("HERMCP_HERMES_BIN", ""),
         trust_proxy=g("HERMCP_TRUST_PROXY", "").lower() in ("1", "true", "yes"),
+        trusted_proxies=_csv(g("HERMCP_TRUSTED_PROXIES", "")),
         call_timeout=float(g("HERMCP_CALL_TIMEOUT", "60")),
         oauth_dcr=g("HERMCP_OAUTH_DCR", "").lower() in ("1", "true", "yes"),
         inbox_max_events=int(g("HERMCP_INBOX_MAX_EVENTS", "2000")),
@@ -154,13 +186,14 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         debug_capture_hours=float(g("HERMCP_DEBUG_CAPTURE_HOURS", "12")),
         systemd_scope=g("HERMCP_SYSTEMD_SCOPE", "system").strip().lower() or "system",
         self_systemd_scope=g("HERMCP_SELF_SYSTEMD_SCOPE", "system").strip().lower() or "system",
-        lagebild=g("HERMCP_LAGEBILD", "").lower() in ("1", "true", "yes", "on"),
-        lagebild_base_url=g("HERMCP_LAGEBILD_BASE_URL", "").rstrip("/"),
-        lagebild_poll_seconds=max(5, int(g("HERMCP_LAGEBILD_POLL_SECONDS", "15"))),
-        lagebild_window_hours=max(1, int(g("HERMCP_LAGEBILD_WINDOW_HOURS", "24"))),
-        lagebild_cache_ttl=max(0.0, float(g("HERMCP_LAGEBILD_CACHE_TTL", "8"))),
+        ledger=g("HERMCP_LEDGER", "").lower() in ("1", "true", "yes", "on"),
+        ledger_auth=(g("HERMCP_LEDGER_AUTH", "key").strip().lower() or "key"),
+        ledger_base_url=g("HERMCP_LEDGER_BASE_URL", "").rstrip("/"),
+        ledger_poll_seconds=max(5, int(g("HERMCP_LEDGER_POLL_SECONDS", "15"))),
+        ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
+        ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),
     )
-    bad = scope_errors(s)
+    bad = scope_errors(s) + ledger_errors(s) + proxy_errors(s)
     if bad:
         if strict:
             raise ConfigError("; ".join(bad))
@@ -168,6 +201,8 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         for attr in ("systemd_scope", "self_systemd_scope"):
             if getattr(s, attr) not in SCOPES:
                 setattr(s, attr, "system")
+        if s.ledger_auth not in LEDGER_AUTH_MODES:
+            s.ledger_auth = "key"
     hosts = _csv(g("HERMCP_ALLOWED_HOSTS", ""))
     if not hosts:
         hosts = ["127.0.0.1", "localhost", "[::1]"]

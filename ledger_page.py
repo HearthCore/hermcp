@@ -1,9 +1,9 @@
-"""Lagebild — a read-only situation page for this Hermes install (opt-in).
+"""Ledger — a read-only situation page for this Hermes install (opt-in).
 
 What it is
 ----------
 One HTML page plus two JSON endpoints on hermcp's own port, off by default
-(``HERMCP_LAGEBILD=1``). It answers "what is going on right now" without any
+(``HERMCP_LEDGER=1``). It answers "what is going on right now" without any
 write capability: every number comes from the registry's **read** tools, invoked
 with a principal that is forced to ``access="read"`` no matter what the caller's
 key may do. There is deliberately no approve, start, stop or retry path — not in
@@ -11,10 +11,10 @@ the UI and not behind it.
 
 Endpoints (only mounted when the setting is on)
 -----------------------------------------------
-``GET /lagebild``            the page (needs a key once, then a cookie)
-``GET /lagebild/overview``   gateway/platform health, sessions, the 24 h cron
+``GET /ledger``            the page (needs a key once, then a cookie)
+``GET /ledger/overview``   gateway/platform health, sessions, the 24 h cron
                              ledger, pending approvals, failed runs
-``GET /lagebild/jobs``       the cron job configuration (optional side view)
+``GET /ledger/jobs``       the cron job configuration (optional side view)
 
 Auth: the page accepts ``?key=hmcp_...`` once and trades it for an HttpOnly
 cookie, so the key never sits in browser history; the JSON endpoints accept the
@@ -31,12 +31,14 @@ raw. The page renders every value with ``textContent`` — never ``innerHTML``.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+from .client_ip import parse_ip
 from .registry import Principal
 from .scopes import Scopes
 
@@ -50,11 +52,11 @@ SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 ISO_SAFE = re.compile(r"^[A-Za-z0-9:.+~-]{4,40}$")
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-_READ_PRINCIPAL_ID = "lagebild-page"
-_READ_PRINCIPAL_NAME = "Lagebild (read-only page)"
+PAGE_PRINCIPAL_ID = "ledger-page"
+PAGE_PRINCIPAL_NAME = "Ledger (read-only page)"
 
 
-class LagebildError(RuntimeError):
+class LedgerError(RuntimeError):
     """A section could not be read; the message is shown, never a traceback."""
 
 
@@ -121,6 +123,48 @@ def session_status(row: Dict[str, Any], now: float) -> str:
     return "offen"
 
 
+# ---------------------------------------------------------------------------
+# network guard (only used when HERMCP_LEDGER_AUTH=none)
+# ---------------------------------------------------------------------------
+
+# Explicit, not ``ip.is_private``: Python counts documentation ranges (203.0.113.0/24 …)
+# as private, which would let a probe like 203.0.113.9 through.
+LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",        # RFC1918
+    "100.64.0.0/10",                                        # CGNAT, also Tailscale
+    "fc00::/7",                                             # IPv6 ULA
+    "fe80::/10",                                            # IPv6 link-local
+))
+
+
+def is_local_address(ip: Any) -> bool:
+    """Loopback, RFC1918, IPv6 ULA, link-local and CGNAT/Tailscale — nothing else."""
+    if ip is None:
+        return False
+    if ip.is_loopback:
+        return True
+    return any(ip in net for net in LOCAL_NETWORKS if net.version == ip.version)
+
+
+def request_allowed(info) -> tuple[bool, str]:
+    """Whether an unauthenticated Ledger request may be served.
+
+    Resolution already happened in ``client_ip.resolve``: forwarding headers from an
+    untrusted peer were ignored there, so ``info.ip`` is the real peer in that case.
+    A request through a **trusted** proxy is served: the proxy owns authentication for
+    that route (Pangolin SSO). Everything else has to come from loopback or a private
+    network — anything public is refused, never opened.
+    """
+    if getattr(info, "trusted", False):
+        return True, ""
+    ip = parse_ip(getattr(info, "ip", ""))
+    if ip is None:
+        return False, "client address unknown"
+    if not is_local_address(ip):
+        return False, f"client address is not private ({ip})"
+    return True, ""
+
+
 def _http_ok(url: Optional[str]) -> bool:
     return bool(url) and url.startswith(("http://", "https://"))
 
@@ -147,7 +191,7 @@ def dashboard_url(base: Optional[str], profile: Optional[str], session_id: Optio
 def link_targets(settings, hermes_config: Dict[str, Any], request_base: str = "") -> Dict[str, Any]:
     """Decide where a session link points, and say why.
 
-    Order: the explicit ``HERMCP_LAGEBILD_BASE_URL`` (desktop app), then
+    Order: the explicit ``HERMCP_LEDGER_BASE_URL`` (desktop app), then
     ``webapp.public_url`` (the Desktop app served in a browser), then
     ``dashboard.public_url`` with the ``/chat?resume=`` fallback, then the request
     origin. Nothing is guessed: each candidate is only used when it is a real
@@ -157,7 +201,7 @@ def link_targets(settings, hermes_config: Dict[str, Any], request_base: str = ""
     webapp = cfg.get("webapp") or {}
     dashboard = cfg.get("dashboard") or {}
     candidates = [
-        ("config:HERMCP_LAGEBILD_BASE_URL", getattr(settings, "lagebild_base_url", "") or "", "desktop"),
+        ("config:HERMCP_LEDGER_BASE_URL", getattr(settings, "ledger_base_url", "") or "", "desktop"),
         ("config:webapp.public_url", webapp.get("public_url") or "", "desktop"),
         ("config:dashboard.public_url", dashboard.get("public_url") or "", "dashboard"),
         ("request", request_base or "", "dashboard"),
@@ -214,7 +258,7 @@ def call(registry, principal: Principal, settings, tool: str, **args: Any) -> An
         return out.get("result")
     err = (out or {}).get("error") if isinstance(out, dict) else None
     message = (err or {}).get("message") if isinstance(err, dict) else None
-    raise LagebildError(f"{tool}: {message or 'unknown error'}")
+    raise LedgerError(f"{tool}: {message or 'unknown error'}")
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +335,7 @@ def _gateway(registry, principal, settings, errors: Dict[str, str]) -> Dict[str,
     except Exception as exc:  # noqa: BLE001
         errors["gateway"] = str(exc)
     try:
-        st = call(registry, principal, settings, "hermes_status", consumer="lagebild") or {}
+        st = call(registry, principal, settings, "hermes_status", consumer="ledger") or {}
         out["verdict"] = clean(st.get("verdict"), 24)
         out["profiles"] = st.get("profiles") if isinstance(st.get("profiles"), dict) else None
         out["hermes_version"] = clean(((st.get("_meta") or {}).get("hermes_version")), 40)
@@ -366,7 +410,7 @@ def _cron(registry, principal, settings, targets, window_hours: int, errors) -> 
 def _failed_chat_runs(registry, principal, settings, profiles, targets, window_hours, errors) -> List[Dict[str, Any]]:
     since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     try:
-        res = call(registry, principal, settings, "inbox_list", kind="run_failed", limit=50, consumer="lagebild") or {}
+        res = call(registry, principal, settings, "inbox_list", kind="run_failed", limit=50, consumer="ledger") or {}
     except Exception as exc:  # noqa: BLE001
         errors.setdefault("failed_runs", str(exc))
         return []
@@ -402,7 +446,7 @@ def build_overview(registry, principal: Principal, settings, hermes_config: Dict
     targets = link_targets(settings, hermes_config, request_base)
     payload: Dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-        "poll_seconds": int(getattr(settings, "lagebild_poll_seconds", POLL_SECONDS_DEFAULT) or POLL_SECONDS_DEFAULT),
+        "poll_seconds": int(getattr(settings, "ledger_poll_seconds", POLL_SECONDS_DEFAULT) or POLL_SECONDS_DEFAULT),
         "window_hours": window_hours,
         "links": targets,
         "errors": errors,
@@ -481,7 +525,7 @@ PAGE = """<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Lagebild</title>
+<title>hermcp Ledger</title>
 <style>
 :root{--bg:#0f1115;--panel:#171a1f;--line:#2a2f37;--fg:#e7e9ec;--muted:#98a1ac;
 --accent:#6ea8fe;--ok:#3fbf7f;--warn:#e0a33e;--bad:#ef6b6b;--radius:8px}
@@ -571,7 +615,7 @@ function render(d){
       sessions=(sec.sessions&&sec.sessions.items)||[],cron=sec.cron||{},runs=cron.runs||[],
       ap=sec.approvals||{count:0,items:[]},links=d.links||{};
   var head=el("div","head");
-  head.appendChild(el("h1",null,"Lagebild"));
+  head.appendChild(el("h1",null,"hermcp Ledger"));
   var verdict=String(gw.verdict||gw.health||"").toLowerCase();
   var p=el("span","pill "+(verdict==="ok"?"ok":verdict==="degraded"?"warn":verdict?"bad":""));
   p.appendChild(el("span","dot "+(verdict==="ok"?"ok":verdict==="degraded"?"warn":verdict?"bad":"")));
@@ -682,8 +726,8 @@ var jobs=null;
 function getJSON(url){return fetch(url,{credentials:"same-origin",headers:{"Accept":"application/json"}})
  .then(function(r){if(!r.ok)throw new Error(r.status+" "+r.statusText);return r.json();});}
 function load(){
-  var p=getJSON("/lagebild/overview");
-  if(jobsOpen) p=Promise.all([p,getJSON("/lagebild/jobs").catch(function(e){
+  var p=getJSON("/ledger/overview");
+  if(jobsOpen) p=Promise.all([p,getJSON("/ledger/jobs").catch(function(e){
     return {jobs:[],count:0,errors:{"jobs":String(e)}};})]).then(function(r){jobs=r[1];return r[0];});
   p.then(render).catch(function(e){
     root.textContent="";

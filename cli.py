@@ -295,8 +295,11 @@ def _serve(args) -> int:
         print(f"WARNING: binding {s.host} — expose only behind TLS/reverse proxy", file=sys.stderr)
     try:
         uvicorn.run(create_app(s).app, host=s.host, port=s.port, log_level=args.log_level,
-                    proxy_headers=s.trust_proxy,
-                    forwarded_allow_ips="127.0.0.1" if s.trust_proxy else None)
+                    # uvicorn's own XFF rewriting is off by default and only ever
+                    # allowed for the configured trusted proxies: the authoritative
+                    # resolution is hermcp.client_ip, not uvicorn's scope rewrite.
+                    proxy_headers=bool(s.trusted_proxies),
+                    forwarded_allow_ips=",".join(s.trusted_proxies) if s.trusted_proxies else None)
     finally:
         lock.release()
     return 0

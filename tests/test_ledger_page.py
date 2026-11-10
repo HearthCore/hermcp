@@ -1,4 +1,4 @@
-"""Lagebild: opt-in page + read-only payloads.
+"""Ledger: opt-in page + read-only payloads.
 
 The point of these tests is the contract, not the pixels: the page is off unless
 the setting says otherwise, no key means no page, and nothing personal or
@@ -11,7 +11,7 @@ import time
 
 from starlette.testclient import TestClient
 
-from hermcp import lagebild as LB
+from hermcp import ledger_page as LB
 from hermcp.app import create_app
 from hermcp.registry import Principal
 from hermcp.scopes import Scopes
@@ -87,11 +87,12 @@ class FakeRegistry:
 
 def make_principal(**sc):
     sc.setdefault("access", "read")
-    return Principal("k1", "lagebild test", Scopes(**sc))
+    return Principal("k1", "ledger test", Scopes(**sc))
 
 
 def make_settings(**env):
-    base = {"HERMES_HOME": "/tmp/hermcp-lagebild-test"}
+    # "key" is pinned: a local .env (this host runs AUTH=none) must not decide a test
+    base = {"HERMES_HOME": "/tmp/hermcp-ledger-test", "HERMCP_LEDGER_AUTH": "key"}
     base.update(env)
     return load_settings(base)
 
@@ -141,8 +142,8 @@ def test_link_targets_prefer_the_desktop_app_then_the_dashboard():
     dashboard = LB.link_targets(make_settings(), {"dashboard": {"public_url": "https://hermes.example.dev"}})
     assert dashboard["kind"] == "dashboard"
 
-    override = make_settings(HERMCP_LAGEBILD_BASE_URL="https://app.example.dev/")
-    assert LB.link_targets(override, CONFIG)["source"] == "config:HERMCP_LAGEBILD_BASE_URL"
+    override = make_settings(HERMCP_LEDGER_BASE_URL="https://app.example.dev/")
+    assert LB.link_targets(override, CONFIG)["source"] == "config:HERMCP_LEDGER_BASE_URL"
 
     none = LB.link_targets(make_settings(), {})
     assert none["kind"] == "none" and none["base_url"] is None
@@ -224,7 +225,7 @@ def test_jobs_payload_omits_prompts():
 def test_page_html_carries_the_poll_interval_and_no_secrets():
     page = LB.page_html(30)
     assert "setInterval" in page and "*1000" in page
-    assert "/lagebild/overview" in page and "/lagebild/jobs" in page
+    assert "/ledger/overview" in page and "/ledger/jobs" in page
     assert "__POLL__" not in page
     assert "hmcp_" not in page
 
@@ -239,43 +240,189 @@ def make_app(home, **env):
 
 
 def test_page_is_absent_unless_enabled(home):
-    app = make_app(home, HERMCP_LAGEBILD="0")   # explicit: a local .env must not decide this
+    app = make_app(home, HERMCP_LEDGER="0")   # explicit: a local .env must not decide this
     c = TestClient(app.app)
-    assert c.get("/lagebild").status_code == 404
-    assert c.get("/lagebild/overview").status_code == 404
+    assert c.get("/ledger").status_code == 404
+    assert c.get("/ledger/overview").status_code == 404
 
 
 def test_page_requires_a_key_and_then_keeps_a_cookie(home):
-    app = make_app(home, HERMCP_LAGEBILD="1")
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="key")
     c = TestClient(app.app)
-    token = app.keystore.create("lagebild", Scopes(access="read", profiles=["*"]))[1]
+    token = app.keystore.create("ledger", Scopes(access="read", profiles=["*"]))[1]
 
-    assert c.get("/lagebild").status_code == 401
+    assert c.get("/ledger").status_code == 401
 
-    trade = c.get("/lagebild", params={"key": token}, follow_redirects=False)
+    trade = c.get("/ledger", params={"key": token}, follow_redirects=False)
     assert trade.status_code == 303
-    assert app.LAGEBILD_COOKIE in c.cookies          # key traded for a cookie
+    assert app.LEDGER_COOKIE in c.cookies          # key traded for a cookie
     assert token not in trade.text
 
-    page = c.get("/lagebild")
+    page = c.get("/ledger")
     assert page.status_code == 200
-    assert "Lagebild" in page.text
+    assert "Ledger" in page.text
     assert token not in page.text
 
     # the cookie alone is enough for the page and the JSON endpoints
-    assert c.get("/lagebild").status_code == 200
-    overview = c.get("/lagebild/overview")
+    assert c.get("/ledger").status_code == 200
+    overview = c.get("/ledger/overview")
     assert overview.status_code == 200
     assert overview.json()["links"]["kind"] in ("desktop", "dashboard", "none")
 
     c.cookies.clear()
-    assert c.get("/lagebild/overview").status_code == 401
+    assert c.get("/ledger/overview").status_code == 401
 
 
 def test_bearer_header_works_for_the_json_endpoints(home):
-    app = make_app(home, HERMCP_LAGEBILD="1")
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="key")
     c = TestClient(app.app)
-    token = app.keystore.create("lagebild", Scopes(access="read", profiles=["*"]))[1]
-    r = c.get("/lagebild/overview", headers={"Authorization": f"Bearer {token}"})
+    token = app.keystore.create("ledger", Scopes(access="read", profiles=["*"]))[1]
+    r = c.get("/ledger/overview", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert "sections" in r.json()
+
+
+# ---------------------------------------------------------------------------
+# HERMCP_LEDGER_AUTH=none: no key, but only from private addresses
+# ---------------------------------------------------------------------------
+
+def test_default_auth_mode_is_key(tmp_path, monkeypatch):
+    """No config at all (no .env, no env var) must mean key — never "open"."""
+    import hermcp.settings as st
+    monkeypatch.setattr(st, "PKG_DIR", tmp_path)          # no .env in sight
+    assert st.load_settings({"HERMES_HOME": "/tmp/x"}).ledger_auth == "key"
+    assert st.load_settings({"HERMES_HOME": "/tmp/x", "HERMCP_LEDGER_AUTH": "none"}).ledger_auth == "none"
+    # an unknown value is a config error, not a silent "none"
+    import pytest
+
+    from hermcp.settings import ConfigError, load_settings
+    with pytest.raises(ConfigError):
+        load_settings({"HERMES_HOME": "/tmp/hermcp-ledger-test", "HERMCP_LEDGER_AUTH": "offen"})
+
+
+def test_parse_ip_accepts_the_shapes_a_proxy_sends():
+    assert str(LB.parse_ip("10.0.0.5")) == "10.0.0.5"
+    assert str(LB.parse_ip("::1")) == "::1"
+    assert str(LB.parse_ip("1.2.3.4:5678")) == "1.2.3.4"
+    assert str(LB.parse_ip("[fd00::1]:443")) == "fd00::1"
+    assert str(LB.parse_ip("::ffff:192.168.1.9")) == "192.168.1.9"
+    assert LB.parse_ip("testclient") is None
+    assert LB.parse_ip("") is None
+    assert LB.parse_ip(None) is None
+
+
+def test_private_ranges_are_local_and_public_ones_are_not():
+    for addr in ("127.0.0.1", "10.0.0.5", "172.16.4.2", "192.168.7.7", "100.64.1.2",
+                 "100.101.102.103", "::1", "fd00::1", "fe80::1"):
+        assert LB.is_local_address(LB.parse_ip(addr)), addr
+    for addr in ("8.8.8.8", "193.180.211.202", "2001:4860:4860::8888"):
+        assert not LB.is_local_address(LB.parse_ip(addr)), addr
+
+
+def test_request_allowed_rules():
+    from hermcp.client_ip import resolve
+
+    trusted = LB.parse_ip("127.0.0.1") and __import__("hermcp.client_ip", fromlist=["x"]).parse_networks(["10.1.0.9/32"])
+    # untrusted peer: its forwarding headers are ignored, judgement is on the peer
+    info = resolve("127.0.0.1", {"x-forwarded-for": "203.0.113.9"})
+    assert LB.request_allowed(info)[0] is True
+    info = resolve("203.0.113.9", {"x-forwarded-for": "127.0.0.1"})
+    ok, why = LB.request_allowed(info)
+    assert ok is False and "not private" in why
+    # trusted proxy: served, whoever is behind it (the proxy authenticates)
+    info = resolve("10.1.0.9", {"x-forwarded-for": "203.0.113.9"}, trusted)
+    assert info.trusted is True and LB.request_allowed(info) == (True, "")
+    # unknown peer
+    assert LB.request_allowed(resolve(None, {}))[0] is False
+
+
+def test_none_mode_serves_the_page_without_a_key_from_loopback(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    c = TestClient(app.app, client=("127.0.0.1", 51000))
+
+    page = c.get("/ledger")
+    assert page.status_code == 200 and "Ledger" in page.text
+    overview = c.get("/ledger/overview")
+    assert overview.status_code == 200
+    assert "sections" in overview.json()
+    assert c.get("/ledger/jobs").status_code in (200, 503)
+
+
+def test_none_mode_refuses_a_public_client(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    c = TestClient(app.app, client=("203.0.113.9", 51000))
+    for path in ("/ledger", "/ledger/overview", "/ledger/jobs"):
+        r = c.get(path)
+        assert r.status_code == 403, path
+        assert "not private" in r.json()["reason"]
+
+
+def test_none_mode_serves_a_request_through_a_trusted_proxy(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none",
+                   HERMCP_TRUSTED_PROXIES="10.1.0.9")
+    c = TestClient(app.app, client=("10.1.0.9", 51000))
+    r = c.get("/ledger/overview", headers={"x-forwarded-for": "203.0.113.9",
+                                           "x-forwarded-proto": "https",
+                                           "x-forwarded-host": "ledger.example.dev"})
+    assert r.status_code == 200
+    assert r.json()["links"]["base_url"].startswith("https://ledger.example.dev")
+
+
+def test_none_mode_ignores_a_spoofed_forwarded_address(home):
+    """An untrusted peer cannot talk itself into or out of the private check."""
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    c = TestClient(app.app, client=("203.0.113.9", 51000))
+    r = c.get("/ledger/overview", headers={"x-forwarded-for": "127.0.0.1"})
+    assert r.status_code == 403
+
+
+def test_none_mode_never_gets_write_access(home, monkeypatch):
+    seen = {}
+
+    def spy(registry, principal, settings, config, base, window):
+        seen["access"] = principal.scopes.access
+        seen["approvals"] = principal.scopes.approvals
+        return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
+                "profiles": [], "attention": {}, "gateway": {}}
+
+    monkeypatch.setattr(LB, "build_overview", spy)
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    c = TestClient(app.app, client=("10.0.0.5", 51000))
+    assert c.get("/ledger/overview").status_code == 200
+    assert seen == {"access": "read", "approvals": True}
+
+
+# ---------------------------------------------------------------------------
+# the old name: /lagebild redirects, HERMCP_LAGEBILD* still works (deprecated)
+# ---------------------------------------------------------------------------
+
+def test_old_lagebild_path_redirects_permanently(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    c = TestClient(app.app, client=("127.0.0.1", 51000))
+    r = c.get("/lagebild", follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == "/ledger"
+    r = c.get("/lagebild/overview?window_hours=6", follow_redirects=False)
+    assert r.status_code == 308 and r.headers["location"] == "/ledger/overview?window_hours=6"
+
+
+def test_deprecated_env_names_still_configure_the_page(home):
+    from hermcp.settings import load_settings
+    s = load_settings({"HERMES_HOME": str(home), "HERMCP_LAGEBILD": "1",
+                       "HERMCP_LAGEBILD_AUTH": "none",
+                       "HERMCP_LAGEBILD_BASE_URL": "https://old.example.dev/"})
+    assert (s.ledger, s.ledger_auth, s.ledger_base_url) == (True, "none", "https://old.example.dev")
+
+    # the new name wins when both are set
+    s = load_settings({"HERMES_HOME": str(home), "HERMCP_LAGEBILD": "1", "HERMCP_LEDGER": "0",
+                       "HERMCP_LAGEBILD_AUTH": "none", "HERMCP_LEDGER_AUTH": "key"})
+    assert (s.ledger, s.ledger_auth) == (False, "key")
+
+
+def test_no_write_tool_is_reachable_from_the_page(home):
+    """Belt and braces: the page's own principal is read-only, and no route writes."""
+    import inspect
+
+    src = inspect.getsource(__import__("hermcp.server", fromlist=["x"]))
+    ledger_part = src[src.index("-- ledger"):src.index("async def mcp")]
+    for verb in ("registry.invoke", "chat_send", "chat_run_", "kanban_", "config_set"):
+        assert verb not in ledger_part, verb
