@@ -237,6 +237,19 @@ def link_targets(settings, hermes_config: Dict[str, Any], request_base: str = ""
                     "die Session-ID steht in der Tabelle zum Kopieren."}
 
 
+def kanban_url(settings, targets: Dict[str, Any]) -> Optional[str]:
+    """Where the page's Kanban link points: an explicit HERMCP_LEDGER_KANBAN_URL wins; otherwise, in desktop link
+    mode, the desktop app's board view is derived from its base URL ({base}/#/kanban). The web dashboard's board
+    route is not known, so in dashboard mode there is no link unless it is configured."""
+    explicit = (getattr(settings, "ledger_kanban_url", "") or "").strip()
+    if explicit:
+        return explicit if _http_ok(explicit) else None
+    base = targets.get("base_url")
+    if targets.get("kind") == "desktop" and _http_ok(base):
+        return f"{base.rstrip('/')}/#/kanban"
+    return None
+
+
 def build_link(targets: Dict[str, Any], profile: Optional[str], session_id: Optional[str]) -> Optional[str]:
     if targets.get("kind") == "desktop":
         return desktop_url(targets.get("base_url"), profile, session_id)
@@ -526,8 +539,7 @@ def build_overview(registry, principal: Principal, settings, hermes_config: Dict
         errors["profiles"] = str(exc)
         profiles = ["default"]
     payload["profiles"] = profiles
-    kanban = (getattr(settings, "ledger_kanban_url", "") or "").strip()
-    payload["kanban_url"] = kanban if _http_ok(kanban) else None
+    payload["kanban_url"] = kanban_url(settings, targets)
     try:
         payload["clients"] = clients_view.build(get_inbox(settings), key_id=None if see_all else caller_id,
                                                 allowed_profiles=allowed)

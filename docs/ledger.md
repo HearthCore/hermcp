@@ -167,7 +167,7 @@ Why those shapes:
 | `HERMCP_LEDGER` | off | mount `/ledger` at all |
 | `HERMCP_LEDGER_AUTH` | `key` | `key` (cookie handshake) or `none` (no key, private clients only) |
 | `HERMCP_LEDGER_BASE_URL` | empty | where session links point (desktop app); empty = from the Hermes config |
-| `HERMCP_LEDGER_KANBAN_URL` | empty | opt-in: adds a "Kanban-Board" link to the Clients block, e.g. `https://desktop.example.dev/#/kanban`. Only `http(s)` addresses are used; it is a board link, not a per-task link |
+| `HERMCP_LEDGER_KANBAN_URL` | empty | where the "Kanban-Board" link in the Clients block points. Empty = derived from the session-link target: in desktop mode `{base}/#/kanban`; in dashboard mode there is no link (the dashboard's board route is not known). Only `http(s)` addresses are used; it is a board link, not a per-task link |
 | `HERMCP_LEDGER_POLL_SECONDS` | 15 | page polling interval (min 5) |
 | `HERMCP_LEDGER_WINDOW_HOURS` | 24 | cron ledger / failed-run window |
 | `HERMCP_LEDGER_CACHE_TTL` | 8 | server-side cache per payload, so several open tabs cost one read |

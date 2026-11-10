@@ -107,3 +107,16 @@ def test_ledger_page_scopes_clients_to_the_caller_unless_admin_or_private_page(h
 def test_summary_is_short_and_speakable():
     g = [{"client": "Cowork", "sessions": [1, 2], "active_sessions": 1, "open_runs": 0}]
     assert clients_view.summary(g, 2) == "Cowork: 2 sessions (1 active), 0 open runs; 2 open runs started without a session."
+
+
+def test_kanban_link_is_derived_from_the_desktop_target_unless_configured():
+    desktop = {"kind": "desktop", "base_url": "https://desktop.example.dev/"}
+    dash = {"kind": "dashboard", "base_url": "https://hermes.example.dev"}
+    none = {"kind": "none", "base_url": None}
+    unset = type("S", (), {"ledger_kanban_url": ""})()
+    explicit = type("S", (), {"ledger_kanban_url": "https://board.example.dev/k"})()
+    bad = type("S", (), {"ledger_kanban_url": "javascript:alert(1)"})()
+    assert LB.kanban_url(unset, desktop) == "https://desktop.example.dev/#/kanban"
+    assert LB.kanban_url(unset, dash) is None and LB.kanban_url(unset, none) is None
+    assert LB.kanban_url(explicit, desktop) == "https://board.example.dev/k"       # explicit wins
+    assert LB.kanban_url(bad, desktop) is None                                      # never falls back past a bad value
