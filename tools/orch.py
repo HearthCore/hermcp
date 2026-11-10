@@ -164,7 +164,7 @@ def hermes_status(ctx, consumer=None):
     gw = scope_gateway(_gateway_state(profile_home("default")), ctx)
     info = served_info()
     names = [n for n in list_profile_names() if ctx.principal.scopes.profile_allowed(n)]
-    reach = [n for n in names if n in (gw.get("served_profiles") or [])] if gw.get("state") == "running" else []
+    reach = [n for n in names if n in info["served"]] if gw.get("state") == "running" else []
     platforms = gw.get("platforms") or {}
     bad = {k: v.get("state") for k, v in platforms.items() if v.get("state") != "connected"}
     state = gw.get("state")
