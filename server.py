@@ -11,6 +11,7 @@ import collections
 import contextlib
 import json
 import logging
+import threading
 import time
 from typing import Any, Callable
 
@@ -22,6 +23,7 @@ from starlette.routing import Route
 from . import __version__
 from .audit import AuditLog
 from .capture import Capture, FILE_NAME as CAPTURE_FILE
+from . import lagebild as LB
 from .keys import KeyStore
 from .client_id import derive_client
 from .client_profiles import native_from_headers
@@ -119,8 +121,13 @@ class HermcpApp:
             Route("/health", self.health, methods=["GET"]),
             Route("/mcp", self.mcp, methods=["POST", "GET", "DELETE"]),
             Route("/inbox", self.inbox_http, methods=["POST"]),
+            *([Route("/lagebild", self.lagebild_page, methods=["GET"]),
+               Route("/lagebild/overview", self.lagebild_overview, methods=["GET"]),
+               Route("/lagebild/jobs", self.lagebild_jobs, methods=["GET"])] if settings.lagebild else []),
             *(extra_routes or []),
         ]
+        self._lagebild_cache: dict[tuple, tuple] = {}
+        self._lagebild_lock = threading.Lock()
         self.watcher = None
         if settings.inbox_watcher:
             from .adapters.run_watcher import RunWatcher
@@ -178,6 +185,73 @@ class HermcpApp:
     # -- routes -------------------------------------------------------------------------
     async def health(self, req: Request) -> Response:
         return JSONResponse({"status": "ok", "name": "hermcp", "version": __version__})
+
+    # -- lagebild (opt-in, read-only) ----------------------------------------------------
+    LAGEBILD_COOKIE = "hermcp_lagebild"
+
+    def _lagebild_principal(self, req: Request):
+        """(principal, token_from_query). Cookie or ?key= stand in for the bearer header."""
+        principal = self.authenticate(req)
+        if principal is not None:
+            return principal, ""
+        token = req.query_params.get("key") or req.cookies.get(self.LAGEBILD_COOKIE) or ""
+        if not token:
+            return None, ""
+        rec = self.keystore.authenticate(token)
+        if rec is None:
+            return None, ""
+        from_query = req.query_params.get("key") or ""
+        return Principal(rec.id, rec.name, rec.scopes), from_query
+
+    def _lagebild_cached(self, key: tuple, build):
+        now = time.monotonic()
+        ttl = float(self.settings.lagebild_cache_ttl or 0)
+        with self._lagebild_lock:
+            hit = self._lagebild_cache.get(key)
+            if hit and now - hit[0] < ttl:
+                return hit[1], round(now - hit[0], 1)
+        payload = build()
+        with self._lagebild_lock:
+            self._lagebild_cache[key] = (time.monotonic(), payload)
+        return payload, 0.0
+
+    async def lagebild_page(self, req: Request) -> Response:
+        principal, from_query = self._lagebild_principal(req)
+        if principal is None:
+            return Response(
+                "<!doctype html><meta charset=utf-8><title>Lagebild</title>"
+                "<body style=\"font:14px system-ui;padding:40px;background:#0f1115;color:#e7e9ec\">"
+                "<h1 style=\"font-size:18px\">Lagebild</h1>"
+                "<p>Diese Seite braucht einen hermcp-Schlüssel: <code>/lagebild?key=hmcp_…</code> "
+                "(wird einmal eingelöst und dann als Cookie gehalten).</p>",
+                status_code=401, media_type="text/html")
+        page = LB.page_html(self.settings.lagebild_poll_seconds)
+        if from_query:      # trade the key in the URL for an HttpOnly cookie, then drop it
+            resp = Response(page, media_type="text/html")
+            resp.set_cookie(self.LAGEBILD_COOKIE, from_query, httponly=True, samesite="strict",
+                            secure=req.url.scheme == "https", path="/lagebild")
+            return resp
+        return Response(page, media_type="text/html")
+
+    async def lagebild_overview(self, req: Request) -> Response:
+        principal, _ = self._lagebild_principal(req)
+        if principal is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        base = str(req.base_url).rstrip("/")
+        window = int(self.settings.lagebild_window_hours or 24)
+        payload, age = self._lagebild_cached(
+            ("overview", principal.id, base, window),
+            lambda: LB.build_overview(self.registry, principal, self.settings,
+                                      LB.hermes_config(), base, window))
+        return JSONResponse({**payload, "cache_age_s": age})
+
+    async def lagebild_jobs(self, req: Request) -> Response:
+        principal, _ = self._lagebild_principal(req)
+        if principal is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        payload, age = self._lagebild_cached(
+            ("jobs", principal.id), lambda: LB.build_jobs(self.registry, principal, self.settings))
+        return JSONResponse({**payload, "cache_age_s": age})
 
     async def mcp(self, req: Request) -> Response:
         if not self.host_ok(req):
