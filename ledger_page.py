@@ -38,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+from .client_ip import parse_ip
 from .registry import Principal
 from .scopes import Scopes
 
@@ -134,25 +135,6 @@ LOCAL_NETWORKS = tuple(ipaddress.ip_network(n) for n in (
     "fc00::/7",                                             # IPv6 ULA
     "fe80::/10",                                            # IPv6 link-local
 ))
-FORWARD_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "cf-connecting-ip", "true-client-ip")
-
-
-def parse_ip(value: Any) -> Any:
-    """A single address, or None. Accepts ``1.2.3.4``, ``::1`` and ``1.2.3.4:5678``/``[::1]:443``."""
-    if not isinstance(value, str) or not value:
-        return None
-    text = value.strip().strip('"')
-    if text.startswith("[") and "]" in text:
-        text = text[1:text.index("]")]
-    elif text.count(":") == 1 and "." in text:            # v4 with port
-        text = text.split(":", 1)[0]
-    try:
-        ip = ipaddress.ip_address(text)
-    except ValueError:
-        return None
-    if getattr(ip, "ipv4_mapped", None) is not None:
-        return ip.ipv4_mapped
-    return ip
 
 
 def is_local_address(ip: Any) -> bool:
@@ -164,35 +146,18 @@ def is_local_address(ip: Any) -> bool:
     return any(ip in net for net in LOCAL_NETWORKS if net.version == ip.version)
 
 
-def forwarded_addresses(headers) -> List[str]:
-    """Every address a forwarding header mentions (whatever the header syntax)."""
-    out: List[str] = []
-    for name in FORWARD_HEADERS:
-        raw = headers.get(name)
-        if not raw:
-            continue
-        for part in str(raw).replace(";", ",").split(","):
-            for token in part.split("="):
-                token = token.strip()
-                if parse_ip(token) is not None:
-                    out.append(token)
-    return out
-
-
-def request_allowed(peer: Any, headers) -> tuple[bool, str]:
+def request_allowed(info) -> tuple[bool, str]:
     """Whether an unauthenticated Ledger request may be served.
 
-    Deliberately blunt: a forwarding header means somebody is proxying, and as long
-    as no trusted proxy is configured we cannot tell a real private client from a
-    public one behind that proxy — so the request is refused rather than opened.
+    Resolution already happened in ``client_ip.resolve``: forwarding headers from an
+    untrusted peer were ignored there, so ``info.ip`` is the real peer in that case.
+    A request through a **trusted** proxy is served: the proxy owns authentication for
+    that route (Pangolin SSO). Everything else has to come from loopback or a private
+    network — anything public is refused, never opened.
     """
-    forwarded = forwarded_addresses(headers)
-    if forwarded:
-        public = [f for f in forwarded if not is_local_address(parse_ip(f))]
-        if public:
-            return False, f"forwarded address is not private ({public[0]})"
-        return False, "request came through a proxy (forwarding header present, no trusted proxy configured)"
-    ip = parse_ip(peer)
+    if getattr(info, "trusted", False):
+        return True, ""
+    ip = parse_ip(getattr(info, "ip", ""))
     if ip is None:
         return False, "client address unknown"
     if not is_local_address(ip):

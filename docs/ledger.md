@@ -42,6 +42,17 @@ A request is served only when the client address is loopback, RFC1918 (`10/8`, `
 The ranges are listed explicitly rather than taken from `ipaddress.is_private`, which also calls
 documentation ranges such as `203.0.113.0/24` private.
 
+**Requests through a trusted proxy are served**: with `HERMCP_TRUSTED_PROXIES` set, the client
+address comes from the proxy's forwarding chain (right to left, first untrusted address), and a
+request that arrives through such a proxy is treated as authenticated by it — that is where Pangolin
+SSO sits. Direct requests from public addresses stay refused.
+
+The trade is explicit: **whoever turns off the proxy's auth for the `/ledger` route publishes it.**
+hermcp cannot distinguish an authenticated from an unauthenticated proxy request; it trusts the
+proxy for that decision. Keep the trusted list to exact proxy addresses (not subnets), keep the
+route behind the proxy's auth, and see
+[deployment.md](deployment.md#trusted-proxies--the-only-place-forwarding-headers-are-believed).
+
 `none` is **safe only inside a trusted network**. Never put it behind an edge that does not strip or
 overwrite forwarding headers, and never forward the port to the internet.
 
