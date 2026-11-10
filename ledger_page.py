@@ -599,7 +599,7 @@ def build_jobs(registry, principal: Principal, settings) -> Dict[str, Any]:
 def hermes_config() -> Dict[str, Any]:
     """The Hermes config.yaml of this home, or {} — read only, never written."""
     try:
-        import yaml
+        from . import _yaml as yaml
 
         from .settings import hermes_home
         data = yaml.safe_load((hermes_home() / "config.yaml").read_text(encoding="utf-8"))

@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml
+from .. import _yaml as yaml
 
 from .. import meta
 from ..adapters import kanban_scope as KS

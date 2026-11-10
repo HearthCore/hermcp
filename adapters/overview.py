@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-import yaml
+from .. import _yaml as yaml
 
 from .. import meta
 from ..settings import hermes_home

@@ -111,7 +111,7 @@ def recorded_served_profiles(home: Path) -> list[str] | None:
 def config_multiplex_hint(home: Path) -> bool | None:
     """``gateway.multiplex_profiles`` from *home*'s config.yaml, or None when it cannot be read."""
     try:
-        import yaml
+        from . import _yaml as yaml
         cfg = yaml.safe_load((Path(home) / "config.yaml").read_text(encoding="utf-8")) or {}
     except Exception:  # noqa: BLE001 - yaml missing or an unreadable config is "no hint"
         return None

@@ -80,7 +80,7 @@ def _disabled_by_config(home, name: str) -> str | None:
     """Reason string if config explicitly disables platform `name` (profile prefix `p:` ignored)."""
     base = name.split(":", 1)[-1]
     try:
-        import yaml
+        from .. import _yaml as yaml
         cfg = yaml.safe_load((home / "config.yaml").read_text()) or {}
     except Exception:  # noqa: BLE001 - unreadable config: don't guess
         return None
