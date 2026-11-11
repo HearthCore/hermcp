@@ -6,7 +6,7 @@ import re
 import time
 import uuid
 
-from ..adapters import hapi, session_queue
+from ..adapters import approval_ledger, hapi, session_queue
 from ..adapters.inbox_store import get_inbox
 from ..adapters.served import reachable, require_served
 from ..registry import AdapterError, ToolError
@@ -729,9 +729,16 @@ def chat_run_approval(ctx, run_id, choice, request_id):
     code, resp = hapi.request_status(ctx.settings, "POST", f"/v1/runs/{run_id}/approval", profile=ctx.profile,
                                      body=body, timeout=15)
     if code == 409:
+        approval_ledger.note_attempt(ctx, run_id=run_id, approval_id=request_id, outcome="too_late_already_decided",
+                                     choice=choice, note="the gateway says the approval is no longer pending")
         raise ToolError("approval_not_pending", "that approval is no longer pending (answered or timed out)")
     if code is None:
         raise AdapterError(f"Hermes api_server unreachable at {ctx.settings.hermes_api_url}")
     if code != 200:
+        approval_ledger.note_attempt(ctx, run_id=run_id, approval_id=request_id, outcome="error", choice=choice,
+                                     note=f"Hermes api_server HTTP {code}")
         raise ToolError("api_error", f"Hermes api_server HTTP {code}")
-    return {"applied": True, "choice": choice, "request_id": request_id, "response": resp}
+    settled = approval_ledger.settle(ctx, run_id=run_id, approval_id=request_id, choice=choice,
+                                     note="via chat_run_approval")
+    return {"applied": True, "choice": choice, "request_id": request_id, "response": resp,
+            **({"approval": settled} if settled else {})}

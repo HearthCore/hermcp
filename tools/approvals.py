@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import bridge
+from ..adapters import approval_ledger
 from ..adapters.common import list_profile_names, profile_home
 from ..registry import AdapterError, ToolError
 from ..settings import hermes_home
@@ -76,6 +77,12 @@ def _own_session_key(ctx, session_key: str) -> str | None:
     return owner
 
 
+def _settle(ctx, *, session_key=None, run_id=None, approval_id=None, choice, note=None) -> dict | None:
+    """Settle the matching waiting approval row; never fails the tool call (see adapters/approval_ledger)."""
+    return approval_ledger.settle(ctx, session_key=session_key, run_id=run_id, approval_id=approval_id,
+                                  choice=choice, note=note)
+
+
 @reg.tool("approvals_pending", toolset="approvals", profile_aware=True, core=True,
           description=("List every pending approval in the profile's gateway (all chats and runs) with "
                        "session_key, request_id, command, description and the choices the gateway allows. Command and "
@@ -126,10 +133,18 @@ def approvals_answer(ctx, session_key, request_id, choice, reason=None):
     if ctx.dry_run:
         return ctx.plan("answer approval", profile=ctx.profile, session_key=session_key,
                         request_id=request_id, choice=choice, mode=tgt.mode)
-    resp = _ask(ctx, {"op": "answer", "session_key": session_key, "request_id": request_id,
-                      "choice": choice, "reason": reason}, tgt)
+    try:
+        resp = _ask(ctx, {"op": "answer", "session_key": session_key, "request_id": request_id,
+                          "choice": choice, "reason": reason}, tgt)
+    except ToolError as exc:
+        # The bridge says nothing is pending any more: keep the attempt in the decision protocol
+        # (Teil 3) instead of losing the fact that a second surface tried to answer.
+        approval_ledger.note_attempt(ctx, session_key=session_key, approval_id=request_id,
+                                     outcome=exc.code, choice=choice, note=exc.message)
+        raise
+    settled = _settle(ctx, session_key=session_key, approval_id=request_id, choice=choice, note=reason)
     return {"applied": True, "resolved": resp.get("resolved", 0), "choice": choice, "profile": ctx.profile,
-            "mode": tgt.mode}
+            "mode": tgt.mode, **({"approval": settled} if settled else {})}
 
 
 @reg.tool("approvals_bridge_status", toolset="approvals", profile_aware=True,
