@@ -4475,6 +4475,11 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
     &quot;skills&quot;: {
       &quot;type&quot;: &quot;boolean&quot;,
       &quot;default&quot;: true
+    },
+    &quot;debug&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;default&quot;: false,
+      &quot;description&quot;: &quot;Raw gateway data: also list profiles on the host ignore list (HERMCP_PROFILES_IGNORE) in served_profiles / parked_profiles and name them under ignored_profiles&quot;
     }
   },
   &quot;additionalProperties&quot;: false
@@ -4509,6 +4514,11 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;type&quot;: &quot;boolean&quot;,
       &quot;default&quot;: true
     },
+    &quot;debug&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;default&quot;: false,
+      &quot;description&quot;: &quot;Raw gateway data: also list profiles on the host ignore list (HERMCP_PROFILES_IGNORE) in served_profiles / parked_profiles and name them under ignored_profiles&quot;
+    },
     &quot;plugins_exact&quot;: {
       &quot;type&quot;: &quot;boolean&quot;,
       &quot;default&quot;: false,
@@ -4538,14 +4548,19 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
   },
   &quot;additionalProperties&quot;: false
 }</pre></details></div>
-<div class='card' data-h='status_gateway status read gateway process state and per-platform connection state of a profile, read from the gateway&#x27;s state file (read-only). `platforms` are the current reports of the running process; `stale_platforms` are leftovers of dead processes and are ignored for health; platforms disabled in config are flagged, not reported as errors. `health` is ok or degraded; `attention` lists platforms that need action. '>
+<div class='card' data-h='status_gateway status read gateway process state and per-platform connection state of a profile, read from the gateway&#x27;s state file (read-only). `platforms` are the current reports of the running process; `stale_platforms` are leftovers of dead processes and are ignored for health; platforms disabled in config are flagged, not reported as errors. `health` is ok or degraded; `attention` lists platforms that need action. debug=true shows the raw served/parked lists including profiles on the host ignore list. '>
 <div class='name'>status_gateway</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span><span class='b'>profile-aware</span></div>
-<p class='desc'>Gateway process state and per-platform connection state of a profile, read from the gateway&#x27;s state file (read-only). `platforms` are the current reports of the running process; `stale_platforms` are leftovers of dead processes and are ignored for health; platforms disabled in config are flagged, not reported as errors. `health` is ok or degraded; `attention` lists platforms that need action.</p>
+<p class='desc'>Gateway process state and per-platform connection state of a profile, read from the gateway&#x27;s state file (read-only). `platforms` are the current reports of the running process; `stale_platforms` are leftovers of dead processes and are ignored for health; platforms disabled in config are flagged, not reported as errors. `health` is ok or degraded; `attention` lists platforms that need action. debug=true shows the raw served/parked lists including profiles on the host ignore list.</p>
 <details><summary>input schema</summary>
 <pre>{
   &quot;type&quot;: &quot;object&quot;,
   &quot;properties&quot;: {
+    &quot;debug&quot;: {
+      &quot;type&quot;: &quot;boolean&quot;,
+      &quot;default&quot;: false,
+      &quot;description&quot;: &quot;Raw gateway data: also list profiles on the host ignore list (HERMCP_PROFILES_IGNORE) in served_profiles / parked_profiles and name them under ignored_profiles&quot;
+    },
     &quot;profile&quot;: {
       &quot;type&quot;: &quot;string&quot;,
       &quot;description&quot;: &quot;Hermes profile name. Defaults to the key&#x27;s only profile if the key is pinned to one profile, else &#x27;default&#x27;. Chat tools need a profile with reachable=true (see profiles_list).&quot;

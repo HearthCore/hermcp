@@ -8,7 +8,7 @@ from ..adapters import overview as OV
 from ..adapters.common import cli_json, list_profile_names, profile_home
 from ..adapters.served import served_info
 from . import reg
-from .status import _gateway_state, scope_gateway
+from .status import DEBUG_PROP, _gateway_state, scope_gateway
 
 
 def _plugins_config_summary() -> dict:
@@ -72,13 +72,13 @@ def approvals_overview(ctx, names, info):
                        "updated_at, writer_pid and a stale flag, pending approvals (needs the approvals scope) and "
                        "runs that are still going. A section that cannot be read is reported in `section_errors` "
                        "and never hides the others. skills=false skips the skill counts (faster)."),
-          properties={"skills": {"type": "boolean", "default": True},
+          properties={"skills": {"type": "boolean", "default": True}, "debug": DEBUG_PROP,
                       "plugins_exact": {"type": "boolean", "default": False,
                                         "description": "run `hermes plugins list` for exact runtime status (about 7 s)"}})
-def orchestration_overview(ctx, skills=True, plugins_exact=False):
+def orchestration_overview(ctx, skills=True, plugins_exact=False, debug=False):
     errors: dict[str, str] = {}
     out: dict = {}
-    gw = scope_gateway(_gateway_state(profile_home("default")), ctx)
+    gw = scope_gateway(_gateway_state(profile_home("default")), ctx, debug)
     names = [n for n in list_profile_names() if ctx.principal.scopes.profile_allowed(n)]
     info = served_info()
 
@@ -124,6 +124,7 @@ def orchestration_overview(ctx, skills=True, plugins_exact=False):
                       "health": gw.get("health"), "active_agents": gw.get("active_agents"),
                       "code_version": gw.get("code_version"), "attention": gw.get("attention"),
                       "served_profiles": gw.get("served_profiles"), "parked_profiles": gw.get("parked_profiles"),
+                      **{k: gw[k] for k in ("hidden_profiles", "ignored_profiles") if k in gw},
                       "served_source": {"status": info["status"], "reason": info["reason"]},
                       "platforms": {**{k: {"state": v["state"], "updated_at": v["updated_at"],
                                            "writer_pid": v["writer_pid"], "stale": False,
