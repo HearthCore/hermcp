@@ -15,11 +15,22 @@ Five pages share one shell and one stylesheet:
 | `/ledger/gateway` | platform state, versions, profiles, key overview (no secrets) |
 | `/ledger/session/<id>` | one session wide: history, metadata, tool usage, signals |
 
+![Startseite bei 1920×1080: KPI-Streifen, Panel 01 braucht Aufmerksamkeit, Panel 02 gateway, darunter sessions, runs und cron](img/ledger-start.png)
+
+*Die Startseite (`~/attention`) bei 1920×1080 — ohne Scrollen bei den Standardlimits.*
+
 The look is the terminal style of the portfolio: near-black `#070a08`, green `#00ff41`, amber for
 waiting, red for errors, cyan for running, hairline green rules, scanlines and a soft glow from the
 top. Panel titles read `01 // titel` with the tool that fed them on the right (`$ inbox_attention`).
 Symbols carry the state so colour is never the only signal: `●` ok, `✕` error, `◌` running, `▲`
 waiting/approval, `○` finished, `›` user, `‹` agent, `⚙` tool.
+
+**Wenn nichts offen ist**, wird das Attention-Panel gar nicht gezeichnet: kein Rahmen, keine leeren
+Listen, kein „Clear errors" — nur eine gedimmte Zeile `✓ zero active interruptions`, die den Platz an
+die Listen darunter freigibt. Sobald irgendetwas offen ist (Fehler, Unterbrechung, wartende Freigabe
+oder in diesem Browser ausgeblendete Zeilen), erscheint das Panel unverändert. Dasselbe gilt für den
+Unterbrechungsblock, der sein eigenes Panel (`panel-interrupted`) hat. Die Kopfzähler bleiben in
+beiden Fällen identisch zu `hermes_status`.
 
 Fonts and stylesheet come from hermcp itself (`/ledger/assets/app.css`,
 `/ledger/assets/fonts/…`): JetBrains Mono and Sora as latin `woff2` subsets under the SIL Open Font
@@ -170,6 +181,11 @@ klein:
 * Fußzeile: „⤢ Vollansicht der Session" (`/ledger/session/<id>`), „↗ In Desktop-App", „↗ In Web-App",
   Hinweis `read-only`
 
+![Detail-Pop-up einer Session: Symbol, Titel, Art-Chip, vier Eckdaten, drei Aktionen, Fußzeile mit Vollansicht und App-Link](img/ledger-popup.png)
+
+*Das Pop-up: bewusst klein — vier Eckdaten, die letzten drei Aktionen, Links. `Esc` und Klick auf den
+Backdrop schließen, der Fokus kehrt auf die Zeile zurück.*
+
 Die Daten kommen aus `GET /ledger/api/peek?kind=&id=` — gleiche Schicht, gleiche Scope-Prüfung,
 gleicher View-Key wie der Rest der Seite. Texte werden **serverseitig** gekürzt (Aktionen 160
 Zeichen, Tool-Ausgaben 220), Secrets über `redact_text` maskiert (dieselbe Maskierung wie die
@@ -196,6 +212,11 @@ eigene Zeilen, Ergebnisse gekürzt und ausklappbar), rechts Metadaten (Session, 
 Modell, gestartet, letzte Aktivität, Runs), die Tool-Nutzung als einfache Balken und die Signale
 (offene Freigabe, Fehler im Verlauf, letzte Aktivität). Dazu `← zurück` und die beiden App-Links.
 
+![Session-Vollansicht: Breadcrumb, Stat-Streifen, Verlauf mit Tool-Zeilen, Metadaten, Tool-Balken, Signale](img/ledger-session.png)
+
+*Die Session-Vollansicht — links der Verlauf (Tool-Aufrufe als eigene Zeilen), rechts Metadaten,
+Tool-Nutzung und Signale.*
+
 Die Ansicht ist ebenfalls read-only und folgt demselben Seam: `sessions_get`, `sessions_messages` und
 die eigene Inbox-Datenbank (Run-Watches, offene Freigaben) mit `access="read"`. Nachrichten- und
 Tool-Texte werden redigiert und gekürzt, bevor sie den Prozess verlassen.
@@ -209,6 +230,11 @@ Alle Listen, die wachsen können, sind **serverseitig** begrenzt:
 | Cron-Läufe | `HERMCP_LEDGER_CRON_LIMIT` | `HERMCP_LEDGER_LIST_LIMIT` |
 | Sessions | `HERMCP_LEDGER_SESSIONS_LIMIT` | `HERMCP_LEDGER_LIST_LIMIT` |
 | Run-Listen (offene Fehlschläge, Unterbrechungen) | `HERMCP_LEDGER_RUNS_LIMIT` | `HERMCP_LEDGER_LIST_LIMIT` |
+
+![Unterseite ~/sessions mit Profil-Filter: dichte Tabelle, Pager mit Untergrenze, Filterleiste](img/ledger-sessions-filter.png)
+
+*Eine Unterseite mit Filter (`~/sessions`, Profil `developer`). Die Historie liegt hier, nicht auf der
+Startseite; der Pager zeigt `≥ N`, wenn das serverseitige Fenster voll war.*
 
 `HERMCP_LEDGER_LIST_LIMIT` (Default 10) ist der gemeinsame Default; ein per-Liste gesetzter Wert
 gewinnt. Erlaubt sind 3 bis 100 — ein Wert außerhalb dieses Bereichs oder etwas, das keine Zahl ist,
