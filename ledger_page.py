@@ -45,12 +45,19 @@ from .adapters.inbox_store import get_inbox
 from .client_ip import parse_ip
 from .registry import Principal
 from .scopes import Scopes
+from .settings import LEDGER_LIST_MAX as LIST_LIMIT_MAX, LEDGER_LIST_MIN as LIST_LIMIT_MIN
 
 POLL_SECONDS_DEFAULT = 15
 CACHE_TTL_S = 8.0
 WINDOW_HOURS_DEFAULT = 24
-SESSIONS_PER_PROFILE = 6
 MAX_TEXT = 160
+
+# Growing lists are fetched with a hard bound and then cut to the configured window; "show more"
+# asks the server for the rest instead of shipping everything to the browser up front.
+LIST_LIMIT_DEFAULT = 10
+FETCH_MAX = 100          # cron_runs / sessions_list ceiling per call
+RUNS_FETCH_MAX = 200     # inbox_attention's own ceiling for failures
+LIST_NAMES = ("cron", "sessions", "runs")
 
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 ISO_SAFE = re.compile(r"^[A-Za-z0-9:.+~-]{4,40}$")
@@ -129,6 +136,42 @@ def session_status(row: Dict[str, Any], now: float) -> str:
     if isinstance(last, (int, float)) and now - float(last) <= 600:
         return "aktiv"
     return "offen"
+
+
+# ---------------------------------------------------------------------------
+# list windows ("show more")
+# ---------------------------------------------------------------------------
+
+def list_limit(settings, name: str) -> int:
+    """The configured window for one growing list: cron, sessions or runs."""
+    attr = f"ledger_{name}_limit"
+    value = getattr(settings, attr, None)
+    if not isinstance(value, int) or not LIST_LIMIT_MIN <= value <= LIST_LIMIT_MAX:
+        return LIST_LIMIT_DEFAULT
+    return value
+
+
+def window_list(items: List[Any], settings, name: str, expand) -> tuple:
+    """Cut one list to its window and describe the rest.
+
+    ``expand`` names the lists the client opened ("show more"), which lifts the cut to the list's
+    fetch bound. The returned dict is what the page needs to render "Mehr anzeigen (N weitere)" —
+    the item count never grows beyond the bound, so a 10k-row database still ships a small payload.
+    """
+    limit = list_limit(settings, name)
+    cap = RUNS_FETCH_MAX if name == "runs" else FETCH_MAX
+    wanted = cap if name in (expand or ()) else limit
+    shown = list(items or [])[:wanted]
+    total = len(items or [])
+    more = max(0, total - len(shown))
+    return shown, {
+        "limit": limit,
+        "shown": len(shown),
+        "total": total,
+        "has_more": more > 0,
+        "more_count": more,
+        "expanded": name in (expand or ()),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -314,34 +357,6 @@ def approval_view(entry: Dict[str, Any], profile: str) -> Dict[str, Any]:
     }
 
 
-def approval_history_view(entry: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
-    """One decided approval: state, where and when it was decided, and what happened to later attempts."""
-    entry = entry if isinstance(entry, dict) else {}
-    profile = entry.get("profile") if isinstance(entry.get("profile"), str) else None
-    run_id = safe_token(entry.get("run_id"))
-    raw_protocol = entry.get("protocol")
-    protocol: List[Dict[str, Any]] = [a for a in raw_protocol if isinstance(a, dict)] \
-        if isinstance(raw_protocol, list) else []
-    attempts = [
-        {"at": iso(a.get("ts")), "surface": clean(a.get("surface"), 30),
-         "outcome": clean(a.get("outcome"), 40), "choice": clean(a.get("decision"), 40)}
-        for a in protocol
-    ][:10]
-    return {
-        "profile": clean(profile, 40),
-        "approval_key": safe_token(entry.get("approval_key")),
-        "state": clean(entry.get("approval_state"), 20),
-        "decision": clean(entry.get("approval_decision"), 40),
-        "surface": clean(entry.get("approval_surface"), 30),
-        "closed_at": iso(entry.get("approval_closed_at") or entry.get("ts")),
-        "command": clean(redacted(entry.get("action") or entry.get("summary")), 120),
-        "run_id": run_id,
-        "url": build_link(targets, profile or "default", safe_token(entry.get("session_id")) or run_id),
-        "attempts": attempts,
-        "attempt_count": len(protocol),
-    }
-
-
 def cron_run_view(run: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
     run = run if isinstance(run, dict) else {}
     session_id = safe_token(run.get("session_id"))
@@ -380,21 +395,6 @@ def failed_run_view(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str,
         "summary": clean(redacted(event.get("summary")), 160),
         "session": session_view(event.get("session")),
     }
-
-
-def settled_run_view(event: Dict[str, Any], targets: Dict[str, Any], attention_mod) -> Dict[str, Any]:
-    """A failed run that no longer needs attention — with what settled it and where to look."""
-    view = failed_run_view(event, targets)
-    sup = safe_token(event.get("superseded_by"))
-    view.update(
-        settled_reason=clean(event.get("settled_reason"), 80),
-        settled_at=iso(event.get("settled_at")),
-        settled_text=clean(attention_mod.settled_text(event), 160),
-        superseded_by=sup,
-        superseded_url=build_link(targets, event.get("profile") if isinstance(event.get("profile"), str) else "default",
-                                  sup) if sup else None,
-    )
-    return view
 
 
 def interrupted_run_view(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
@@ -456,19 +456,27 @@ def _approvals(registry, principal, settings, profiles: List[str], errors: Dict[
     return {"count": len(items), "hidden": hidden, "mode": mode, "items": items[:20]}
 
 
-def _sessions(registry, principal, settings, profiles: List[str], targets, errors) -> Dict[str, Any]:
+def _sessions(registry, principal, settings, profiles: List[str], targets, errors,
+              expand=()) -> Dict[str, Any]:
+    """Sessions per profile, newest first.
+
+    Fetches one row more than the window asks for (or the fetch ceiling when the list is expanded),
+    so the payload can say exactly how many rows exist without shipping them.
+    """
     now = time.time()
+    per_profile = FETCH_MAX if "sessions" in (expand or ()) else list_limit(settings, "sessions") + 1
     rows: List[Dict[str, Any]] = []
+    capped = False
     for profile in profiles:
         try:
             res = call(registry, principal, settings, "sessions_list",
-                       profile=profile, limit=SESSIONS_PER_PROFILE, order="recent")
+                       profile=profile, limit=per_profile, order="recent")
         except Exception as exc:  # noqa: BLE001
             errors.setdefault("sessions", str(exc))
             continue
-        for row in (res or {}).get("sessions") or []:
-            if not isinstance(row, dict):
-                continue
+        found = [row for row in (res or {}).get("sessions") or [] if isinstance(row, dict)]
+        capped = capped or len(found) >= per_profile
+        for row in found:
             sid = safe_token(row.get("id"))
             rows.append({
                 "profile": clean(row.get("profile_name") or profile, 40),
@@ -480,7 +488,7 @@ def _sessions(registry, principal, settings, profiles: List[str], targets, error
                 "model": clean(row.get("model"), 40),
             })
     rows.sort(key=lambda r: r.get("last_active") or "", reverse=True)
-    return {"count": len(rows), "items": rows}
+    return {"count": len(rows), "items": rows, "capped": capped}
 
 
 def _cron(registry, principal, settings, targets, window_hours: int, errors) -> Dict[str, Any]:
@@ -500,10 +508,8 @@ def _cron(registry, principal, settings, targets, window_hours: int, errors) -> 
     except Exception as exc:  # noqa: BLE001
         errors.setdefault("cron_failed", str(exc))
         rows, out["failed_count"] = [], 0
-    active, superseded = _split_superseded(registry, principal, settings, rows, since, errors)
+    active, _superseded = _split_superseded(registry, principal, settings, rows, since, errors)
     out["failed"] = active
-    out["superseded"] = superseded
-    out["superseded_count"] = len(superseded)
     return out
 
 
@@ -516,8 +522,8 @@ def _split_superseded(registry, principal, settings, rows, since, errors) -> tup
 
     Decided read-only from the ledger itself: one extra ``cron_runs`` call per distinct
     ``job_id`` in the failure list (capped, and a failing lookup just leaves the entry
-    in the active list). Nothing is hidden from the page — superseded entries move to
-    their own collapsed group and stop counting as attention.
+    in the active list). Superseded runs are not shown on the page at all any more — they
+    neither count as attention nor appear in a history group (the ledger row keeps them).
     """
     seen: Dict[str, bool] = {}
     active, superseded = [], []
@@ -553,14 +559,15 @@ def _split_superseded(registry, principal, settings, rows, since, errors) -> tup
 def _attention(registry, principal, settings, profiles, targets, window_hours, errors) -> Dict[str, Any]:
     """The inbox half of the page: one call to the shared classification (`inbox_attention`).
 
-    The page does no grouping of its own any more. It asks the same tool a key would call, with the
-    same profile scope, so the buckets, the counters and the wording are the tool's — a settled
-    failure leaves the attention list and stays in `settled`, it is never dropped from the page.
+    The page does no grouping of its own. It asks the same tool a key would call, with the same
+    profile scope, so the buckets and the counters are the tool's. The page only DRAWS what is still
+    open: settled failures and decided approvals are not rendered here (they stay in the inbox and in
+    the MCP tools — `inbox_attention`, `inbox_list detail=true`, `approval_detail`).
     """
     from .adapters import attention as AT
 
-    empty = {"waiting": [], "attention": [], "interrupted": [], "settled": [], "history": [],
-             "counts": AT.counts({}), "approvals_waiting": 0, "failed_runs_24h": 0}
+    empty = {"waiting": [], "attention": [], "interrupted": [], "counts": AT.counts({}),
+             "approvals_waiting": 0, "failed_runs_24h": 0}
     try:
         res = call(registry, principal, settings, "inbox_attention", hours=int(window_hours)) or {}
     except Exception as exc:  # noqa: BLE001 - a broken inbox must not take the page down
@@ -570,8 +577,6 @@ def _attention(registry, principal, settings, profiles, targets, window_hours, e
         "waiting": [approval_view(e, e.get("profile")) for e in res.get("waiting") or []],
         "attention": [failed_run_view(e, targets) for e in res.get("attention") or []],
         "interrupted": [interrupted_run_view(e, targets) for e in res.get("interrupted") or []],
-        "settled": [settled_run_view(e, targets, AT) for e in res.get("settled") or []],
-        "history": [approval_history_view(e, targets) for e in res.get("history") or []],
         "counts": res.get("counts") or AT.counts({}),
     }
     out["approvals_waiting"] = out["counts"].get("approvals_waiting", 0)
@@ -588,8 +593,15 @@ def _read_reachable_profiles(registry, principal, settings) -> List[str]:
 
 
 def build_overview(registry, principal: Principal, settings, hermes_config: Dict[str, Any],
-                   request_base: str = "", window_hours: int = WINDOW_HOURS_DEFAULT) -> Dict[str, Any]:
-    """Everything the page shows, one dict. Sections fail independently."""
+                   request_base: str = "", window_hours: int = WINDOW_HOURS_DEFAULT,
+                   expand=()) -> Dict[str, Any]:
+    """Everything the page shows, one dict. Sections fail independently.
+
+    ``expand`` names the growing lists the client opened ("Mehr anzeigen"): cron, sessions, runs.
+    Those are returned up to the fetch bound instead of the configured window; everything else stays
+    a window, so the page payload stays small even when the databases are not.
+    """
+    expand = tuple(expand or ())
     started = time.time()
     # whose sessions to list: every key's for an admin caller or the private-network page, else the caller's own
     see_all = principal.scopes.access == "admin" or principal.id == PAGE_PRINCIPAL_ID
@@ -620,30 +632,44 @@ def build_overview(registry, principal: Principal, settings, hermes_config: Dict
         errors["clients"] = str(exc)
         payload["clients"] = {"clients": [], "unclaimed_runs": [], "unclaimed_count": 0, "summary": ""}
     payload["gateway"] = _gateway(registry, principal, settings, errors)
-    sessions = _sessions(registry, principal, settings, profiles, targets, errors)
+    sessions = _sessions(registry, principal, settings, profiles, targets, errors, expand)
     cron = _cron(registry, principal, settings, targets, window_hours, errors)
     attention = _attention(registry, principal, settings, profiles, targets, window_hours, errors)
+
+    # Which rows the page actually receives (the rest is fetched again on "Mehr anzeigen").
+    session_items, session_list = window_list(sessions["items"], settings, "sessions", expand)
+    cron_items, cron_list = window_list(cron.get("runs") or [], settings, "cron", expand)
+    failed_cron, failed_cron_list = window_list(cron.get("failed") or [], settings, "cron", expand)
+    failed_chat, failed_chat_list = window_list(attention["attention"], settings, "runs", expand)
+    interrupted, interrupted_list = window_list(attention["interrupted"], settings, "runs", expand)
+
     # Approvals shown in the page come from the shared classification, not from a second read path:
-    # a waiting approval is attention, a decided one is history. `approvals_pending` stays the live
-    # actionable list for keys; the page never answers one.
+    # a waiting approval is attention; a decided one is not rendered at all (the tools keep it).
+    # `approvals_pending` stays the live actionable list for keys; the page never answers one.
     approvals = {"count": attention["counts"].get("approvals_waiting", 0),
                  "hidden": 0, "mode": "inbox", "items": attention["waiting"][:20]}
-    payload["sections"] = {"sessions": sessions, "cron": cron, "approvals": approvals}
+    payload["sections"] = {
+        "sessions": {"count": sessions["count"], "items": session_items,
+                     "capped": sessions.get("capped", False), "list": session_list},
+        "cron": {"window_hours": cron.get("window_hours"), "since": cron.get("since"),
+                 "runs": cron_items, "count": cron.get("count"), "truncated": cron.get("truncated"),
+                 "failed_count": cron.get("failed_count"), "failed": failed_cron,
+                 "list": cron_list, "failed_list": failed_cron_list},
+        "approvals": approvals,
+    }
     payload["attention"] = {
-        **attention,
+        **{k: v for k, v in attention.items() if k not in ("attention", "waiting", "interrupted")},
         "approvals": approvals,
         "waiting": attention["waiting"][:20],
-        "failed_chat_runs": attention["attention"][:20],
+        "failed_chat_runs": failed_chat,
         "failed_chat_count": attention["counts"].get("failed_runs_24h", 0),
-        "interrupted": attention["interrupted"][:20],
+        "failed_chat_list": failed_chat_list,
+        "interrupted": interrupted,
         "interrupted_count": attention["counts"].get("interrupted_24h", 0),
-        "settled": attention["settled"][:20],
-        "settled_count": attention["counts"].get("settled_24h", 0),
-        "approval_history": attention["history"][:20],
-        "failed_cron_runs": cron.get("failed") or [],
+        "interrupted_list": interrupted_list,
+        "failed_cron_runs": failed_cron,
         "failed_cron_count": len(cron.get("failed") or []),
-        "superseded_cron_runs": cron.get("superseded") or [],
-        "superseded_count": len(cron.get("superseded") or []),
+        "failed_cron_list": failed_cron_list,
         "digest": {"failed_runs_24h": attention["counts"].get("failed_runs_24h", 0),
                    "approvals_waiting": attention["counts"].get("approvals_waiting", 0)},
         "active_sessions": sum(1 for s in sessions["items"] if s["status"] == "aktiv"),

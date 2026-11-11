@@ -1,11 +1,13 @@
 """Settings: process env > .env next to the package > defaults. Paths resolve via HERMES_HOME."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 PKG_DIR = Path(__file__).resolve().parent
+log = logging.getLogger("hermcp.settings")
 
 
 class ConfigError(ValueError):
@@ -87,6 +89,10 @@ class Settings:
     ledger_window_hours: int = 24    # cron ledger / failed-run window
     ledger_cache_ttl: float = 8.0    # server-side cache per payload
     ledger_view_key: str = ""        # key ID (never a token) whose view the page renders; empty = read-only page principal
+    ledger_list_limit: int = 10      # how many rows a growing list shows before "show more"
+    ledger_cron_limit: int = 10      # per-list override for the cron runs
+    ledger_sessions_limit: int = 10  # per-list override for the sessions table
+    ledger_runs_limit: int = 10      # per-list override for the run lists (failed/interrupted runs)
 
     profiles_ignore: list[str] = field(default_factory=list)  # host-wide: profiles hermcp leaves out (not a key scope)
 
@@ -114,6 +120,30 @@ class Settings:
 
 
 LEDGER_AUTH_MODES = ("key", "none")
+# The Ledger's growing lists show a window of rows; a value outside this range is a config mistake,
+# not a preference (a limit of 1 hides rows, 1000 defeats the purpose of the window).
+LEDGER_LIST_MIN = 3
+LEDGER_LIST_MAX = 100
+
+
+def _ledger_limit(raw: str | None, default: int, name: str) -> int:
+    """One positive int inside [LEDGER_LIST_MIN, LEDGER_LIST_MAX], else the default — and say so.
+
+    A bad value must not take the page down: the list falls back to its default and the log names
+    the setting and the value, so the operator sees it instead of wondering why the limit "ignores" them.
+    """
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        log.warning("%s: %r is not a number; using the default %d", name, raw, default)
+        return default
+    if not LEDGER_LIST_MIN <= value <= LEDGER_LIST_MAX:
+        log.warning("%s: %d is outside %d..%d; using the default %d",
+                    name, value, LEDGER_LIST_MIN, LEDGER_LIST_MAX, default)
+        return default
+    return value
 
 
 def proxy_errors(s: "Settings") -> list[str]:
@@ -171,6 +201,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         if old_name in merged and new_name not in merged:
             merged[new_name] = merged[old_name]
     g = merged.get
+    default_limit = _ledger_limit(g("HERMCP_LEDGER_LIST_LIMIT"), 10, "HERMCP_LEDGER_LIST_LIMIT")
     s = Settings(
         host=g("HERMCP_HOST", "127.0.0.1"),
         port=int(g("HERMCP_PORT", "9230")),
@@ -206,6 +237,13 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
         ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),
         ledger_view_key=g("HERMCP_LEDGER_VIEW_KEY", "").strip(),
+        ledger_list_limit=default_limit,
+        ledger_cron_limit=_ledger_limit(g("HERMCP_LEDGER_CRON_LIMIT"), default_limit,
+                                        "HERMCP_LEDGER_CRON_LIMIT"),
+        ledger_sessions_limit=_ledger_limit(g("HERMCP_LEDGER_SESSIONS_LIMIT"), default_limit,
+                                            "HERMCP_LEDGER_SESSIONS_LIMIT"),
+        ledger_runs_limit=_ledger_limit(g("HERMCP_LEDGER_RUNS_LIMIT"), default_limit,
+                                        "HERMCP_LEDGER_RUNS_LIMIT"),
         profiles_ignore=[n for n in _csv(g("HERMCP_PROFILES_IGNORE", "")) if n != "default"],
     )
     bad = scope_errors(s) + ledger_errors(s) + proxy_errors(s)

@@ -220,25 +220,40 @@ def test_page_and_digest_report_the_same_numbers(box, monkeypatch):
     assert att["digest"]["approvals_waiting"] == dg["approvals_waiting"] == 1
     assert len(att["failed_chat_runs"]) == dg["failed_runs_24h"]
     assert len(att["waiting"]) == dg["approvals_waiting"]
-    # and the settled row is on the page, just not in attention
-    assert [r["run_id"] for r in att["settled"]] == ["run_settled"]
-    assert att["settled_count"] == 1
+    # the settled row and the decided approval are NOT on the page any more — the page draws
+    # open work only; the tool keeps both (asserted below through the store's own view)
+    assert "settled" not in att and "approval_history" not in att
+    view = box.attention_view(consumer="k1")
+    assert [r["run_id"] for r in view["settled"]] == ["run_settled"]
+    assert [h["approval_key"] for h in view["history"]] == ["ap-done"]
     assert [r["run_id"] for r in att["interrupted"]] == ["run_int"]
-    assert [h["approval_key"] for h in att["approval_history"]] == ["ap-done"]
     # total = what needs a human, nothing else
     assert att["total"] == 2
 
 
-def test_the_page_shows_a_settled_run_with_its_reason_and_link(box):
+def test_a_settled_run_is_not_drawn_but_stays_in_the_tool(box):
     _event(box, kind="run_failed", run_id="run_settled", hours_ago=2, summary="Run failed (max iterations)")
     _settle(box, "run_settled", reason="superseded_by_failure", superseded_by="run_newer")
     principal = Principal("k1", "p", Scopes(access="admin", profiles=["*"]))
     att = LB.build_overview(_StubRegistry(box), principal, _settings(), {}, "")["attention"]
-    row = att["settled"][0]
-    assert row["superseded_by"] == "run_newer"
-    assert "neueren Fehlschlag" in row["settled_text"]
-    assert "max iterations" in row["summary"]
     assert att["failed_chat_runs"] == []
+    assert "settled" not in att
+    row = box.attention_view(consumer="k1")["settled"][0]
+    assert row["superseded_by"] == "run_newer"
+    assert "neueren Fehlschlag" in AT.settled_text(row)
+
+
+def test_an_interruption_whose_session_moved_on_is_not_shown(box):
+    """run_interrupted keeps its block only while it is the open state of its session."""
+    _event(box, kind="run_interrupted", run_id="run_int", session_id="sess1", hours_ago=3)
+    _event(box, kind="run_finished", run_id="run_after", session_id="sess1", hours_ago=1)
+    view = box.attention_view(consumer="k1")
+    assert view["interrupted"] == []
+    assert view["counts"]["interrupted_24h"] == 0
+    # a second, still-open interruption of another session stays
+    _event(box, kind="run_interrupted", run_id="run_int2", session_id="sess2", hours_ago=2)
+    view = box.attention_view(consumer="k1")
+    assert [r["run_id"] for r in view["interrupted"]] == ["run_int2"]
 
 
 def test_the_page_never_asks_inbox_list_for_its_attention(box):

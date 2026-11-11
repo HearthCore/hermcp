@@ -70,7 +70,7 @@ function splitFailures(list, dismissed){
 // What the badges count. The two numbers the header shows come from the server's
 // digest (`attention.digest`), i.e. the same source hermes_status reports — the
 // browser only subtracts what THIS browser dismissed, it never re-adds a row the
-// server already settled. Settled and superseded rows are not in these lists at all.
+// server already settled. Settled and superseded rows are not on the page at all.
 function attentionCount(att, dismissed){
   att = att || {};
   var dg = att.digest || {};
@@ -85,31 +85,18 @@ function attentionCount(att, dismissed){
           total: approvals + cron + chat};
 }
 
-// Everything that is done but still worth reading: settled failures (chat) and
-// superseded cron runs. One collapsed group, one wording, both with their reason.
-function doneItems(att){
-  var out = [];
-  var settled = (att && att.settled) || [];
-  for(var i = 0; i < settled.length; i++){
-    var r = settled[i];
-    out.push({kind: "chat", row: r, at: r.at, what: r.profile || "?",
-              text: r.summary || "Fehler", note: r.settled_text || "erledigt",
-              superseded_by: r.superseded_by, url: r.url});
-  }
-  var sup = (att && att.superseded_cron_runs) || [];
-  for(var j = 0; j < sup.length; j++){
-    var c = sup[j];
-    out.push({kind: "cron", row: c, at: c.started_at, what: c.job_name || c.job_id || "?",
-              text: c.error || "Fehler", note: "Job lief danach wieder ok",
-              ok_after: c.ok_after, url: c.url});
-  }
-  return out;
+// The label of the "rest" control for one server-side list window. The count comes
+// from the server (`more_count`), never from a row count in the browser.
+function moreLabel(meta){
+  if(!meta || !meta.has_more || meta.expanded) return "";
+  var n = meta.more_count;
+  return "Mehr anzeigen" + (typeof n === "number" && n > 0 ? " (" + n + " weitere)" : "");
 }
 
 var HELPERS = {
   DISMISS_KEY: DISMISS_KEY, idOf: idOf, store: store, loadDismissed: loadDismissed,
   saveDismissed: saveDismissed, pruneDismissed: pruneDismissed, splitFailures: splitFailures,
-  attentionCount: attentionCount, doneItems: doneItems
+  attentionCount: attentionCount, moreLabel: moreLabel
 };
 if(typeof globalThis !== "undefined") globalThis.__LEDGER_HELPERS__ = HELPERS;
 if(typeof document === "undefined") return;          // node: helpers only, no rendering
@@ -124,7 +111,10 @@ var root = document.getElementById("root");
 var jobsOpen = false;
 var storage = store(window);
 var dismissed = loadDismissed(storage);
-var showHidden = false, showDone = false, showHistory = false;
+var showHidden = false;
+// Which growing lists the reader opened ("Mehr anzeigen"). Sent to the server as ?more=…,
+// so the rest is fetched there instead of being hidden in the browser.
+var expanded = {};
 
 function el(tag, cls, text){
   var n = document.createElement(tag);
@@ -192,23 +182,7 @@ function failureItem(r, kind){
   return it;
 }
 
-// A settled failure or a superseded cron run: never hidden, always with its reason.
-function doneItem(item){
-  var it = el("div","it done");
-  it.appendChild(document.createTextNode(
-    dayClock(item.at) + " · " + item.what + " · " + item.text + " · " + item.note +
-    (item.ok_after ? " seit " + dayClock(item.ok_after) : "") + " "));
-  if(item.superseded_by){
-    it.appendChild(document.createTextNode("ersetzt durch "));
-    it.appendChild(item.url ? link(item.url, item.superseded_by) : el("span","mono",item.superseded_by));
-    it.appendChild(document.createTextNode(" "));
-  } else if(item.url){
-    it.appendChild(link(item.url,"Session"));
-    it.appendChild(document.createTextNode(" "));
-  }
-  return it;
-}
-
+// A settled failure is not drawn any more; only the still-open lists are.
 function interruptedItem(r){
   var it = el("div","it calm");
   it.appendChild(document.createTextNode(
@@ -219,29 +193,31 @@ function interruptedItem(r){
   return it;
 }
 
-function historyItem(h){
-  var it = el("div","it hist");
-  it.appendChild(document.createTextNode(
-    dayClock(h.closed_at) + " · " + (h.profile || "?") + " · " + (h.state || "?") +
-    (h.decision ? " (" + h.decision + ")" : "") +
-    (h.surface ? " auf " + h.surface : "") +
-    (h.command ? " · " + h.command : "") + " "));
-  if(h.url) it.appendChild(link(h.url,"Session"));
-  if(h.attempt_count > 1){
-    it.appendChild(document.createTextNode(" · " + h.attempt_count + " Versuche: " +
-      h.attempts.map(function(a){ return (a.surface || "?") + " " + (a.outcome || "?"); }).join(", ")));
-  }
-  return it;
-}
-
-function hiddenLine(cronHidden, chatHidden, doneCount){
+function hiddenLine(cronHidden, chatHidden){
   var n = cronHidden + chatHidden;
   var wrap = el("div","hiddenline");
-  wrap.appendChild(el("span","sub", n + " ausgeblendet" + (doneCount ? " · " + doneCount + " erledigt" : "")));
+  wrap.appendChild(el("span","sub", n + " ausgeblendet"));
   wrap.appendChild(button("dismiss", showHidden ? "wieder einblenden" : "anzeigen",
     function(){ showHidden = !showHidden; if(lastPayload) render(lastPayload); }));
   if(n) wrap.appendChild(button("dismiss","Zurücksetzen",function(){ resetDismissed(); }));
   return wrap;
+}
+
+// The "rest" control of a server-side list window: it re-renders through the server
+// (?more=<list>), so the extra rows are fetched there and not sliced in the browser.
+function moreButton(meta, name){
+  var label = moreLabel(meta);
+  if(!label) return null;
+  return button("dismiss more", label, function(){
+    expanded[name] = true;
+    load();
+  });
+}
+
+function withMore(node, meta, name){
+  var b = moreButton(meta, name);
+  if(b){ var wrap = el("div","hiddenline"); wrap.appendChild(b); node.appendChild(wrap); }
+  return node;
 }
 
 function render(d){
@@ -250,8 +226,6 @@ function render(d){
   var alive = [], att0 = d.attention || {};
   (att0.failed_cron_runs || []).forEach(function(r){ alive.push(idOf(r)); });
   (att0.failed_chat_runs || []).forEach(function(r){ alive.push(idOf(r)); });
-  (att0.superseded_cron_runs || []).forEach(function(r){ alive.push(idOf(r)); });
-  (att0.settled || []).forEach(function(r){ alive.push(idOf(r)); });
   var pruned = pruneDismissed(dismissed, alive);
   if(Object.keys(pruned).length !== Object.keys(dismissed).length){ dismissed = pruned; persist(); }
 
@@ -265,8 +239,9 @@ function render(d){
   var chatSplit = splitFailures(att.failed_chat_runs, dismissed);
   var waiting = att.waiting || ((att.approvals && att.approvals.items) || []);
   var interrupted = att.interrupted || [];
-  var done = doneItems(att);
-  var history = att.approval_history || [];
+  var cronMeta = cron.list || {}, sessionMeta = (sec.sessions && sec.sessions.list) || {};
+  var failedCronMeta = att.failed_cron_list || {}, failedChatMeta = att.failed_chat_list || {},
+      interruptedMeta = att.interrupted_list || {};
 
   var head = el("div","head");
   head.appendChild(el("h1",null,"hermcp Ledger"));
@@ -296,11 +271,11 @@ function render(d){
     root.appendChild(hint);
   }
 
-  var k = el("div","kpis");
-  [[ "aktive Sessions",att.active_sessions||0,""],["Sessions gelistet",sessions.length,""],
+  var k = el("div","kpis panel"); k.id = "panel-kpis";
+  [[ "aktive Sessions",att.active_sessions||0,""],["Sessions gelistet",(sec.sessions&&sec.sessions.count)||sessions.length,""],
    ["offene Freigaben",counts.approvals,counts.approvals?"bad":""],
    ["Fehlschläge 24 h",counts.failed,(counts.failed?"bad":"")],
-   ["unterbrochen 24 h",interrupted.length,""],
+   ["unterbrochen 24 h",(att.interrupted_count!==undefined?att.interrupted_count:interrupted.length),""],
    ["Profile erreichbar",(d.profiles||[]).length,""],
    ["Plattformen auffällig",(gw.platforms||[]).filter(function(x){
       return x.stale||x.needs_attention||String(x.state)!=="connected";}).length,"warn"]
@@ -309,8 +284,8 @@ function render(d){
   root.appendChild(k);
 
   var hiddenAny = cronSplit.hidden.length + chatSplit.hidden.length;
-  if(counts.total || hiddenAny || done.length || interrupted.length || history.length){
-    var a = el("div","alert");
+  if(counts.total || hiddenAny || cronSplit.active.length || chatSplit.active.length){
+    var a = el("div","alert panel"); a.id = "panel-attention";
     a.appendChild(el("h2",null,"Braucht Aufmerksamkeit"));
     if(counts.cron + counts.chat){
       var bar = el("div","hiddenline");
@@ -328,15 +303,19 @@ function render(d){
         (x.created_at?" · seit "+dayClock(x.created_at):"")));});
     }
     if(cronSplit.active.length){
-      a.appendChild(el("h4",null,"Fehlgeschlagene Cron-Läufe, 24 h ("+cronSplit.active.length+")"));
-      cronSplit.active.slice(0,8).forEach(function(r){ a.appendChild(failureItem(r,"cron")); });
+      a.appendChild(el("h4",null,"Fehlgeschlagene Cron-Läufe, 24 h ("+
+        (failedCronMeta.total!==undefined?failedCronMeta.total:cronSplit.active.length)+")"));
+      cronSplit.active.forEach(function(r){ a.appendChild(failureItem(r,"cron")); });
+      withMore(a, failedCronMeta, "cron");
     }
     if(chatSplit.active.length){
-      a.appendChild(el("h4",null,"Fehlgeschlagene Agent-Läufe, 24 h ("+chatSplit.active.length+")"));
-      chatSplit.active.slice(0,8).forEach(function(r){ a.appendChild(failureItem(r,"chat")); });
+      a.appendChild(el("h4",null,"Fehlgeschlagene Agent-Läufe, 24 h ("+
+        (failedChatMeta.total!==undefined?failedChatMeta.total:chatSplit.active.length)+")"));
+      chatSplit.active.forEach(function(r){ a.appendChild(failureItem(r,"chat")); });
+      withMore(a, failedChatMeta, "runs");
     }
     if(hiddenAny){
-      a.appendChild(hiddenLine(cronSplit.hidden.length, chatSplit.hidden.length, done.length));
+      a.appendChild(hiddenLine(cronSplit.hidden.length, chatSplit.hidden.length));
     }
     if(showHidden && hiddenAny){
       var hg = el("div","hidden");
@@ -344,47 +323,33 @@ function render(d){
       chatSplit.hidden.forEach(function(r){ hg.appendChild(failureItem(r,"chat")); });
       a.appendChild(hg);
     }
-    // done, but readable: settled failures and superseded cron runs in ONE collapsed group
-    if(done.length){
-      var tog = el("div","superseded");
-      tog.appendChild(button("dismiss", (showDone ? "Erledigt einklappen" : "Erledigt anzeigen") +
-        " (" + done.length + ")", function(){ showDone = !showDone; render(d); }));
-      if(showDone){
-        done.slice(0,20).forEach(function(item){ tog.appendChild(doneItem(item)); });
-      }
-      a.appendChild(tog);
-    }
-    // decided approvals: who decided, where, when, and the attempts that lost
-    if(history.length){
-      var hg2 = el("div","superseded");
-      hg2.appendChild(button("dismiss", (showHistory ? "Freigabe-Historie einklappen" : "Freigabe-Historie anzeigen") +
-        " (" + history.length + ")", function(){ showHistory = !showHistory; render(d); }));
-      if(showHistory){
-        history.slice(0,20).forEach(function(h){ hg2.appendChild(historyItem(h)); });
-      }
-      a.appendChild(hg2);
-    }
     if(ap.hidden)a.appendChild(el("div","it",ap.hidden+" weitere Freigaben in anderen Profilen"));
     if(att.note)a.appendChild(el("div","legend",att.note));
     root.appendChild(a);
   } else {
-    root.appendChild(el("div","empty","Nichts braucht gerade Aufmerksamkeit."));
+    var ea = el("div","empty panel"); ea.id = "panel-attention";
+    ea.textContent = "Nichts braucht gerade Aufmerksamkeit.";
+    root.appendChild(ea);
   }
 
-  // interrupted runs: their own calm block, not part of the error list
+  // interrupted runs: their own calm block, not part of the error list. Only open/relevant
+  // ones reach the payload at all (the server drops an interruption whose session moved on).
   if(interrupted.length){
-    var icard = el("section","card"), ihd = el("div","hd");
+    var icard = el("section","card panel"); icard.id = "panel-interrupted";
+    var ihd = el("div","hd");
     ihd.appendChild(el("h3",null,"Durch Neustart unterbrochen"));
-    ihd.appendChild(el("span","sub",interrupted.length+" Läufe · kein Fehler, das Ergebnis fehlt aber"));
+    ihd.appendChild(el("span","sub",(att.interrupted_count!==undefined?att.interrupted_count:interrupted.length)+
+      " Läufe · kein Fehler, das Ergebnis fehlt aber"));
     icard.appendChild(ihd);
-    interrupted.slice(0,10).forEach(function(r){ icard.appendChild(interruptedItem(r)); });
+    interrupted.forEach(function(r){ icard.appendChild(interruptedItem(r)); });
+    withMore(icard, interruptedMeta, "runs");
     icard.appendChild(el("div","legend","Ein Lauf, den ein Gateway- oder Prozess-Neustart beendet hat, "+
       "nachdem er bereits Ausgabe erzeugt hatte. Er zählt nicht als Fehlschlag; ist das Ergebnis wichtig, "+
       "den Lauf in der Session erneut starten."));
     root.appendChild(icard);
   }
 
-  var gcard=el("section","card"),ghd=el("div","hd");
+  var gcard=el("section","card panel"); gcard.id="panel-gateway"; var ghd=el("div","hd");
   ghd.appendChild(el("h3",null,"Gateway und Plattformen"));
   ghd.appendChild(el("span","sub",gw.code_version?"v"+gw.code_version:""));gcard.appendChild(ghd);
   var chips=el("div","chips");
@@ -399,7 +364,7 @@ function render(d){
   gcard.appendChild(chips);root.appendChild(gcard);
 
   var cl = d.clients || {}, groups = cl.clients || [];
-  var clcard=el("section","card"),clhd=el("div","hd");
+  var clcard=el("section","card panel"); clcard.id="panel-clients"; var clhd=el("div","hd");
   clhd.appendChild(el("h3",null,"Clients und Sessions"));
   clhd.appendChild(el("span","sub",groups.length+" Clients"+(d.kanban_url?" · ":"")));
   if(d.kanban_url) clhd.lastChild.appendChild(link(d.kanban_url,"Kanban-Board"));
@@ -424,9 +389,10 @@ function render(d){
     " übernommene Sessions ausgeblendet · "):"")+"Karten sind Beschriftungen, keine Berechtigungen."));
   root.appendChild(clcard);
 
-  var scard=el("section","card"),shd=el("div","hd");
+  var scard=el("section","card panel"); scard.id="panel-sessions"; var shd=el("div","hd");
   shd.appendChild(el("h3",null,"Sessions und Runs"));
-  shd.appendChild(el("span","sub",sessions.length+" Einträge · "+(d.profiles||[]).length+" Profile"));
+  shd.appendChild(el("span","sub",((sec.sessions&&sec.sessions.count)||sessions.length)+" Einträge · "+
+    (d.profiles||[]).length+" Profile"));
   scard.appendChild(shd);
   if(sessions.length){
     scard.appendChild(table(["Profil","Plattform","Status","zuletzt","Session-ID","Modell","Desktop"],
@@ -434,29 +400,31 @@ function render(d){
         el("span","num",ago(s.last_active)||"—"),el("span","mono",s.session_id||"—"),
         el("span","mono",s.model||"—"),link(s.url)]);})));
   } else scard.appendChild(el("div","empty","Keine Sessions gelesen."));
+  withMore(scard, sessionMeta, "sessions");
   scard.appendChild(el("div","legend","Status: aktiv = in den letzten 10 Minuten benutzt und nicht beendet · "+
     "offen = unberührt, nicht beendet · beendet. "+(links.base_url?
     ("Link: "+links.pattern.replace("{base}",links.base_url)+" ("+links.source+")."):links.note)));
   root.appendChild(scard);
 
-  var ccard=el("section","card"),chd=el("div","hd");
+  var ccard=el("section","card panel"); ccard.id="panel-cron"; var chd=el("div","hd");
   chd.appendChild(el("h3",null,"Cron-Läufe (letzte "+(cron.window_hours||24)+" h)"));
   chd.appendChild(el("span","sub",(cron.count||0)+" Läufe · "+(cron.failed_count||0)+" Fehlschläge"+
     (cron.truncated?" · auf 100 gekürzt":"")));ccard.appendChild(chd);
   if(runs.length){
     ccard.appendChild(table(["Job","Status","Start","Dauer","Zustellung","Session","Desktop"],
-      runs.slice(0,60).map(function(r){return row([r.job_name||r.job_id||"—",pill(r.status),
+      runs.map(function(r){return row([r.job_name||r.job_id||"—",pill(r.status),
         el("span","num",dayClock(r.started_at)),el("span","num",dur(r.duration_s)),
         el("span","mono",r.delivery_outcome||"—"),el("span","mono",r.session_id||"—"),link(r.url)]);})));
   } else ccard.appendChild(el("div","empty","Keine Läufe im Fenster."));
+  withMore(ccard, cronMeta, "cron");
   root.appendChild(ccard);
 
-  var tog2=el("div"),lab=el("label","toggle"),cb=el("input");
+  var tog2=el("div","panel"); tog2.id="panel-jobs-toggle"; var lab=el("label","toggle"),cb=el("input");
   cb.type="checkbox";cb.checked=jobsOpen;cb.onchange=function(){jobsOpen=cb.checked;load();};
   lab.appendChild(cb);lab.appendChild(document.createTextNode("Cron-Jobs (Konfiguration) anzeigen"));
   tog2.appendChild(lab);root.appendChild(tog2);
 
-  if(jobsOpen){var jc=el("section","card"),jh=el("div","hd");
+  if(jobsOpen){var jc=el("section","card panel"); jc.id="panel-jobs"; var jh=el("div","hd");
     jh.appendChild(el("h3",null,"Cron-Jobs (Konfiguration)"));
     jh.appendChild(el("span","sub",jobs&&jobs.count!==undefined?(jobs.count+" Jobs"):"lade …"));
     jc.appendChild(jh);
@@ -476,7 +444,8 @@ function render(d){
 function getJSON(url){return fetch(url,{credentials:"same-origin",headers:{"Accept":"application/json"}})
  .then(function(r){if(!r.ok)throw new Error(r.status+" "+r.statusText);return r.json();});}
 function load(){
-  var p=getJSON("/ledger/overview");
+  var names = Object.keys(expanded).filter(function(n){ return expanded[n]; });
+  var p=getJSON("/ledger/overview" + (names.length ? "?more="+encodeURIComponent(names.join(",")) : ""));
   if(jobsOpen) p=Promise.all([p,getJSON("/ledger/jobs").catch(function(e){
     return {jobs:[],count:0,errors:{"jobs":String(e)}};})]).then(function(r){jobs=r[1];return r[0];});
   p.then(render).catch(function(e){

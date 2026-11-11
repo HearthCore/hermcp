@@ -123,29 +123,20 @@ test("the header numbers come from the server digest, not from the browser", () 
   assert.equal(c.total, 1 + 0 + 1);                // approvals + visible cron (one dismissed) + chat
 });
 
-test("settled failures and superseded cron runs form one done group", () => {
+test("the rest control names how many rows the server is holding back", () => {
   const H = load();
-  const items = H.doneItems({
-    settled: [{ run_id: "run_s", at: "2026-11-11T10:00:00+01:00", profile: "default",
-                summary: "Run failed", settled_text: "ersetzt durch einen Lauf, der abgeschlossen wurde",
-                superseded_by: "run_after", url: "https://x/#/run_after" }],
-    superseded_cron_runs: [{ run_id: "run_c", job_id: "j1", job_name: "relay",
-                             started_at: "2026-11-11T09:00:00+01:00", error: "timeout",
-                             ok_after: "2026-11-11T10:30:00+01:00" }],
-  });
-  assert.equal(items.length, 2);
-  assert.equal(items[0].kind, "chat");
-  assert.equal(items[0].superseded_by, "run_after");
-  assert.ok(items[0].note.includes("abgeschlossen"));
-  assert.equal(items[1].kind, "cron");
-  assert.ok(items[1].note.includes("wieder ok"));
-  assert.deepEqual(j(H.doneItems({})), []);
-  assert.deepEqual(j(H.doneItems(null)), []);
+  assert.equal(H.moreLabel({ has_more: true, more_count: 15, expanded: false }), "Mehr anzeigen (15 weitere)");
+  assert.equal(H.moreLabel({ has_more: true, more_count: 1, expanded: false }), "Mehr anzeigen (1 weitere)");
+  // nothing held back, or already expanded: no control
+  assert.equal(H.moreLabel({ has_more: false, more_count: 0 }), "");
+  assert.equal(H.moreLabel({ has_more: true, more_count: 4, expanded: true }), "");
+  assert.equal(H.moreLabel(null), "");
+  assert.equal(H.moreLabel({}), "");
 });
 
 test("superseded runs are not part of the failure list the badge sees", () => {
   const H = load();
-  // the page splits two lists: att.failed_cron_runs (active) and att.superseded_cron_runs
+  // the attention payload carries the open failure lists only
   const att = { approvals: { count: 0 }, failed_cron_runs: [CRON], failed_chat_runs: [] };
   assert.equal(H.attentionCount(att, {}).total, 1);
   assert.equal(H.attentionCount(att, { run_a: 1 }).total, 0);

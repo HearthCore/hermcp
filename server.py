@@ -329,10 +329,14 @@ class HermcpApp:
             return JSONResponse({"error": "view_key_unusable", "reason": str(exc)}, status_code=503)
         base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
         window = int(self.settings.ledger_window_hours or 24)
+        # ?more=cron,sessions,runs — the lists the client opened ("Mehr anzeigen"). Only known names
+        # are accepted; the server then returns that list up to its fetch bound instead of the window.
+        expand = tuple(name for name in str(req.query_params.get("more") or "").split(",")
+                       if name in LB.LIST_NAMES)
         payload, age = self._ledger_cached(
-            ("overview", principal.id, base, window),
+            ("overview", principal.id, base, window, expand),
             lambda: LB.build_overview(self.registry, principal, self.settings,
-                                      LB.hermes_config(), base, window))
+                                      LB.hermes_config(), base, window, expand))
         return JSONResponse({**payload, "cache_age_s": age})
 
     async def ledger_jobs(self, req: Request) -> Response:

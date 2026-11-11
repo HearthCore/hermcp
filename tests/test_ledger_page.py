@@ -218,10 +218,12 @@ def test_overview_assembles_every_section():
     assert payload["sections"]["approvals"]["count"] == 1
     assert payload["sections"]["approvals"]["mode"] == "inbox"
     assert payload["attention"]["failed_cron_count"] == 1
-    assert payload["attention"]["superseded_count"] == 0
     assert payload["attention"]["failed_chat_count"] == 1
     assert payload["attention"]["digest"] == {"failed_runs_24h": 1, "approvals_waiting": 1}
     assert payload["errors"] == {}
+    # the page draws only open things: settled failures and decided approvals are gone from it
+    for gone in ("settled", "settled_count", "approval_history", "superseded_cron_runs", "superseded_count"):
+        assert gone not in payload["attention"], gone
     # every read went out with the read-only principal
     assert all(p.scopes.access == "read" for _, _, p in reg.calls)
     # the page asks the shared tool, not inbox_list, for its attention buckets
@@ -256,18 +258,13 @@ def test_failed_chat_runs_only_inside_the_window():
     assert [r["summary"] for r in payload["attention"]["failed_chat_runs"]] == ["Run failed (boom)"]
 
 
-def test_settled_failures_leave_attention_but_stay_readable():
-    """The bug this change fixes: a settled run_failed must not sit in the attention list."""
+def test_settled_failures_are_not_on_the_page_at_all():
+    """The page shows open work only; a settled failure stays reachable through the tools."""
     att = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
     assert [r["run_id"] for r in att["failed_chat_runs"]] == ["run_x"]
-    assert [r["run_id"] for r in att["settled"]] == ["run_settled"]
-    assert att["settled_count"] == 1
-    row = att["settled"][0]
-    assert row["settled_reason"] == "superseded_by_completed"
-    assert row["superseded_by"] == "run_after"
-    assert "abgeschlossen" in row["settled_text"]
-    assert row["superseded_url"]        # a link to the run that took over
-    assert row["settled_at"] and row["at"]
+    assert "settled" not in att and "settled_count" not in att
+    # the tool still hands the settled row out (it is a page decision, not a data change)
+    assert "settled" in TOOLS["inbox_attention"]
 
 
 def test_interrupted_runs_have_their_own_bucket():
@@ -277,15 +274,12 @@ def test_interrupted_runs_have_their_own_bucket():
     assert att["interrupted"][0]["kind"] == "run_interrupted"
 
 
-def test_decided_approvals_are_history_not_attention():
+def test_decided_approvals_are_not_on_the_page_at_all():
     att = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
-    assert [h["approval_key"] for h in att["approval_history"]] == ["ap-2"]
-    h = att["approval_history"][0]
-    assert (h["state"], h["decision"], h["surface"]) == ("approved", "once", "telegram")
-    assert h["closed_at"] and h["attempt_count"] == 2
-    assert [a["outcome"] for a in h["attempts"]] == ["applied", "too_late_already_decided"]
-    # a waiting approval is attention, a decided one is not
+    assert "approval_history" not in att
+    # a waiting approval is attention; a decided one is only in the tools/inbox history
     assert [a["approval_key"] for a in att["waiting"]] == ["ap-1"]
+    assert "history" in TOOLS["inbox_attention"]
 
 
 def test_a_broken_tool_is_reported_and_does_not_hide_the_rest():
@@ -460,7 +454,7 @@ def test_none_mode_ignores_a_spoofed_forwarded_address(home):
 def test_none_mode_never_gets_write_access(home, monkeypatch):
     seen = {}
 
-    def spy(registry, principal, settings, config, base, window):
+    def spy(registry, principal, settings, config, base, window, expand=()):
         seen["access"] = principal.scopes.access
         seen["approvals"] = principal.scopes.approvals
         return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
@@ -534,17 +528,12 @@ class SupersededRegistry(FakeRegistry):
         return super().invoke(name, args, principal, settings, audit, via)
 
 
-def test_a_failure_whose_job_ran_ok_afterwards_moves_to_superseded():
+def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all():
     payload = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)
     att = payload["attention"]
     assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
     assert att["failed_cron_count"] == 1
-    assert [r["run_id"] for r in att["superseded_cron_runs"]] == ["r2"]
-    assert att["superseded_count"] == 1
-    from datetime import datetime
-    # timezone-independent: the payload carries local time of the machine running it
-    assert datetime.fromisoformat(att["superseded_cron_runs"][0]["ok_after"]) == \
-        datetime.fromisoformat(ago(1.5))
+    assert "superseded_cron_runs" not in att and "superseded_count" not in att
     # superseded runs do not count as attention; the still-failing one does
     assert att["total"] == 1 + 2              # failing cron + (waiting approval + open failure)
 
@@ -558,14 +547,16 @@ def test_a_broken_superseded_lookup_never_hides_a_failure():
 
     payload = LB.build_overview(Broken(), make_principal(), make_settings(), CONFIG)
     assert payload["attention"]["failed_cron_count"] == 1
-    assert payload["attention"]["superseded_count"] == 0
     assert "cron_superseded" in payload["errors"]
 
 
-def test_superseded_entries_are_part_of_the_page_but_not_of_the_badge():
+def test_the_page_has_no_done_group_and_no_approval_history():
     page = LB.page_html(15)
-    assert "superseded_cron_runs" in page          # rendered in the collapsed group
-    assert "attentionCount" in page                # the badge counts active only
+    for gone in ("Erledigt anzeigen", "Freigabe-Historie", "doneItems", "historyItem",
+                 "approval_history", "superseded_cron_runs"):
+        assert gone not in page, gone
+    assert "Mehr anzeigen" in page                 # the window's "show more" control
+    assert "attentionCount" in page                # the badge still counts open work only
 
 
 # ---------------------------------------------------------------------------
@@ -585,7 +576,7 @@ def test_view_key_scopes_the_page_to_that_keys_profiles(home, monkeypatch):
     app.settings.ledger_view_key = rec.id
     seen = {}
 
-    def spy(registry, principal, settings, config, base, window):
+    def spy(registry, principal, settings, config, base, window, expand=()):
         seen["id"], seen["profiles"], seen["access"] = principal.id, principal.scopes.profiles, principal.scopes.access
         return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
                 "profiles": [], "attention": {}, "gateway": {}}
@@ -602,7 +593,7 @@ def test_an_admin_view_key_keeps_its_profiles_but_never_writes(home, monkeypatch
     app.settings.ledger_view_key = rec.id
     seen = {}
 
-    def spy(registry, principal, settings, config, base, window):
+    def spy(registry, principal, settings, config, base, window, expand=()):
         seen["access"], seen["profiles"] = principal.scopes.access, principal.scopes.profiles
         return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
                 "profiles": [], "attention": {}, "gateway": {}}
@@ -665,3 +656,108 @@ def test_the_page_carries_the_view_key_for_display(home):
     c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
     page = c.get("/ledger").text
     assert rec.id in page and "Sicht:" in page
+
+
+# ---------------------------------------------------------------------------
+# growing lists: server-side window and "Mehr anzeigen"
+# ---------------------------------------------------------------------------
+
+class ManyRegistry(FakeRegistry):
+    """Long lists: 25 cron runs, 20 open failures, 30 sessions per profile."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.sessions = 30
+        self.runs = 25
+        self.failures = 20
+
+    def invoke(self, name, args, principal, settings, audit, via=""):
+        if name == "sessions_list":
+            limit = int(args.get("limit") or 20)
+            rows = [{"id": f"s{i}", "source": "desktop", "model": "m", "ended_at": None,
+                     "started_at": NOW - i, "last_active": NOW - i, "message_count": 1,
+                     "profile_name": args.get("profile")} for i in range(min(limit, self.sessions))]
+            return {"ok": True, "result": {"count": len(rows), "sessions": rows}}
+        if name == "cron_runs" and args.get("job_id"):
+            return {"ok": True, "result": {"count": 0, "runs": []}}
+        if name == "cron_runs" and args.get("status") == "error":
+            return {"ok": True, "result": {"count": 0, "runs": []}}
+        if name == "cron_runs":
+            limit = int(args.get("limit") or 20)
+            rows = [{"run_id": f"r{i}", "job_id": f"j{i}", "job_name": f"job{i}",
+                     "status": "completed", "started_at": ago(1)} for i in range(min(limit, self.runs))]
+            return {"ok": True, "result": {"count": len(rows), "truncated": self.runs > len(rows),
+                                           "runs": rows}}
+        if name == "inbox_attention":
+            rows = [{"ts": ago(1), "kind": "run_failed", "profile": "default", "run_id": f"f{i}",
+                     "session_id": f"f{i}", "summary": f"failed {i}"} for i in range(self.failures)]
+            return {"ok": True, "result": {
+                "waiting": [], "attention": rows, "interrupted": [], "settled": [], "history": [],
+                "counts": {"failed_runs_24h": len(rows), "approvals_waiting": 0,
+                           "interrupted_24h": 0, "settled_24h": 0, "attention_total": len(rows)}}}
+        return super().invoke(name, args, principal, settings, audit, via)
+
+
+def windowed(settings=None, expand=()):
+    return LB.build_overview(ManyRegistry(), make_principal(), settings or make_settings(),
+                             CONFIG, expand=expand)
+
+
+def test_growing_lists_show_only_the_configured_window():
+    payload = windowed(make_settings(HERMCP_LEDGER_LIST_LIMIT="10"))
+    cron = payload["sections"]["cron"]
+    sessions = payload["sections"]["sessions"]
+    runs = payload["attention"]
+    assert len(cron["runs"]) == 10 and cron["list"] == {
+        "limit": 10, "shown": 10, "total": 25, "has_more": True, "more_count": 15, "expanded": False}
+    assert len(sessions["items"]) == 10
+    assert sessions["list"]["total"] >= 10 and sessions["list"]["has_more"] is True
+    assert len(runs["failed_chat_runs"]) == 10
+    assert runs["failed_chat_list"]["total"] == 20
+    assert runs["failed_chat_list"]["more_count"] == 10
+    # the counters still describe the whole data set, not the window
+    assert runs["failed_chat_count"] == 20
+    assert runs["digest"]["failed_runs_24h"] == 20
+
+
+def test_expanding_a_list_fetches_the_rest_from_the_server():
+    payload = windowed(make_settings(HERMCP_LEDGER_LIST_LIMIT="10"), expand=("cron",))
+    cron = payload["sections"]["cron"]
+    assert len(cron["runs"]) == 25 and cron["list"]["expanded"] is True
+    assert cron["list"]["has_more"] is False and cron["list"]["more_count"] == 0
+    # the other lists keep their window
+    assert len(payload["attention"]["failed_chat_runs"]) == 10
+
+
+def test_per_list_limits_override_the_default():
+    settings = make_settings(HERMCP_LEDGER_LIST_LIMIT="10", HERMCP_LEDGER_CRON_LIMIT="3",
+                             HERMCP_LEDGER_SESSIONS_LIMIT="4", HERMCP_LEDGER_RUNS_LIMIT="5")
+    payload = windowed(settings)
+    assert len(payload["sections"]["cron"]["runs"]) == 3
+    assert len(payload["sections"]["sessions"]["items"]) == 4
+    assert len(payload["attention"]["failed_chat_runs"]) == 5
+
+
+def test_an_invalid_limit_falls_back_to_the_default_and_says_so(caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="hermcp.settings"):
+        s = make_settings(HERMCP_LEDGER_LIST_LIMIT="2", HERMCP_LEDGER_CRON_LIMIT="viele")
+    assert (s.ledger_list_limit, s.ledger_cron_limit, s.ledger_sessions_limit) == (10, 10, 10)
+    assert any("HERMCP_LEDGER_LIST_LIMIT" in r.getMessage() for r in caplog.records)
+    assert any("HERMCP_LEDGER_CRON_LIMIT" in r.getMessage() for r in caplog.records)
+
+
+def test_the_overview_route_passes_more_through_to_the_builder(home, monkeypatch):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    seen = {}
+
+    def spy(registry, principal, settings, config, base, window, expand=()):
+        seen["expand"] = list(expand)
+        return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
+                "profiles": [], "attention": {}, "gateway": {}}
+
+    monkeypatch.setattr(LB, "build_overview", spy)
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    assert c.get("/ledger/overview?more=cron,sessions,bogus").status_code == 200
+    assert seen["expand"] == ["cron", "sessions"]

@@ -1004,7 +1004,9 @@ class Inbox:
         * ``waiting``      approvals still waiting for a human (never filtered by read state: an open
                            approval is work, not a notification)
         * ``attention``    `run_failed`/`run_lost` in the window, not settled, not acked by this consumer
-        * ``interrupted``  `run_interrupted` in the window (a restart stopped it; not an error)
+        * ``interrupted``  `run_interrupted` in the window (a restart stopped it; not an error), and only
+                           while the same session did not move on afterwards — an interruption whose
+                           successor finished or failed is history (`inbox_list detail=true` still has it)
         * ``settled``      failures a later run or an operator settled — kept, with `settled_reason`
         * ``history``      decided approvals (approved/denied/expired) with surface, time and the
                            decision protocol (second attempts included)
@@ -1026,6 +1028,20 @@ class Inbox:
             interrupted = db.execute(
                 "SELECT * FROM events WHERE kind='run_interrupted' AND ts>=?" + sc +
                 " ORDER BY id DESC LIMIT 100", (since, *sa)).fetchall()
+            # An interruption is only "relevant" while its session did not move on: a later terminal
+            # run of the same session (finished/failed/also interrupted) makes the older one history.
+            # Derived here, read-only — nothing is written to the row.
+            successors: dict[int, tuple] = {}
+            for r in interrupted:
+                if not r["session_id"]:
+                    continue
+                nxt = db.execute(
+                    "SELECT run_id, kind FROM events WHERE origin='watcher' AND session_id=? AND id>? "
+                    "AND kind IN ('run_finished','run_failed','run_lost','run_interrupted') "
+                    "AND (run_id IS NULL OR run_id<>?) ORDER BY id ASC LIMIT 1",
+                    (r["session_id"], r["id"], r["run_id"])).fetchone()
+                if nxt is not None:
+                    successors[r["id"]] = (nxt["run_id"], nxt["kind"])
             history = db.execute(
                 "SELECT * FROM events WHERE approval_key IS NOT NULL AND approval_state IN ('approved','denied','expired')"
                 " AND ts>=?" + sc + " ORDER BY id DESC LIMIT ?", (since, *sa, history_limit)).fetchall()
@@ -1041,6 +1057,7 @@ class Inbox:
         all_failures = rows(failures)
         settled = [r for r in all_failures if r.get("settled_reason")]
         open_failures = [r for r in all_failures if not r.get("settled_reason") and is_unread(r)]
+        interrupted_rows = [r for r in rows(interrupted) if not successors.get(r["id"])]
         hist = rows(history)
         for row in hist:                       # the decision protocol: who decided, where, and the losers
             try:
@@ -1048,7 +1065,7 @@ class Inbox:
             except Exception:                  # noqa: BLE001 - a history row must not break the page
                 row["protocol"] = []
         buckets = {"waiting": rows(waiting), "attention": open_failures,
-                   "interrupted": rows(interrupted), "settled": settled, "history": hist}
+                   "interrupted": interrupted_rows, "settled": settled, "history": hist}
         out_counts = AT.counts({AT.WAITING: buckets["waiting"], AT.ATTENTION: open_failures,
                                 AT.INTERRUPTED: buckets["interrupted"], AT.SETTLED: settled})
         return {**buckets, "counts": out_counts, "window_hours": hours,
