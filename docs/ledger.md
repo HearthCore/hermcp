@@ -257,6 +257,10 @@ Modell, gestartet, letzte Aktivität, Runs), die Tool-Nutzung als einfache Balke
 *Die Session-Vollansicht — links der Verlauf (Tool-Aufrufe als eigene Zeilen), rechts Metadaten,
 Tool-Nutzung und Signale.*
 
+![Session-Vollansicht mit "✦ Ask Claude" in der Kopfzeile neben "← zurück" und dem App-Link](img/ledger-session-ask.png)
+
+*Derselbe Button in der Kopfzeile der Session-Vollansicht.*
+
 Die Ansicht ist ebenfalls read-only und folgt demselben Seam: `sessions_get`, `sessions_messages` und
 die eigene Inbox-Datenbank (Run-Watches, offene Freigaben) mit `access="read"`. Nachrichten- und
 Tool-Texte werden redigiert und gekürzt, bevor sie den Prozess verlassen.
