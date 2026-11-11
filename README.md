@@ -63,7 +63,7 @@ selftest` against a live install. Each row links to the section that documents i
 | Output redaction | Every result and audit line redacted centrally; write tools return changes, never values | [Output redaction](docs/tool-surface.md#output-redaction) |
 | Single instance + lifecycle | `flock`-guarded single server, `status`, `stop`, `install-service`, self-restart, auto-restart after a Hermes update | [Single instance](docs/install.md#single-instance) |
 | Dashboard control | `dashboard_status` / `dashboard_restart` find and restart exactly the running dashboard | [Dashboard control](docs/dashboard-control.md) |
-| Ledger page (opt-in) | Read-only situation page on hermcp's own port: sessions, cron ledger, approvals, failed runs, platform health — no write path, deep links into the Desktop app | [Ledger](docs/ledger.md) |
+| Ledger page (opt-in) | Read-only situation page on hermcp's own port: open approvals, open failed runs, interruptions, sessions, cron ledger, platform health — no write path, deep links into the Desktop app. Settled failures and decided approvals stay in the tools; growing lists show a server-side window (default 10, `HERMCP_LEDGER_*_LIMIT`) with “Mehr anzeigen” | [Ledger](docs/ledger.md) |
 | Audit | Append-only JSONL with key id, tool, profile, duration, outcome | [Keys and scopes](docs/keys-and-scopes.md) |
 
 ## Requirements

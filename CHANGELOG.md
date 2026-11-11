@@ -14,6 +14,12 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 - Failed runs carry `settled_reason`, `settled_at` and `superseded_by`: a `run_failed`/`run_lost` leaves the attention view once a later run of the same session completed (`superseded_by_completed`) or also failed (`superseded_by_failure`, only the newest counts); the history keeps the row with the mark
 - `HERMCP_PROFILES_IGNORE`: a host-wide list of profiles hermcp leaves out of `doctor`, `profile-keys`, `profiles_list` and the status tools; profile-targeted tools reject them with `profile_ignored`. It is not a key scope, so keys stay unrestricted ([`acd5774`](https://github.com/HearthCore/hermcp/commit/acd5774), [#44](https://github.com/HearthCore/hermcp/pull/44))
 
+### Changed
+- The Ledger page draws **open work only**: the collapsed group “Erledigt” (settled failures, superseded cron runs, `operator_backfill` rows) and the “Freigabe-Historie” (decided approvals with surface, time and lost second attempts) are gone from the page. Nothing is deleted — `inbox_attention`, `inbox_list detail=true` and `approval_detail` still return the rows with their `settled_reason` / decision protocol
+- `run_interrupted` keeps its calm block only while it is the open state of its session; an interruption whose session later finished, failed or was interrupted again is history and leaves the page (read-only derivation in `Inbox.attention_view`, nothing written)
+- Every growing list (cron runs, sessions, open runs) is cut **server-side** to a window of 10 rows (`HERMCP_LEDGER_LIST_LIMIT`, per-list `HERMCP_LEDGER_CRON_LIMIT` / `_SESSIONS_LIMIT` / `_RUNS_LIMIT`, 3..100, invalid values fall back to the default and are logged). “Mehr anzeigen (N weitere)” re-reads the rest through `/ledger/overview?more=…` instead of shipping it to the browser up front
+- Ledger sections are stable panels (`panel-kpis`, `panel-attention`, `panel-interrupted`, `panel-gateway`, `panel-clients`, `panel-sessions`, `panel-cron`, `panel-jobs`) so the layout can be rearranged without touching the render logic; no visual change
+
 ### Tests
 - Make the Ledger fixtures relative to the current time instead of fixed dates, and keep `HERMCP_DEBUG_CAPTURE` from a local `.env` out of the default-behaviour tests
 
