@@ -24,6 +24,7 @@ secret-looking tokens (`hmcp_…`, `Bearer …`, `sk-…`) are masked.
 | `inbox_poll` | read | toolset `inbox` | unread events (for this consumer), oldest first, filters `source`/`kind`/`after_id`/`limit`/`consumer`/`include_older`; does **not** ack |
 | `inbox_ack` | read | toolset `inbox` | acknowledge by `ids` (max 100) or `all=true`; per consumer; touches only the mailbox |
 | `inbox_list` | read | toolset `inbox` | history, newest first, `status`/`source`/`kind`/`before_id`/`consumer`; acked/unread from this consumer's view |
+| `inbox_attention` | read | toolset `inbox` | the whole attention classification in one call: `waiting`, `attention`, `interrupted`, `settled`, `history` plus `counts` (`failed_runs_24h`, `approvals_waiting`). Same rows and counters as `hermes_status.inbox` and the Ledger page; read-only, never touches read state |
 | `inbox_push` | read | toolset `inbox` **+ `inbox_push` scope** | deliver one event; rate-limited per key |
 | `session_card_set` | read | toolset `inbox` | register this session and get its `client_session` handle (shaped by the kind of client: `cc-…` Claude Code, `cw-…` Cowork, `ai-…` chat, `vo-…` voice), or update its card (`purpose`, `role`, `kind`); `native_id` makes re-registering return the same card; touches only hermcp's own ledger |
 | `session_cards_list` | read | toolset `inbox` | the key's own cards with last_seen and open runs, `client_session` marks yours; `scope=all` (admin) lists every key's cards |
@@ -166,6 +167,11 @@ out of the digest and out of the default poll; they remain reachable through
 
 The filter is exclusion-based, so an event from an external producer (a cron script, another agent) never disappears
 from the slim default. An open approval stays visible until it is decided.
+
+`inbox_attention` returns the same classification as named buckets (`waiting`, `attention`, `interrupted`, `settled`,
+`history`) plus `counts`, and the Ledger page calls it instead of grouping events itself — one decision for page and
+tools, asserted by `tests/test_attention_parity.py`. A settled failure is therefore not hidden: it leaves the attention
+bucket and the counter and appears in `settled` with its reason and the run that took over.
 
 #### When a failed run stops needing attention
 

@@ -8,6 +8,8 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 ## [Unreleased]
 
 ### Added
+- `inbox_attention`: one read tool for the whole inbox classification — waiting approvals, `run_failed`/`run_lost` that nothing settled, `run_interrupted`, settled failures (with `settled_reason`, `settled_at`, `superseded_by`) and decided approvals with their decision protocol. Same rows, same counters, same profile scope a read key would see
+- `HERMCP_LEDGER_VIEW_KEY`: the Ledger page renders one key's view (scopes, profile/toolset filters, `deny_tools`, read state) instead of its own read-only principal. The value is a key **ID**, never a token; an unknown, disabled or expired key is shown as an error (`view_key_unusable`, HTTP 503) and never widens to another view. Documented trade: an admin key as view key shows everyone who reaches `/ledger` everything that key sees — intentional in single-user LAN use, re-evaluate before publishing the route
 - `run_interrupted`: a run the gateway stopped by a gateway/process shutdown **after it had produced output** is its own class (warning, out of the attention view and out of `failed_runs_24h`) instead of a `run_failed`
 - Failed runs carry `settled_reason`, `settled_at` and `superseded_by`: a `run_failed`/`run_lost` leaves the attention view once a later run of the same session completed (`superseded_by_completed`) or also failed (`superseded_by_failure`, only the newest counts); the history keeps the row with the mark
 - `HERMCP_PROFILES_IGNORE`: a host-wide list of profiles hermcp leaves out of `doctor`, `profile-keys`, `profiles_list` and the status tools; profile-targeted tools reject them with `profile_ignored`. It is not a key scope, so keys stay unrestricted ([`acd5774`](https://github.com/HearthCore/hermcp/commit/acd5774), [#44](https://github.com/HearthCore/hermcp/pull/44))
@@ -24,11 +26,16 @@ _Add your entry here, in the same pull request that makes the change._
 - `hermes_status` lists the open approvals themselves (with their `approval_key`), not just a count
 
 ### Changed
+- The Ledger page takes its attention section from `inbox_attention`, the same classification `hermes_status` and `inbox_poll` use, instead of reading `inbox_list kind=run_failed` on its own. A settled failure now leaves "Braucht Aufmerksamkeit" and the header counter, and stays readable in one collapsed group "Erledigt" together with superseded cron runs — with what settled it and a link to the run that took over
+- Decided approvals (`approved`, `denied`, `expired`) are a collapsed "Freigabe-Historie" on the page with surface, time and the second attempts that lost; waiting approvals stay the only approvals in the attention area
+- `run_interrupted` gets its own calm block on the page ("Durch Neustart unterbrochen"), not an error row
+- The page's header numbers (`Fehlschläge 24 h`, `offene Freigaben`) come from `attention.digest`, so they match `hermes_status` for the same data; browser-side dismiss only subtracts what that browser hid and never re-adds a settled row
 - `hermes_status` and `inbox_poll` default to what needs attention: open approvals, failed/lost runs, runs waiting for approval. Resolved approvals, the decision protocol and the old hook pairs leave the digest; `detail=true` and the new `approval_key` / `run_id` / `session_key` filters reach them
 - `hermes_status.inbox.failed_runs_24h` counts only failures that are still open **and** unread for the asking consumer, so an acknowledged or superseded failure no longer shows up there
 - The run watcher emits no `needs_approval` events any more — an approval is a row, and the watcher closes it when the run ends
 
 ### Fixed
+- The Ledger showed `run_failed` events that were already settled (`superseded_by_*`, `operator_backfill_*`) under "Braucht Aufmerksamkeit", because it read the raw event list while the tools applied the attention predicate. Page and tools now answer from one classification, and a parity test asserts equal numbers for the same data
 - A failed run no longer stays in the attention view forever: a later run of the same session that completed (or also failed) settles it, and one-time backfills settle the rows that were open when this landed (idempotent, nothing deleted, the reason stays on the row)
 - An approval that was never answered no longer hangs forever: a run that reaches `completed`, `failed`, `interrupted`, `cancelled` or `run_lost` closes its still-waiting approvals as `expired`
 - Legacy `needs_approval` rows whose run was already over, and legacy pending/resolved pairs, are folded into single approval rows by a one-time backfill on start

@@ -86,22 +86,70 @@ lokale Aufräum-Wege — **ohne Schreibpfad**:
   serverseitig. Ist der Speicher nicht verfügbar (privater Modus, Richtlinie), sagt die Seite das und
   das Ausblenden gilt nur für die aktuelle Ansicht. Beim Laden werden IDs, die das Zeitfenster
   verlassen haben, aus dem Speicher entfernt (kein Wildwuchs). Eine Zeile „N ausgeblendet“ bietet
-  „anzeigen“/„wieder einblenden“ und „Zurücksetzen“.
-* **Überholt**: ein fehlgeschlagener Cron-Lauf gilt als erledigt, wenn derselbe Job (`job_id`)
-  danach wieder erfolgreich lief — abgeleitet rein lesend aus dem Ledger (`cron_runs`, ein Aufruf pro
-  betroffenem Job). Solche Läufe verschwinden nicht still, sondern stehen in der eingeklappten Gruppe
-  „Überholt (Job lief danach wieder ok)“ und zählen nicht als Aufmerksamkeit. Schlägt der Nachschlag
-  fehl, bleibt der Lauf sichtbar (ein Fehler wird nie auf Verdacht versteckt).
+  „anzeigen“/„wieder einblenden“ und „Zurücksetzen“. Ausblenden zählt nichts doppelt und holt keinen
+  serverseitig erledigten Eintrag als Fehler zurück: die Kopfzähler kommen aus dem Digest des Servers,
+  der Browser zieht nur ab, was er selbst ausgeblendet hat.
+* **Überholt / Erledigt**: ein fehlgeschlagener Cron-Lauf gilt als erledigt, wenn derselbe Job
+  (`job_id`) danach wieder erfolgreich lief — abgeleitet rein lesend aus dem Ledger (`cron_runs`, ein
+  Aufruf pro betroffenem Job). Solche Läufe verschwinden nicht still, sondern stehen in der
+  eingeklappten Gruppe „Erledigt“ und zählen nicht als Aufmerksamkeit. Schlägt der Nachschlag fehl,
+  bleibt der Lauf sichtbar (ein Fehler wird nie auf Verdacht versteckt).
 
 **Offene Freigaben lassen sich nicht ausblenden** — sie sind actionable; das ist Absicht.
 
-Die Zähler oben („Fehlschläge 24 h“, „Braucht Aufmerksamkeit“) rechnen ausgeblendete und überholte
+Die Zähler oben („Fehlschläge 24 h“, „Braucht Aufmerksamkeit“) rechnen ausgeblendete und erledigte
 Einträge heraus. Es gibt dafür keinen Endpunkt: die Seite bleibt strukturell read-only, der Principal
 bleibt `access=read`, nichts an Hermes-Daten (Cron-Ledger, Sessions, `executions.db`) wird geändert.
 
 **Ausblick:** Sobald es eine Authentifizierung pro User gibt (OIDC, siehe oben), kann ein
 serverseitiges Quittieren pro User und Eintrag dazukommen — dann würde das Ledger selbst aufräumen und
 der Zustand wäre geräteübergreifend. Nicht Teil dieser Version.
+
+## Eine Wahrheit für Seite und Tools
+
+Der Ledger entscheidet **nicht selbst**, was Aufmerksamkeit ist. Diese Entscheidung liegt an genau
+einer Stelle — `adapters/attention.py` (Einstufung, Text, Zähler) und `Inbox.attention_view()` (die
+Abfrage) — und wird von beiden Seiten benutzt:
+
+* die MCP-Tools `hermes_status` (`inbox.failed_runs_24h`, `inbox.approvals_waiting`), `inbox_poll`,
+  `inbox_list` und das neue `inbox_attention`;
+* die Ledger-Seite, die für ihren Attention-Teil `inbox_attention` aufruft.
+
+Gleiche Einstufung, gleiche Zähler, gleiche Filter, gleiche Profil-/Scope-Sicht wie ein Read-Key,
+gleiche Texte. Ein Test (`tests/test_attention_parity.py`) hält das fest: für dieselben Daten müssen
+Seite und Digest dieselben Zahlen liefern.
+
+| Einstufung | Was hineinfällt | Wo es erscheint |
+|---|---|---|
+| `waiting` | Freigabe, die noch auf einen Menschen wartet | Attention-Bereich (nicht ausblendbar) |
+| `attention` | `run_failed` / `run_lost` ohne `settled_reason`, vom Consumer nicht quittiert | Attention-Bereich |
+| `interrupted` | `run_interrupted` — ein Neustart hat den Lauf nach vorhandener Ausgabe beendet | eigener ruhiger Block „Durch Neustart unterbrochen“, kein Fehler |
+| `settled` | Fehlschlag mit `settled_reason` (`superseded_by_completed`, `superseded_by_failure`, `operator_backfill_*`) | eingeklappte Gruppe „Erledigt“, mit Grund, Zeitpunkt und Link auf den übernehmenden Run |
+| `history` | Freigabe mit Entscheidung (`approved`, `denied`, `expired`) | eingeklappte „Freigabe-Historie“ mit Oberfläche, Zeitpunkt und verlorenen Zweitversuchen (`approval_detail`) |
+| `noise` | `run_finished`, `run_cancelled`, rohe Hook-Paare | nur über `inbox_list` / `detail=true` |
+
+Ein erledigter Fehler wird also **nie stillschweigend versteckt**: er verlässt den Attention-Bereich
+und den Zähler, bleibt aber im Ledger lesbar — mit dem Vermerk, was ihn erledigt hat.
+
+## Die Sicht eines Keys (`HERMCP_LEDGER_VIEW_KEY`)
+
+Im Single-User-Betrieb soll die Seite dasselbe zeigen wie der Agent, der sie liest. Dafür gibt es
+`HERMCP_LEDGER_VIEW_KEY`: der **Wert ist die Key-ID, nie das Token**. Ist sie gesetzt, rendert der
+Ledger exakt die Sicht dieses Keys — Scopes, Profil- und Toolset-Filter, `deny_tools` und den
+Gelesen-Stand (Consumer) dieses Keys — über dieselbe gemeinsame Abfrageschicht wie die MCP-Tools.
+Ohne die Option bleibt es beim bisherigen Verhalten (read-only-Ansichts-Principal ohne Admin-Rechte).
+
+Ist die ID unbekannt, der Key deaktiviert oder abgelaufen, zeigt die Seite eine klare Fehlermeldung
+(HTTP 503, `view_key_unusable`) und **fällt nicht** auf eine breitere Sicht zurück. Ein Key-*Name*
+wird bewusst nicht aufgelöst — nur die ID.
+
+> **Warnung — bewusste Entscheidung im LAN, vor jeder Freigabe neu bewerten.**
+> Mit einem **Admin-Key** als View-Key zeigt `/ledger` jedem, der die Seite erreicht, **alles, was
+> dieser Key sieht** — inklusive aller Profile. Das ist im Single-User-LAN-Betrieb absichtlich so.
+> Vor dem Freigeben über Pangolin oder eine andere Route muss das zusammen mit
+> `HERMCP_LEDGER_AUTH` neu bewertet werden: die Seite erbt dann die Reichweite des Keys, und wer die
+> Route erreicht, erbt sie mit. Der Ledger bleibt dabei strikt read-only (keine Aktionen, kein
+> Schreiben von Gelesen-Stand durch die reine Anzeige).
 
 ## Read-only, by construction
 
@@ -117,11 +165,12 @@ seam, not of the buttons. There is no approve, start, stop, retry or config path
 | Sessions per reachable profile: profile, platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
 | Clients and sessions: sessions grouped by client with kind, purpose, state, last seen and open runs | hermcp's own session cards and run watches (same data as `clients_overview`) |
 | Cron ledger of the last `HERMCP_LEDGER_WINDOW_HOURS` (default 24): job, status, start, duration, delivery outcome, session id, link for agent runs | `cron_runs` |
-| Pending approvals (per profile), failed cron runs, failed agent runs — called out above the fold | `approvals_pending`, `cron_runs status=error`, `inbox_list kind=run_failed` |
+| Attention: waiting approvals, open failures, interruptions, settled failures, decided approvals | `inbox_attention` (the shared classification), `cron_runs status=error` |
 | Cron job configuration (toggle on the page) | `cron_list include=all` |
 
 `approvals_pending` needs the `approvals` scope; the read-only principal sets it because that scope
-only *opens the listing* — answering needs write access and stays impossible.
+only *opens the listing* — answering needs write access and stays impossible. The page itself reads
+approvals through `inbox_attention`, so a waiting approval is counted exactly once.
 
 ## Clients and sessions
 
@@ -171,6 +220,7 @@ Why those shapes:
 | `HERMCP_LEDGER_POLL_SECONDS` | 15 | page polling interval (min 5) |
 | `HERMCP_LEDGER_WINDOW_HOURS` | 24 | cron ledger / failed-run window |
 | `HERMCP_LEDGER_CACHE_TTL` | 8 | server-side cache per payload, so several open tabs cost one read |
+| `HERMCP_LEDGER_VIEW_KEY` | empty | key **ID** (never the token) whose view the page renders — scopes, profile/toolset filters, `deny_tools`, read state. Empty = the read-only page principal. An unknown/disabled/expired ID shows an error instead of widening the view; see the warning above |
 
 ## Privacy
 
