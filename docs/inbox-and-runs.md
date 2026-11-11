@@ -39,7 +39,7 @@ events **directly to the store** — no HTTP, no token, no Hermes hook, no gatew
 
 | kind | when | notes |
 |---|---|---|
-| `needs_approval` | status `waiting_for_approval` | `approval_id` (the run's `request_id`), `action` (redacted command, max 800), `rationale` (max 400), severity warning; one event per request |
+| `needs_approval` | status `waiting_for_approval` | **since the approval ledger: an approval row (kind `approval`, state `waiting`), not an event** — `approval_id` (the run's `request_id` when the status carries one), `action` (redacted command, max 800), `rationale` (max 400); one row per request, closed when the run ends |
 | `run_finished` | `completed` | only "N characters of output" — output text never goes into an event |
 | `run_failed` | `failed`, `interrupted` | error text cleaned, max 200 chars |
 | `run_cancelled` | `cancelled` | |
@@ -74,29 +74,96 @@ take the id from an inbox text.
 `needs_approval` above only covers runs hermcp started itself. Approvals a *human* is asked for in Telegram (gateway
 queue) or in the terminal (classic CLI, TUI) never reached the inbox, so an agent driving a voice session could not
 see that a run was blocked on somebody else's prompt. `approvals_hook.py` closes that gap with Hermes' own observer
-hooks — **no core patch, no bridge, no watcher**:
+hooks — **no core patch, no bridge, no watcher**.
 
-| hook | fired by Hermes | what hermcp writes |
+#### One row per approval, whose state changes
+
+Every approval is **one** inbox row of kind `approval` with an `approval_state` of `waiting`, `approved`, `denied` or
+`expired`. The two hook signals no longer produce two rows:
+
+| hook | fired by Hermes | what hermcp does |
 |---|---|---|
-| `pre_approval_request` | every interactive approval prompt, right before it is painted (`tools/approval.py`, `approval_gateway_wait.py`, the file-write guards) | `approval_pending`, severity `warning` |
-| `post_approval_response` | when the prompt settled, with `choice` (`once`/`session`/`always`/`deny`/`timeout`/`cancelled`/`notify_failed`) | `approval_resolved`, severity `info` |
+| `pre_approval_request` | every interactive approval prompt, right before it is painted (`tools/approval.py`, `approval_gateway_wait.py`, the file-write guards) | opens the row: `approval_state=waiting`, `approval_surface` |
+| `post_approval_response` | when the prompt settled, with `choice` (`once`/`session`/`always`/`deny`/`timeout`/`cancelled`/`notify_failed`) | settles **that same row**: state, `approval_decision`, `approval_surface`, `approval_closed_at` |
 
-`plugins_dispatch` treats both hooks as pure observers (return values ignored, exceptions swallowed), so the hook can
-never approve or deny anything — it only records that a prompt exists and how it ended. Events carry
-`origin: hook`, `pushed_by: hermcp:hook`, the profile, the `session_key` the prompt belongs to, `action` (the redacted
-command) and `rationale` (the agent's description); `untrusted_fields` is `summary`, `action`, `rationale`. They are
-only visible to keys whose profile scope matches and are registered with `ctx.register_hook(...)` in the plugin's
-`register()`, so they exist wherever the plugin is loaded — gateway process and CLI process alike.
+`once`/`session`/`always`/`smart_approve` become `approved`; `deny`/`smart_deny` become `denied`; `timeout`,
+`cancelled` and `notify_failed` become `expired` (nobody decided). Nothing about the pair is lost — both raw signals
+and every later attempt are kept in the decision protocol below.
 
-**Answering stays request_id-bound.** A hook event deliberately never stores a `request_id`: the id must come from the
-live request (`approvals_pending`, or `chat_run_status` for an hermcp run), and `approvals_answer` then answers exactly
-that request with the usual scope rules — `once`, `session` (admin), `deny`, `always` (admin only, audited). An inbox
-text can therefore never become an approval instruction; it is a pointer to "go look at approvals_pending".
+#### How the two signals find each other (verified, not assumed)
 
-Notes: the same prompt re-fired is deduplicated for 300 s (identity = `session_key`+`pattern_key`+`command`+`description`),
-a coalesced follower of an already-announced prompt stays quiet, and `HERMCP_INBOX_APPROVALS=0` turns the hooks off.
-Because hook registration happens when the plugin loads, a running gateway picks the hooks up with its next start; a
-CLI session gets them on its next start.
+The hook payload carries `command`, `description`, `pattern_key`/`pattern_keys`, `session_key`, `surface` and
+optionally `turn_id`/`tool_call_id`/`session_id` — but **no `request_id`**. Hermes creates that id in
+`tools/approval_gateway_wait.py` (`_ApprovalEntry.__init__`, `uuid4().hex`) and it leaves the gateway only through the
+run status and the approvals bridge. Only the plugin-transport branch of `tools/approval_prompt.py` passes a
+`request_id` into the hook; that is a different prompt path.
+
+So the stable handle both signals share is derived by hermcp: `approval_key` = hash of
+`session_key` + `pattern_key` + `command` + `description`, plus a per-identity sequence number so two *identical*
+prompts in one session still get two rows. Competing by `session_key` alone would be wrong (53 session keys carry
+several approvals each), and the old `dedupe_key` hash was already the same for a pair but not unique across repeats.
+
+`approval_id` is filled **only** when a payload really carries a `request_id`; it is never invented. For run-scoped
+approvals the watcher and the hook both compute the key from the run (`run:<run_id>:<request_id>` or
+`run:<run_id>:noid-<hash of the prompt text>`), so they land on the same row instead of two.
+
+`approval_user_id` and `approval_chat` are reserved for a future OIDC / user / group model. Hermes does not hand a
+user id or a chat/group id to these hooks today, so both stay empty unless a payload gains a `user_id` /
+`chat_id` / `group_id` key. No names, no lookups, no guessing.
+
+#### Decision protocol (`approval_decisions`)
+
+Several surfaces can answer the same prompt at once (approved on the desktop, a second click on the phone). **The
+first attempt wins** and sets the state; every later attempt is recorded as its own entry with outcome
+`too_late_already_decided`, its surface and its time — so it stays reconstructable what went through and what did
+not. Failed attempts (`refused`, `error`, `not_pending`) are entries as well. `approval_detail` returns the row plus
+that protocol.
+
+Where a second attempt becomes visible, honestly:
+
+| attempt comes via | visible to hermcp? | recorded as |
+|---|---|---|
+| `approvals_answer` (the bridge) | yes — the bridge answers `approval_not_pending` | `too_late_already_decided` (row already settled) or `not_pending` |
+| `chat_run_approval` | yes — Hermes answers HTTP 409 | `too_late_already_decided` |
+| a second click **inside** a Hermes UI (Telegram, CLI, Desktop) | **no** — Hermes finds no entry in its own queue (`resolve_gateway_approval` returns 0), fires no hook and never calls hermcp | nothing; only Hermes' own UI feedback shows it |
+
+That last row is a real gap, not a bug in this code: hermcp only learns about a decision if Hermes either fires the
+post hook (first decision) or hermcp makes the call itself.
+
+#### `approvals_answer` stays request_id-bound
+
+A hook row deliberately never carries a `request_id`: the id must come from the live request (`approvals_pending`,
+or `chat_run_status` for an hermcp run), and `approvals_answer` then answers exactly that request with the usual
+scope rules — `once`, `session` (admin), `deny`, `always` (admin only, audited). An inbox row is a pointer to "go look
+at approvals_pending", never an approval instruction. Answering through `approvals_answer` /
+`chat_run_approval` additionally settles the matching row with surface `mcp` (or `mcp:<client label>`).
+
+Notes: the same prompt re-fired is deduplicated for 300 s (identity = `session_key`+`pattern_key`+`command`+
+`description`), a coalesced follower of an already-announced prompt stays quiet, and `HERMCP_INBOX_APPROVALS=0` turns
+the hooks off. Because hook registration happens when the plugin loads, a running gateway picks the hooks up with its
+next start; a CLI session gets them on its next start.
+
+#### A run that ends cannot still be waiting
+
+Teil 1 of the approval ledger: when a watched run reaches `completed`, `failed`, `interrupted`, `cancelled` or
+`run_lost`, the watcher closes every still-waiting approval of that run as `expired` with the reason in the summary.
+Before that, a `needs_approval` whose approval was answered elsewhere (or never asked again) hung forever. The same
+holds for the first start after an upgrade: the one-time backfill closes legacy `needs_approval` rows whose run is
+already over and folds legacy `approval_pending`/`approval_resolved` pairs into single rows (marked
+`actor='hermcp:backfill'` in the protocol, idempotent, nothing deleted).
+
+#### What the default view shows
+
+`hermes_status` and `inbox_poll` default to **attention only**: approvals still `waiting`, `run_failed`, `run_lost`
+and runs waiting for an approval. Resolved approvals, the decision protocol, the raw hook kinds and finished runs stay
+out of the digest and out of the default poll; they remain reachable through
+
+- `inbox_poll detail=true` / `inbox_list attention_only=false` for the full history,
+- `inbox_poll`/`inbox_list` with `approval_key`, `run_id` or `session_key` for one approval, run or session,
+- `approval_detail <approval_key>` for the row and its protocol.
+
+The filter is exclusion-based, so an event from an external producer (a cron script, another agent) never disappears
+from the slim default. An open approval stays visible until it is decided.
 
 Getting other Hermes completions in (documented, **not** wired by hermcp): Hermes has two hook routes that
 need a config change plus a gateway restart, so hermcp leaves them alone. (1) Shell hook: a `hooks:` entry
