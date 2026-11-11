@@ -778,8 +778,26 @@ def app_js() -> str:
                '"app.js fehlt in dieser Installation (hermcp/ledger_assets/app.js)";'
 
 
+def settings_summary(settings, view_key: str = "", view_name: str = "") -> List[Dict[str, str]]:
+    """The active limits and the view key, as names and labels only — never a secret.
+
+    Shown in the page footer so a reader can tell which window a list is using without digging
+    through the unit file. Values are numbers, list names and the key's *name* (or its id when the
+    key has no name) — the same information `hermes doctor` prints.
+    """
+    out = [
+        {"name": "limits", "value": f"sessions {list_limit(settings, 'sessions')} · runs {list_limit(settings, 'runs')}"
+                                    f" · cron {list_limit(settings, 'cron')}"},
+        {"name": "window", "value": f"{int(getattr(settings, 'ledger_window_hours', WINDOW_HOURS_DEFAULT) or WINDOW_HOURS_DEFAULT)} h"},
+        {"name": "auth", "value": str(getattr(settings, "ledger_auth", "key"))},
+    ]
+    if view_key:
+        out.append({"name": "view-key", "value": view_name or view_key})
+    return out
+
+
 def page_html(poll_seconds: int, view_error: str = "", view_key: str = "", view_name: str = "",
-              page: str = "attention", session_id: str = "") -> str:
+              page: str = "attention", session_id: str = "", settings=None) -> str:
     """The shell with the poll interval, the view key and the route baked in.
 
     Nothing from a request is interpolated: ``page`` is one of a fixed set and ``session_id`` goes
@@ -790,7 +808,8 @@ def page_html(poll_seconds: int, view_error: str = "", view_key: str = "", view_
     route = page if page in PAGES else "attention"
     meta = json.dumps({"view_key": view_key or "", "view_name": view_name or "",
                        "view_error": view_error or "", "page": route,
-                       "session_id": safe_token(session_id) or ""},
+                       "session_id": safe_token(session_id) or "",
+                       "settings": settings_summary(settings, view_key, view_name) if settings else []},
                       ensure_ascii=False).replace("<", "\\u003c")
     return (PAGE.replace("__APP_JS__", app_js())
             .replace("__POLL__", poll)

@@ -313,12 +313,12 @@ class HermcpApp:
         except LB.LedgerViewKeyError as exc:
             log.warning("ledger: view key unusable: %s", exc)
             return Response(LB.page_html(self.settings.ledger_poll_seconds, view_error=str(exc),
-                                         page=page, session_id=session_id),
+                                         page=page, session_id=session_id, settings=self.settings),
                             media_type="text/html", status_code=503)
         return Response(LB.page_html(self.settings.ledger_poll_seconds,
                                      view_key=view.id if self.settings.ledger_view_key else "",
                                      view_name=view.name if self.settings.ledger_view_key else "",
-                                     page=page, session_id=session_id),
+                                     page=page, session_id=session_id, settings=self.settings),
                         media_type="text/html")
 
     async def ledger_css(self, req: Request) -> Response:

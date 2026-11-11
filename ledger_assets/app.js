@@ -748,7 +748,7 @@ function renderAttention(d){
       var b = rowButton([
         label,
         x.source || "—",
-        {nodeType: 1, textContent: ""},
+        "",
         ago(x.last_active) || "—"
       ], "1fr 92px 84px 74px", function(ev){
         openPeek("session", x.session_id, {profile: x.profile}, ev.currentTarget);

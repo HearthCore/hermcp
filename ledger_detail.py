@@ -208,8 +208,8 @@ def app_links(settings, targets: Dict[str, Any], profile: Optional[str],
 def _session_meta(registry, principal, settings, profile: str, session_id: str) -> Dict[str, Any]:
     try:
         row = call(registry, principal, settings, "sessions_get", session_id=session_id, profile=profile) or {}
-    except Exception as exc:  # noqa: BLE001
-        raise DetailError(f"sessions_get: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - `call` already prefixes the tool name
+        raise DetailError(str(exc)) from exc
     return row if isinstance(row, dict) else {}
 
 
@@ -219,7 +219,7 @@ def _session_messages(registry, principal, settings, profile: str, session_id: s
         res = call(registry, principal, settings, "sessions_messages", session_id=session_id, profile=profile,
                    limit=max(1, min(MAX_MESSAGES, int(limit))), latest=True, max_chars=2000) or {}
     except Exception as exc:  # noqa: BLE001
-        raise DetailError(f"sessions_messages: {exc}") from exc
+        raise DetailError(str(exc)) from exc
     rows = res.get("messages") if isinstance(res, dict) else None
     return [r for r in rows or [] if isinstance(r, dict)]
 
