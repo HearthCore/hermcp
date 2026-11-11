@@ -16,6 +16,7 @@ Two rules hold for every value that leaves this module:
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -530,7 +531,9 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
     errors: Dict[str, str] = {}
     capped = False
     per_profile = min(max(need, LIST_PAGE_DEFAULT), SESSIONS_DEEP_MAX)
-    for prof in profiles:
+
+    def one(prof: str) -> tuple:
+        """One profile's newest rows, in chunks of 100 (the tool's own ceiling)."""
         got: List[Dict[str, Any]] = []
         offset = 0
         while len(got) < per_profile:
@@ -539,13 +542,21 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
                 res = call(registry, principal, settings, "sessions_list", profile=prof, limit=want,
                            offset=offset, order="recent") or {}
             except Exception as exc:  # noqa: BLE001
-                errors.setdefault("sessions", str(exc))
-                break
+                return got, str(exc)
             batch = [r for r in res.get("sessions") or [] if isinstance(r, dict)]
             got.extend(batch)
             if len(batch) < want:
                 break
             offset += want
+        return got, None
+
+    # One read per profile, in parallel: 8 profiles are ~8 × 0.5 s when done in series, which is
+    # the whole page load. The calls are independent and read-only, so they can overlap.
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(profiles)))) as pool:
+        results = list(pool.map(one, profiles))
+    for prof, (got, err) in zip(profiles, results):
+        if err:
+            errors.setdefault("sessions", err)
         if len(got) >= per_profile:
             capped = True
         for row in got:
@@ -772,14 +783,21 @@ def list_cron(registry, principal: Principal, settings, hermes_config: Dict[str,
     since = _since_iso(hours)
     rows: List[Dict[str, Any]] = []
     capped = False
-    for prof in profiles:
+
+    def one_cron(prof: str) -> tuple:
         args: Dict[str, Any] = {"profile": prof, "since": since, "limit": CRON_FETCH}
         if want_job:
             args["job_id"] = want_job
         try:
-            res = call(registry, ro, settings, "cron_runs", **args) or {}
+            return call(registry, ro, settings, "cron_runs", **args) or {}, None
         except Exception as exc:  # noqa: BLE001
-            errors.setdefault("cron_runs", str(exc))
+            return {}, str(exc)
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(profiles)))) as pool:
+        cron_results = list(pool.map(one_cron, profiles))
+    for prof, (res, err) in zip(profiles, cron_results):
+        if err:
+            errors.setdefault("cron_runs", err)
             continue
         capped = capped or bool(res.get("truncated"))
         for run in res.get("runs") or []:
