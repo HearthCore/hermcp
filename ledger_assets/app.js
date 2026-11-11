@@ -662,6 +662,13 @@ function renderPeekError(dlg, message){
   body.textContent = "";
   var box = el("div", "notice bad", message);
   body.appendChild(box);
+  var foot = dlg.querySelector(".peek-foot");
+  if(foot && !foot.childNodes.length){
+    foot.appendChild(copyLinkButton(function(){
+      return location.origin + location.pathname + buildSearch(urlState);
+    }));
+    foot.appendChild(el("span", "peek-note", "read-only"));
+  }
   var close = dlg.querySelector(".peek-close");
   if(close) close.focus();
 }
@@ -685,6 +692,12 @@ function renderPeek(dlg, d){
   body.textContent = "";
   if(d.ok === false){
     body.appendChild(el("div", "notice bad", d.error || "Eintrag nicht lesbar."));
+    // the link is still shareable — a reader reporting a broken entry needs exactly this address
+    foot.textContent = "";
+    foot.appendChild(copyLinkButton(function(){
+      return location.origin + location.pathname + buildSearch(urlState);
+    }));
+    foot.appendChild(el("span", "peek-note", "read-only"));
     close.focus();
     return;
   }
