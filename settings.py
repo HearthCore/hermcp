@@ -87,6 +87,8 @@ class Settings:
     ledger_window_hours: int = 24    # cron ledger / failed-run window
     ledger_cache_ttl: float = 8.0    # server-side cache per payload
 
+    profiles_ignore: list[str] = field(default_factory=list)  # host-wide: profiles hermcp leaves out (not a key scope)
+
     invalid_scopes: list[str] = field(default_factory=list)   # set by load_settings(strict=False) only
 
     @property
@@ -136,6 +138,14 @@ def scope_errors(s: "Settings") -> list[str]:
         if val not in SCOPES:
             out.append(f"{env} must be 'system' or 'user', got {val!r}")
     return out
+
+
+def ignored_profiles() -> set[str]:
+    """Profiles named in HERMCP_PROFILES_IGNORE (env > .env). `default` can never be ignored.
+
+    Names that do not exist on disk are harmless: the set is only ever used to subtract from what is there.
+    """
+    return set(load_settings(strict=False).profiles_ignore)
 
 
 DEFAULT_REDIRECTS = [
@@ -194,6 +204,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger_poll_seconds=max(5, int(g("HERMCP_LEDGER_POLL_SECONDS", "15"))),
         ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
         ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),
+        profiles_ignore=[n for n in _csv(g("HERMCP_PROFILES_IGNORE", "")) if n != "default"],
     )
     bad = scope_errors(s) + ledger_errors(s) + proxy_errors(s)
     if bad:
