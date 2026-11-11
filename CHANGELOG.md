@@ -8,7 +8,7 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 ## [Unreleased]
 
 ### Added
-- `debug` option on `hermes_health`, `status_gateway` and `orchestration_overview`: ignored profiles are left out of the gateway's served/parked lists by default (`hidden_profiles` counts them), `debug: true` shows the raw lists
+- `debug` option on `hermes_health`, `status_gateway` and `orchestration_overview`: ignored profiles are left out of the gateway's served/parked lists by default (`hidden_profiles` counts them), `debug: true` shows the raw lists ([`ca90b0d`](https://github.com/HearthCore/hermcp/commit/ca90b0d), [#45](https://github.com/HearthCore/hermcp/pull/45))
 - `HERMCP_PROFILES_IGNORE`: a host-wide list of profiles hermcp leaves out of `doctor`, `profile-keys`, `profiles_list` and the status tools; profile-targeted tools reject them with `profile_ignored`. It is not a key scope, so keys stay unrestricted ([`acd5774`](https://github.com/HearthCore/hermcp/commit/acd5774), [#44](https://github.com/HearthCore/hermcp/pull/44))
 
 ### Tests
