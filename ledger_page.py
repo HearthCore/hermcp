@@ -58,6 +58,8 @@ LIST_LIMIT_DEFAULT = 10
 FETCH_MAX = 100          # cron_runs / sessions_list ceiling per call
 RUNS_FETCH_MAX = 200     # inbox_attention's own ceiling for failures
 LIST_NAMES = ("cron", "sessions", "runs")
+# The routes the shell knows. One shell, the script decides what to draw.
+PAGES = ("attention", "sessions", "runs", "cron", "gateway")
 
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 ISO_SAFE = re.compile(r"^[A-Za-z0-9:.+~-]{4,40}$")
@@ -728,67 +730,16 @@ PAGE = """<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="dark">
 <title>hermcp Ledger</title>
-<style>
-:root{--bg:#0f1115;--panel:#171a1f;--line:#2a2f37;--fg:#e7e9ec;--muted:#98a1ac;
---accent:#6ea8fe;--ok:#3fbf7f;--warn:#e0a33e;--bad:#ef6b6b;--radius:8px}
-@media (prefers-color-scheme:light){:root{--bg:#f7f7f8;--panel:#fff;--line:#d9dbdf;--fg:#1b1d21;
---muted:#6b7280;--accent:#2563eb;--ok:#128a4b;--warn:#b45309;--bad:#b91c1c}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:1180px;margin:0 auto;padding:22px 20px 60px;display:flex;flex-direction:column;gap:16px}
-.head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
-h1{margin:0;font-size:19px;letter-spacing:.02em}
-.sub{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
-.spacer{flex:1}
-.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;
-padding:2px 10px;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
-.pill.ok{color:var(--ok);border-color:var(--ok)}.pill.warn{color:var(--warn);border-color:var(--warn)}
-.pill.bad{color:var(--bad);border-color:var(--bad)}
-.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
-.kpi{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:12px 14px}
-.kpi b{display:block;font-size:24px;font-variant-numeric:tabular-nums}
-.kpi span{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-.kpi.bad b{color:var(--bad)}.kpi.warn b{color:var(--warn)}
-.card{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);overflow:hidden}
-.card>.hd{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
-.card>.hd h3{margin:0;font-size:13px}
-.card>.hd .sub{margin-left:auto}
-.alert{border:1px solid var(--bad);border-left-width:4px;border-radius:var(--radius);background:var(--panel);padding:12px 16px}
-.alert h2{margin:0 0 8px;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--bad)}
-.alert h4{margin:10px 0 4px;font-size:12px}
-.alert .it{font-size:12px;color:var(--muted);overflow-wrap:anywhere;padding:2px 0}
-.chips{display:flex;flex-wrap:wrap;gap:8px;padding:12px 14px}
-.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;
-padding:3px 10px;font-size:12px;color:var(--muted)}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
-.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
-.tw{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);
-padding:8px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
-td{padding:7px 14px;border-bottom:1px solid var(--line);vertical-align:top}
-tr:last-child td{border-bottom:0}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}
-.num{font-variant-numeric:tabular-nums;white-space:nowrap}
-a{color:var(--accent);text-decoration:none;border-bottom:1px dotted currentColor;white-space:nowrap}
-a:hover{border-bottom-style:solid}
-.empty{padding:14px;font-size:12px;color:var(--muted)}
-.legend{padding:0 14px 12px;font-size:11px;color:var(--muted);line-height:1.5}
-.err{border:1px solid var(--warn);border-radius:var(--radius);padding:10px 14px;font-size:12px;color:var(--muted)}
-.err strong{color:var(--warn)}
-button.dismiss{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:6px;
-font-size:11px;padding:1px 8px;margin-left:8px;cursor:pointer;font:inherit;font-size:11px}
-button.dismiss:hover{color:var(--fg);border-color:var(--fg)}
-button.dismiss.all{font-size:12px;padding:2px 10px}
-.hiddenline{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
-.hidden,.superseded{border-top:1px dashed var(--line);margin-top:8px;padding-top:6px}
-.it.calm{color:var(--muted)}
-.it.done{color:var(--muted)}
-.it.hist{color:var(--muted)}
-label.toggle{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);cursor:pointer}
-</style></head>
-<body><div class="wrap" id="root"><div class="empty">lade …</div></div>
+<link rel="stylesheet" href="/ledger/assets/app.css">
+</head>
+<body>
+<div class="shell">
+<nav class="nav" aria-label="Ledger-Navigation"><div class="nav-in" id="nav"></div></nav>
+<main class="page" id="root"><div class="empty">lade …</div></main>
+<footer class="foot" id="foot"></footer>
+</div>
 <script>
 var LEDGER_META = __META__;
 __APP_JS__
@@ -797,6 +748,25 @@ __APP_JS__
 
 
 APP_JS_PATH = Path(__file__).resolve().parent / "ledger_assets" / "app.js"
+APP_CSS_PATH = Path(__file__).resolve().parent / "ledger_assets" / "app.css"
+FONT_DIR = Path(__file__).resolve().parent / "ledger_assets" / "fonts"
+# Only these files are served from the asset route: no path is taken from the request.
+FONTS = ("jetbrains-mono-latin.woff2", "sora-latin.woff2")
+
+
+def app_css() -> bytes:
+    """The stylesheet, read per request (a small file; no restart after an edit)."""
+    return APP_CSS_PATH.read_bytes()
+
+
+def font_bytes(name: str) -> Optional[bytes]:
+    """One of the bundled font subsets, or None for anything else."""
+    if name not in FONTS:
+        return None
+    try:
+        return (FONT_DIR / name).read_bytes()
+    except OSError:
+        return None
 
 
 def app_js() -> str:
@@ -808,11 +778,35 @@ def app_js() -> str:
                '"app.js fehlt in dieser Installation (hermcp/ledger_assets/app.js)";'
 
 
-def page_html(poll_seconds: int, view_error: str = "", view_key: str = "", view_name: str = "") -> str:
-    """The page with the poll interval and the view key baked in; nothing else is interpolated."""
+def page_html(poll_seconds: int, view_error: str = "", view_key: str = "", view_name: str = "",
+              page: str = "attention", session_id: str = "") -> str:
+    """The shell with the poll interval, the view key and the route baked in.
+
+    Nothing from a request is interpolated: ``page`` is one of a fixed set and ``session_id`` goes
+    through :func:`safe_token` first, then :func:`json.dumps` (which escapes ``<``), so the script
+    cannot be broken out of.
+    """
     poll = str(int(poll_seconds) or POLL_SECONDS_DEFAULT)
+    route = page if page in PAGES else "attention"
     meta = json.dumps({"view_key": view_key or "", "view_name": view_name or "",
-                       "view_error": view_error or ""}, ensure_ascii=False).replace("<", "\\u003c")
+                       "view_error": view_error or "", "page": route,
+                       "session_id": safe_token(session_id) or ""},
+                      ensure_ascii=False).replace("<", "\\u003c")
     return (PAGE.replace("__APP_JS__", app_js())
             .replace("__POLL__", poll)
             .replace("__META__", meta))
+
+
+def route_of(path: str) -> tuple:
+    """(page, session_id) for a /ledger path. Unknown paths fall back to the attention page."""
+    rest = (path or "").rstrip("/")
+    rest = rest[len("/ledger"):] if rest.startswith("/ledger") else rest
+    rest = rest.lstrip("/")
+    if not rest:
+        return "attention", ""
+    head, _, tail = rest.partition("/")
+    if head == "session" and tail:
+        return "session", safe_token(tail) or ""
+    if head in PAGES[1:]:                       # sessions, runs, cron, gateway
+        return head, ""
+    return "attention", ""

@@ -93,6 +93,8 @@ class Settings:
     ledger_cron_limit: int = 10      # per-list override for the cron runs
     ledger_sessions_limit: int = 10  # per-list override for the sessions table
     ledger_runs_limit: int = 10      # per-list override for the run lists (failed/interrupted runs)
+    ledger_desktop_url: str = ""     # template with {session_id}/{profile} for the "In Desktop-App" button
+    ledger_web_url: str = ""         # template with {session_id}/{profile} for the "In Web-App" button
 
     profiles_ignore: list[str] = field(default_factory=list)  # host-wide: profiles hermcp leaves out (not a key scope)
 
@@ -242,6 +244,8 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
                                         "HERMCP_LEDGER_CRON_LIMIT"),
         ledger_sessions_limit=_ledger_limit(g("HERMCP_LEDGER_SESSIONS_LIMIT"), default_limit,
                                             "HERMCP_LEDGER_SESSIONS_LIMIT"),
+        ledger_desktop_url=g("HERMCP_LEDGER_DESKTOP_URL", "").strip(),
+        ledger_web_url=g("HERMCP_LEDGER_WEB_URL", "").strip(),
         ledger_runs_limit=_ledger_limit(g("HERMCP_LEDGER_RUNS_LIMIT"), default_limit,
                                         "HERMCP_LEDGER_RUNS_LIMIT"),
         profiles_ignore=[n for n in _csv(g("HERMCP_PROFILES_IGNORE", "")) if n != "default"],

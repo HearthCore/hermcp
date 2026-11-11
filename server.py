@@ -125,7 +125,18 @@ class HermcpApp:
             Route("/mcp", self.mcp, methods=["POST", "GET", "DELETE"]),
             Route("/inbox", self.inbox_http, methods=["POST"]),
             *([Route("/ledger", self.ledger_page, methods=["GET"]),
+               Route("/ledger/sessions", self.ledger_page, methods=["GET"]),
+               Route("/ledger/runs", self.ledger_page, methods=["GET"]),
+               Route("/ledger/cron", self.ledger_page, methods=["GET"]),
+               Route("/ledger/gateway", self.ledger_page, methods=["GET"]),
+               Route("/ledger/session/{session_id}", self.ledger_page, methods=["GET"]),
+               Route("/ledger/assets/app.css", self.ledger_css, methods=["GET"]),
+               Route("/ledger/assets/fonts/{name}", self.ledger_font, methods=["GET"]),
                Route("/ledger/overview", self.ledger_overview, methods=["GET"]),
+               Route("/ledger/api/peek", self.ledger_peek, methods=["GET"]),
+               Route("/ledger/api/list", self.ledger_list, methods=["GET"]),
+               Route("/ledger/api/session/{session_id}", self.ledger_session, methods=["GET"]),
+               Route("/ledger/api/gateway", self.ledger_gateway, methods=["GET"]),
                Route("/ledger/jobs", self.ledger_jobs, methods=["GET"]),
                # deprecated: the page was called "Lagebild" for one day
                Route("/lagebild", self.ledger_legacy_redirect, methods=["GET"]),
@@ -292,20 +303,125 @@ class HermcpApp:
                 "(wird einmal eingelöst und dann als Cookie gehalten).</p>",
                 status_code=401, media_type="text/html")
         if from_query:      # trade the key in the URL for an HttpOnly cookie, then drop it from the address
-            resp = RedirectResponse("/ledger", status_code=303)
+            resp = RedirectResponse(req.url.path, status_code=303)
             resp.set_cookie(self.LEDGER_COOKIE, from_query, httponly=True, samesite="strict",
                             secure=self.client_info(req).proto == "https", path="/ledger")
             return resp
+        page, session_id = LB.route_of(req.url.path)
         try:
             view = self._ledger_view(principal)
         except LB.LedgerViewKeyError as exc:
             log.warning("ledger: view key unusable: %s", exc)
-            return Response(LB.page_html(self.settings.ledger_poll_seconds,
-                                         view_error=str(exc)), media_type="text/html", status_code=503)
+            return Response(LB.page_html(self.settings.ledger_poll_seconds, view_error=str(exc),
+                                         page=page, session_id=session_id),
+                            media_type="text/html", status_code=503)
         return Response(LB.page_html(self.settings.ledger_poll_seconds,
                                      view_key=view.id if self.settings.ledger_view_key else "",
-                                     view_name=view.name if self.settings.ledger_view_key else ""),
+                                     view_name=view.name if self.settings.ledger_view_key else "",
+                                     page=page, session_id=session_id),
                         media_type="text/html")
+
+    async def ledger_css(self, req: Request) -> Response:
+        """The stylesheet. Same network guard as the page; it carries no data."""
+        denied = self._ledger_denied(req)
+        if denied is not None:
+            return denied
+        try:
+            body = LB.app_css()
+        except OSError:
+            return Response("/* app.css missing in this installation */", media_type="text/css", status_code=404)
+        return Response(body, media_type="text/css", headers={"Cache-Control": "public, max-age=300"})
+
+    async def ledger_font(self, req: Request) -> Response:
+        """One of the two bundled font subsets (whitelist, never a path from the request)."""
+        denied = self._ledger_denied(req)
+        if denied is not None:
+            return denied
+        body = LB.font_bytes(str(req.path_params.get("name") or ""))
+        if body is None:
+            return Response("not found", status_code=404)
+        return Response(body, media_type="font/woff2", headers={"Cache-Control": "public, max-age=86400"})
+
+    def _ledger_json_principal(self, req: Request):
+        """(principal, view-error-response) for the read-only JSON endpoints: same seam as overview."""
+        denied = self._ledger_denied(req)
+        if denied is not None:
+            return None, denied
+        principal, _ = self._ledger_principal(req)
+        if principal is None:
+            return None, JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            return self._ledger_view(principal), None
+        except LB.LedgerViewKeyError as exc:
+            log.warning("ledger: view key unusable: %s", exc)
+            return None, JSONResponse({"error": "view_key_unusable", "reason": str(exc)}, status_code=503)
+
+    async def ledger_peek(self, req: Request) -> Response:
+        """The pop-up payload: one session, run, cron run or approval, small and server-truncated."""
+        from . import ledger_detail as LD
+
+        principal, error = self._ledger_json_principal(req)
+        if error is not None:
+            return error
+        kind = str(req.query_params.get("kind") or "session")
+        ident = str(req.query_params.get("id") or "")
+        profile = req.query_params.get("profile")
+        job = req.query_params.get("job")
+        base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
+        payload, age = self._ledger_cached(
+            ("peek", principal.id, kind, ident, profile, job, base),
+            lambda: LD.build_peek(self.registry, principal, self.settings, LB.hermes_config(), kind, ident,
+                                  profile, job, base))
+        return JSONResponse({**payload, "cache_age_s": age})
+
+    async def ledger_list(self, req: Request) -> Response:
+        """The sub-page lists, paged and filtered. kind=sessions|runs|approvals|cron."""
+        from . import ledger_detail as LD
+
+        principal, error = self._ledger_json_principal(req)
+        if error is not None:
+            return error
+        kind = str(req.query_params.get("kind") or "sessions")
+        if kind not in ("sessions", "runs", "approvals", "cron"):
+            return JSONResponse({"error": "bad_kind", "reason": "kind is sessions, runs, approvals or cron"},
+                                status_code=400)
+        query = dict(req.query_params)
+        base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
+        build = {"sessions": LD.list_sessions, "runs": LD.list_runs,
+                 "approvals": LD.list_approvals, "cron": LD.list_cron}[kind]
+        payload, age = self._ledger_cached(
+            ("list", principal.id, kind, tuple(sorted(query.items())), base),
+            lambda: build(self.registry, principal, self.settings, LB.hermes_config(), query, base))
+        return JSONResponse({**payload, "cache_age_s": age})
+
+    async def ledger_session(self, req: Request) -> Response:
+        """One session, wide: history, metadata, tool usage and signals."""
+        from . import ledger_detail as LD
+
+        principal, error = self._ledger_json_principal(req)
+        if error is not None:
+            return error
+        sid = str(req.path_params.get("session_id") or "")
+        profile = req.query_params.get("profile")
+        base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
+        payload, age = self._ledger_cached(
+            ("session", principal.id, sid, profile, base),
+            lambda: LD.build_session(self.registry, principal, self.settings, LB.hermes_config(), sid,
+                                     profile, base))
+        return JSONResponse({**payload, "cache_age_s": age}, status_code=200 if payload.get("ok") else 404)
+
+    async def ledger_gateway(self, req: Request) -> Response:
+        """Platform state, versions, profiles and a key overview without secrets."""
+        from . import ledger_detail as LD
+
+        principal, error = self._ledger_json_principal(req)
+        if error is not None:
+            return error
+        base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
+        payload, age = self._ledger_cached(
+            ("gateway", principal.id, base),
+            lambda: LD.build_gateway(self.registry, principal, self.settings, LB.hermes_config(), base))
+        return JSONResponse({**payload, "cache_age_s": age})
 
     async def ledger_legacy_redirect(self, req: Request) -> Response:
         """308 from the old /lagebild* address to /ledger* (deprecated, one-day name)."""

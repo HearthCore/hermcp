@@ -299,10 +299,14 @@ def test_jobs_payload_omits_prompts():
 
 def test_page_html_carries_the_poll_interval_and_no_secrets():
     page = LB.page_html(30)
-    assert "setInterval" in page and "*1000" in page
+    assert "setInterval" in page and "POLL * 1000" in page
     assert "/ledger/overview" in page and "/ledger/jobs" in page
     assert "__POLL__" not in page
     assert "hmcp_" not in page
+    # the stylesheet and the fonts are served by hermcp itself: no external request
+    assert "/ledger/assets/app.css" in page
+    for external in ("fonts.googleapis", "fonts.gstatic", "cdn.", "unpkg", "@import url(http"):
+        assert external not in page, external
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +659,7 @@ def test_the_page_carries_the_view_key_for_display(home):
     app.settings.ledger_view_key = rec.id
     c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
     page = c.get("/ledger").text
-    assert rec.id in page and "Sicht:" in page
+    assert rec.id in page and "view-as" in page
 
 
 # ---------------------------------------------------------------------------
