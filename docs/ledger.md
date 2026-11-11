@@ -228,6 +228,10 @@ Die Frage wird **serverseitig** gebaut, je Art des Eintrags:
 | Cron-Fehler / Cron | was passiert ist, ob noch etwas offen ist, ob sich ein Muster über die letzten Läufe zeigt |
 | Session / Run | Zusammenfassung, offene Punkte, nächste Schritte |
 
+![Pop-up einer wartenden Freigabe mit dem Button "✦ Ask Claude" in der Fußzeile](img/ledger-ask-claude-popup.png)
+
+*Der Button in der Fußzeile des Pop-ups — ein Link, kein Aufruf; der Tooltip erklärt, was er tut.*
+
 Jede Frage nennt die IDs (Session, Run, Approval, Job), Art, Status, Zeiten, Profil und Oberfläche und
 fordert Claude auf, die Details selbst über die hermcp-Tools zu lesen (`hermes_status`,
 `inbox_attention`, `approval_detail`, `chat_run_status`, `sessions_messages`) — statt Inhalte in den
