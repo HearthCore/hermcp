@@ -25,6 +25,14 @@ top. Panel titles read `01 // titel` with the tool that fed them on the right (`
 Symbols carry the state so colour is never the only signal: `●` ok, `✕` error, `◌` running, `▲`
 waiting/approval, `○` finished, `›` user, `‹` agent, `⚙` tool.
 
+![Startseite, nichts offen: statt des Attention-Panels eine einzige gedimmte Zeile "✓ zero active interruptions"](img/ledger-start-attention-empty.png)
+
+*Nichts offen: kein Panel, keine Leerlisten, kein „Clear errors" — eine Zeile, und die Listen rücken hoch.*
+
+![Startseite mit offener Arbeit: Panel 01 braucht Aufmerksamkeit plus eigenes Panel für Unterbrechungen](img/ledger-start-attention-filled.png)
+
+*Sobald etwas offen ist, steht das Panel wieder da — unverändert, inklusive „Clear errors" (nur im Browser).*
+
 **Wenn nichts offen ist**, wird das Attention-Panel gar nicht gezeichnet: kein Rahmen, keine leeren
 Listen, kein „Clear errors" — nur eine gedimmte Zeile `✓ zero active interruptions`, die den Platz an
 die Listen darunter freigibt. Sobald irgendetwas offen ist (Fehler, Unterbrechung, wartende Freigabe
