@@ -939,7 +939,8 @@ function pager(state, total, onPage){
   var wrap = el("div", "pager");
   var from = total ? state.offset + 1 : 0;
   var to = Math.min(total, state.offset + (state.limit || 25));
-  wrap.appendChild(el("span", null, from + "–" + to + " von " + total));
+  // "≥" when the server's window was full: the real number is at least this, not this.
+  wrap.appendChild(el("span", null, from + "–" + to + " von " + (state.total_is_bounded ? "≥" : "") + total));
   var prev = button("btn dim", "← zurück", function(){ onPage(Math.max(0, state.offset - (state.limit || 25))); });
   prev.disabled = state.offset <= 0;
   var next = button("btn dim", "weiter →", function(){ onPage(state.offset + (state.limit || 25)); });
