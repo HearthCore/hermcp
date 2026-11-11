@@ -4,6 +4,33 @@ One page that answers "what is going on right now" for this Hermes install, serv
 itself on the same port. It is **opt-in and off by default**: without `HERMCP_LEDGER=1` the routes
 do not exist (they 404).
 
+Five pages share one shell and one stylesheet:
+
+| Route | What it is |
+|---|---|
+| `/ledger` | `~/attention` — the start page: system status, five KPIs, the attention panel, gateway, and the three list panels (sessions, runs, cron) |
+| `/ledger/sessions` | all sessions, paged, filterable |
+| `/ledger/runs` | run history: open failures, restart interruptions, settled failures with what settled them |
+| `/ledger/cron` | the cron ledger, paged, filterable |
+| `/ledger/gateway` | platform state, versions, profiles, key overview (no secrets) |
+| `/ledger/session/<id>` | one session wide: history, metadata, tool usage, signals |
+
+The look is the terminal style of the portfolio: near-black `#070a08`, green `#00ff41`, amber for
+waiting, red for errors, cyan for running, hairline green rules, scanlines and a soft glow from the
+top. Panel titles read `01 // titel` with the tool that fed them on the right (`$ inbox_attention`).
+Symbols carry the state so colour is never the only signal: `●` ok, `✕` error, `◌` running, `▲`
+waiting/approval, `○` finished, `›` user, `‹` agent, `⚙` tool.
+
+Fonts and stylesheet come from hermcp itself (`/ledger/assets/app.css`,
+`/ledger/assets/fonts/…`): JetBrains Mono and Sora as latin `woff2` subsets under the SIL Open Font
+License (see `ledger_assets/fonts/OFL.txt`, ~65 KB together). **No external request** — the page is
+meant for a LAN and must not call out to a font CDN. Without the files the CSS falls back to
+`ui-monospace` / `system-ui`.
+
+Layout target is **1920×1080**: the start page fits without scrolling at the default list windows
+(10 rows each). Below ~1280px panels stack, below ~760px everything is one column and tables scroll
+horizontally.
+
 Not to be confused with the **cron ledger** (`cron_runs` / `cron_run_output`): that is a tool for
 run records, this is a page. The module is `hermcp/ledger_page.py` for the same reason.
 
@@ -25,6 +52,22 @@ Open `http://<hermcp-host>:9230/ledger`.
 
 `none` is for the trusted case: a read-only page on a port that is already only reachable from your
 own network. It is **not** a way to publish the page: see the guard below.
+
+### Endpoints
+
+| Endpoint | Payload |
+|---|---|
+| `GET /ledger/overview` | everything the start page draws (sections fail independently) |
+| `GET /ledger/api/peek?kind=&id=` | the pop-up: `kind` is `session`, `run`, `cron` or `approval`; optional `profile`, `job` |
+| `GET /ledger/api/list?kind=` | `sessions`, `runs`, `approvals` or `cron`; `offset`, `limit`, `status`, `profile`, `surface`, `state`, `job`, `hours`, `q` |
+| `GET /ledger/api/session/<id>` | the session full view (optional `profile`) |
+| `GET /ledger/api/gateway` | platform state, versions, profiles, keys without secrets |
+| `GET /ledger/jobs` | the cron job configuration (behind the toggle on the start page) |
+| `GET /ledger/assets/app.css`, `/ledger/assets/fonts/<name>` | stylesheet and the two font subsets — a fixed whitelist, never a path from the request |
+
+Every JSON endpoint takes the same credential as the page (cookie, `?key=` once, or a bearer
+header) and renders the same view key. A key without read access on a tool gets that section
+reported as unavailable, not an error page.
 
 ### The network guard (`AUTH=none` only)
 
@@ -112,6 +155,51 @@ Die Zähler oben („Fehlschläge 24 h“, „Braucht Aufmerksamkeit“) rechnen
 Es gibt dafür keinen Endpunkt: die Seite bleibt strukturell read-only, der Principal bleibt
 `access=read`, nichts an Hermes-Daten (Cron-Ledger, Sessions, `executions.db`) wird geändert.
 
+## Das Detail-Pop-up
+
+Jede Zeile im Attention-Bereich und in den Listen ist ein `<button>`. Ein Klick öffnet ein
+zentriertes modales `<dialog>` (Breite ~820px, dunkler Backdrop, `role=dialog`, Esc und Klick auf den
+Backdrop schließen, Fokus-Trap, Fokus kehrt danach auf die auslösende Zeile zurück). Inhalt bewusst
+klein:
+
+* Kopf: Symbol, Titel, Art-Chip (SESSION / RUN / CRON / FREIGABE WARTET / FREIGABE ENTSCHIEDEN /
+  CRON-FEHLER), ✕
+* vier Eckdaten: Modell, Profil, Oberfläche, letzte Aktivität
+* die letzten drei Aktionen mit Uhrzeit (Rolle, Text gekürzt); ein Live-Hinweis nur bei laufender
+  Session
+* Fußzeile: „⤢ Vollansicht der Session" (`/ledger/session/<id>`), „↗ In Desktop-App", „↗ In Web-App",
+  Hinweis `read-only`
+
+Die Daten kommen aus `GET /ledger/api/peek?kind=&id=` — gleiche Schicht, gleiche Scope-Prüfung,
+gleicher View-Key wie der Rest der Seite. Texte werden **serverseitig** gekürzt (Aktionen 160
+Zeichen, Tool-Ausgaben 220), Secrets über `redact_text` maskiert (dieselbe Maskierung wie die
+Read-Tools); rohe Tool-Ausgaben gehen nie ungekürzt raus. Ein gelöschter Eintrag ergibt einen
+lesbaren Fehlerzustand im Dialog (`ok:false` + Satz), keinen Absturz.
+
+### Desktop- und Web-App-Links
+
+| Ziel | Quelle |
+|---|---|
+| „In Desktop-App" | `HERMCP_LEDGER_DESKTOP_URL` (Template mit `{session_id}` / `{profile}`), sonst die bestehende Link-Konfiguration (`link_targets`, Desktop-Modus) |
+| „In Web-App" | `HERMCP_LEDGER_WEB_URL` (gleiches Template), sonst `dashboard.public_url` im Dashboard-Modus |
+| kein Button | nichts konfiguriert — der Button wird nicht gerendert |
+
+Nur `http(s)`-Adressen werden verwendet; ein Template ohne `{session_id}` oder mit anderem Schema
+ergibt keinen Link. Es sind reine Links, keine Aktionen.
+
+## Die Session-Vollansicht
+
+`/ledger/session/<id>` funktioniert für Sessions, für Runs (deren `session_id`) und für Cron-Läufe
+(deren Session) gleichermaßen: Breadcrumb, Titel, ein Stat-Streifen (Zustand, Nachrichten,
+Tool-Aufrufe, Laufzeit, offene Freigaben), links der Verlauf (Zeit, Rolle, Text; Tool-Aufrufe als
+eigene Zeilen, Ergebnisse gekürzt und ausklappbar), rechts Metadaten (Session, Profil, Oberfläche,
+Modell, gestartet, letzte Aktivität, Runs), die Tool-Nutzung als einfache Balken und die Signale
+(offene Freigabe, Fehler im Verlauf, letzte Aktivität). Dazu `← zurück` und die beiden App-Links.
+
+Die Ansicht ist ebenfalls read-only und folgt demselben Seam: `sessions_get`, `sessions_messages` und
+die eigene Inbox-Datenbank (Run-Watches, offene Freigaben) mit `access="read"`. Nachrichten- und
+Tool-Texte werden redigiert und gekürzt, bevor sie den Prozess verlassen.
+
 ## Listen: Fenster statt Vollausgabe
 
 Alle Listen, die wachsen können, sind **serverseitig** begrenzt:
@@ -154,8 +242,8 @@ Seite und Digest dieselben Zahlen liefern.
 | `waiting` | Freigabe, die noch auf einen Menschen wartet | Attention-Bereich (nicht ausblendbar) |
 | `attention` | `run_failed` / `run_lost` ohne `settled_reason`, vom Consumer nicht quittiert | Attention-Bereich |
 | `interrupted` | `run_interrupted` — ein Neustart hat den Lauf nach vorhandener Ausgabe beendet | eigener ruhiger Block „Durch Neustart unterbrochen“, kein Fehler |
-| `settled` | Fehlschlag mit `settled_reason` (`superseded_by_completed`, `superseded_by_failure`, `operator_backfill_*`) | **nicht auf der Seite**; nur über `inbox_attention` / `inbox_list detail=true` |
-| `history` | Freigabe mit Entscheidung (`approved`, `denied`, `expired`) | **nicht auf der Seite**; nur über `inbox_attention` / `approval_detail` |
+| `settled` | Fehlschlag mit `settled_reason` (`superseded_by_completed`, `superseded_by_failure`, `operator_backfill_*`) | **nicht auf der Startseite**; `/ledger/runs`, `inbox_attention`, `inbox_list detail=true` |
+| `history` | Freigabe mit Entscheidung (`approved`, `denied`, `expired`) | **nicht auf der Startseite**; `/ledger/runs` (Freigabe-Verlauf), `inbox_attention`, `approval_detail` |
 | `noise` | `run_finished`, `run_cancelled`, rohe Hook-Paare | nur über `inbox_list` / `detail=true` |
 
 Die Seite zeigt nur, was noch Arbeit ist: ein erledigter Fehler verlässt Attention-Bereich und Zähler;
@@ -192,6 +280,10 @@ seam, not of the buttons. There is no approve, start, stop, retry or config path
 | Section | Tools |
 |---|---|
 | Gateway state, version, active agents, every platform and stale writers | `status_gateway`, `hermes_status` |
+| Pop-up of one entry: facts, last three actions, links | `sessions_get`, `sessions_messages`, `cron_runs`, `approval_detail`, inbox run watches |
+| Session full view | `sessions_get`, `sessions_messages`, inbox run watches and open approvals |
+| Sub-pages (sessions/runs/cron/approvals) | `sessions_list`, `inbox_list` classified with `attention.classify`, `cron_runs`, `approval_detail` |
+| `/ledger/gateway` | `status_gateway`, `hermes_status`, `profiles_list`, `keys_list` (only with an admin view) |
 | Sessions per reachable profile: profile, platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
 | Clients and sessions: sessions grouped by client with kind, purpose, state, last seen and open runs | hermcp's own session cards and run watches (same data as `clients_overview`) |
 | Cron ledger of the last `HERMCP_LEDGER_WINDOW_HOURS` (default 24): job, status, start, duration, delivery outcome, session id, link for agent runs | `cron_runs` |
@@ -254,12 +346,19 @@ Why those shapes:
 | `HERMCP_LEDGER_CRON_LIMIT` | value of `HERMCP_LEDGER_LIST_LIMIT` | window of the cron-runs table |
 | `HERMCP_LEDGER_SESSIONS_LIMIT` | value of `HERMCP_LEDGER_LIST_LIMIT` | window of the sessions table |
 | `HERMCP_LEDGER_RUNS_LIMIT` | value of `HERMCP_LEDGER_LIST_LIMIT` | window of the run lists (open failures, interruptions) |
+| `HERMCP_LEDGER_DESKTOP_URL` | empty | Template für den „In Desktop-App"-Button, z. B. `https://app.example.dev/?profile={profile}#/{session_id}`. Nur `http(s)`, nur mit `{session_id}`; leer = aus der bestehenden Link-Konfiguration |
+| `HERMCP_LEDGER_WEB_URL` | empty | Template für den „In Web-App"-Button, z. B. `https://hermes.example.dev/chat?profile={profile}&resume={session_id}`. Leer = `dashboard.public_url` im Dashboard-Modus, sonst kein Button |
 | `HERMCP_LEDGER_VIEW_KEY` | empty | key **ID** (never the token) whose view the page renders — scopes, profile/toolset filters, `deny_tools`, read state. Empty = the read-only page principal. An unknown/disabled/expired ID shows an error instead of widening the view; see the warning above |
 
 ## Privacy
 
-- No `user_id`, no `chat_context`, no session title, no message preview, no approval `request_id`
-  or `session_key`. The page renders every value with `textContent`, never `innerHTML`.
+- The start page and the list endpoints carry no message bodies and no session titles: profile,
+  surface, state, counts, ids. The **session full view and the pop-up** do show a title and the last
+  messages of the one session a reader opened — that is their purpose, it is a deliberate widening
+  and it stays single-session (no cross-session previews).
+- No `user_id`, no `chat_context`, no approval `request_id` or `session_key` anywhere. The page
+  renders every value with `textContent`, never `innerHTML`, so a hostile title or message body is
+  data, not markup.
 - Free text (an approval's command, an error message, an inbox summary) passes through
   `redact_text` and is truncated; if that scrubbing is unavailable the text is dropped rather than
   shown raw.
