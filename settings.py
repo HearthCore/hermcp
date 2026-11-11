@@ -86,6 +86,7 @@ class Settings:
     ledger_poll_seconds: int = 15    # page polling interval
     ledger_window_hours: int = 24    # cron ledger / failed-run window
     ledger_cache_ttl: float = 8.0    # server-side cache per payload
+    ledger_view_key: str = ""        # key ID (never a token) whose view the page renders; empty = read-only page principal
 
     profiles_ignore: list[str] = field(default_factory=list)  # host-wide: profiles hermcp leaves out (not a key scope)
 
@@ -204,6 +205,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger_poll_seconds=max(5, int(g("HERMCP_LEDGER_POLL_SECONDS", "15"))),
         ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
         ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),
+        ledger_view_key=g("HERMCP_LEDGER_VIEW_KEY", "").strip(),
         profiles_ignore=[n for n in _csv(g("HERMCP_PROFILES_IGNORE", "")) if n != "default"],
     )
     bad = scope_errors(s) + ledger_errors(s) + proxy_errors(s)

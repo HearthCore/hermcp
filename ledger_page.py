@@ -32,6 +32,7 @@ raw. The page renders every value with ``textContent`` — never ``innerHTML``.
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import time
 from pathlib import Path
@@ -61,6 +62,10 @@ PAGE_PRINCIPAL_NAME = "Ledger (read-only page)"
 
 class LedgerError(RuntimeError):
     """A section could not be read; the message is shown, never a traceback."""
+
+
+class LedgerViewKeyError(RuntimeError):
+    """The configured view key cannot be used. The page says so — it never falls back to a wider view."""
 
 
 # ---------------------------------------------------------------------------
@@ -265,12 +270,18 @@ def build_link(targets: Dict[str, Any], profile: Optional[str], session_id: Opti
 # ---------------------------------------------------------------------------
 
 def read_only_principal(principal: Principal) -> Principal:
-    """The caller's identity, with every write capability stripped."""
+    """The caller's identity, with every write capability stripped.
+
+    `toolsets`, `profiles` and `deny_tools` are kept: they are what the caller may SEE, and the page
+    must not widen them. Only the write capabilities (`access`, `secrets_write`, `dangerous`,
+    `approvals_always`, `inbox_push`) are dropped — answering an approval needs write access.
+    """
     scopes = principal.scopes
     return Principal(
         principal.id,
         principal.name,
         Scopes(access="read", toolsets=list(scopes.toolsets), profiles=list(scopes.profiles),
+               deny_tools=list(scopes.deny_tools),
                approvals=True,   # opens approvals_pending (listing only); answering needs write access
                ),
     )
@@ -293,10 +304,41 @@ def approval_view(entry: Dict[str, Any], profile: str) -> Dict[str, Any]:
     """Whitelist one pending approval: no request_id, no session_key."""
     entry = entry if isinstance(entry, dict) else {}
     return {
-        "profile": profile,
+        "profile": profile or clean(entry.get("profile"), 40),
+        "approval_key": safe_token(entry.get("approval_key")),
         "command": clean(redacted(entry.get("command") or entry.get("action") or entry.get("pattern_key")), 120),
         "rationale": clean(redacted(entry.get("description") or entry.get("rationale")), 120),
         "created_at": iso(entry.get("created_at") or entry.get("ts")),
+        "run_id": safe_token(entry.get("run_id")),
+        "surface": clean(entry.get("approval_surface") or entry.get("surface"), 30),
+    }
+
+
+def approval_history_view(entry: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
+    """One decided approval: state, where and when it was decided, and what happened to later attempts."""
+    entry = entry if isinstance(entry, dict) else {}
+    profile = entry.get("profile") if isinstance(entry.get("profile"), str) else None
+    run_id = safe_token(entry.get("run_id"))
+    raw_protocol = entry.get("protocol")
+    protocol: List[Dict[str, Any]] = [a for a in raw_protocol if isinstance(a, dict)] \
+        if isinstance(raw_protocol, list) else []
+    attempts = [
+        {"at": iso(a.get("ts")), "surface": clean(a.get("surface"), 30),
+         "outcome": clean(a.get("outcome"), 40), "choice": clean(a.get("decision"), 40)}
+        for a in protocol
+    ][:10]
+    return {
+        "profile": clean(profile, 40),
+        "approval_key": safe_token(entry.get("approval_key")),
+        "state": clean(entry.get("approval_state"), 20),
+        "decision": clean(entry.get("approval_decision"), 40),
+        "surface": clean(entry.get("approval_surface"), 30),
+        "closed_at": iso(entry.get("approval_closed_at") or entry.get("ts")),
+        "command": clean(redacted(entry.get("action") or entry.get("summary")), 120),
+        "run_id": run_id,
+        "url": build_link(targets, profile or "default", safe_token(entry.get("session_id")) or run_id),
+        "attempts": attempts,
+        "attempt_count": len(protocol),
     }
 
 
@@ -338,6 +380,28 @@ def failed_run_view(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str,
         "summary": clean(redacted(event.get("summary")), 160),
         "session": session_view(event.get("session")),
     }
+
+
+def settled_run_view(event: Dict[str, Any], targets: Dict[str, Any], attention_mod) -> Dict[str, Any]:
+    """A failed run that no longer needs attention — with what settled it and where to look."""
+    view = failed_run_view(event, targets)
+    sup = safe_token(event.get("superseded_by"))
+    view.update(
+        settled_reason=clean(event.get("settled_reason"), 80),
+        settled_at=iso(event.get("settled_at")),
+        settled_text=clean(attention_mod.settled_text(event), 160),
+        superseded_by=sup,
+        superseded_url=build_link(targets, event.get("profile") if isinstance(event.get("profile"), str) else "default",
+                                  sup) if sup else None,
+    )
+    return view
+
+
+def interrupted_run_view(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
+    """A run a restart stopped after it had produced output: calm, not an error."""
+    view = failed_run_view(event, targets)
+    view["summary"] = view.get("summary") or "Lauf durch einen Neustart unterbrochen"
+    return view
 
 
 def _gateway(registry, principal, settings, errors: Dict[str, str]) -> Dict[str, Any]:
@@ -486,27 +550,34 @@ def _split_superseded(registry, principal, settings, rows, since, errors) -> tup
     return active, superseded
 
 
-def _failed_chat_runs(registry, principal, settings, profiles, targets, window_hours, errors) -> List[Dict[str, Any]]:
-    since = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+def _attention(registry, principal, settings, profiles, targets, window_hours, errors) -> Dict[str, Any]:
+    """The inbox half of the page: one call to the shared classification (`inbox_attention`).
+
+    The page does no grouping of its own any more. It asks the same tool a key would call, with the
+    same profile scope, so the buckets, the counters and the wording are the tool's — a settled
+    failure leaves the attention list and stays in `settled`, it is never dropped from the page.
+    """
+    from .adapters import attention as AT
+
+    empty = {"waiting": [], "attention": [], "interrupted": [], "settled": [], "history": [],
+             "counts": AT.counts({}), "approvals_waiting": 0, "failed_runs_24h": 0}
     try:
-        res = call(registry, principal, settings, "inbox_list", kind="run_failed", limit=50, consumer="ledger") or {}
-    except Exception as exc:  # noqa: BLE001
-        errors.setdefault("failed_runs", str(exc))
-        return []
-    rows = []
-    for event in res.get("events") or []:
-        if not isinstance(event, dict):
-            continue
-        try:
-            when = datetime.fromisoformat(str(event.get("ts")).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if when < since:
-            continue
-        if isinstance(event.get("profile"), str) and event["profile"] not in profiles:
-            continue
-        rows.append(failed_run_view(event, targets))
-    return rows[:20]
+        res = call(registry, principal, settings, "inbox_attention", hours=int(window_hours)) or {}
+    except Exception as exc:  # noqa: BLE001 - a broken inbox must not take the page down
+        errors.setdefault("inbox_attention", str(exc))
+        return empty
+    out = {
+        "waiting": [approval_view(e, e.get("profile")) for e in res.get("waiting") or []],
+        "attention": [failed_run_view(e, targets) for e in res.get("attention") or []],
+        "interrupted": [interrupted_run_view(e, targets) for e in res.get("interrupted") or []],
+        "settled": [settled_run_view(e, targets, AT) for e in res.get("settled") or []],
+        "history": [approval_history_view(e, targets) for e in res.get("history") or []],
+        "counts": res.get("counts") or AT.counts({}),
+    }
+    out["approvals_waiting"] = out["counts"].get("approvals_waiting", 0)
+    out["failed_runs_24h"] = out["counts"].get("failed_runs_24h", 0)
+    out["note"] = AT.describe()
+    return out
 
 
 def _read_reachable_profiles(registry, principal, settings) -> List[str]:
@@ -549,21 +620,34 @@ def build_overview(registry, principal: Principal, settings, hermes_config: Dict
         errors["clients"] = str(exc)
         payload["clients"] = {"clients": [], "unclaimed_runs": [], "unclaimed_count": 0, "summary": ""}
     payload["gateway"] = _gateway(registry, principal, settings, errors)
-    approvals = _approvals(registry, principal, settings, profiles, errors)
     sessions = _sessions(registry, principal, settings, profiles, targets, errors)
     cron = _cron(registry, principal, settings, targets, window_hours, errors)
-    failed = _failed_chat_runs(registry, principal, settings, profiles, targets, window_hours, errors)
+    attention = _attention(registry, principal, settings, profiles, targets, window_hours, errors)
+    # Approvals shown in the page come from the shared classification, not from a second read path:
+    # a waiting approval is attention, a decided one is history. `approvals_pending` stays the live
+    # actionable list for keys; the page never answers one.
+    approvals = {"count": attention["counts"].get("approvals_waiting", 0),
+                 "hidden": 0, "mode": "inbox", "items": attention["waiting"][:20]}
     payload["sections"] = {"sessions": sessions, "cron": cron, "approvals": approvals}
     payload["attention"] = {
+        **attention,
         "approvals": approvals,
+        "waiting": attention["waiting"][:20],
+        "failed_chat_runs": attention["attention"][:20],
+        "failed_chat_count": attention["counts"].get("failed_runs_24h", 0),
+        "interrupted": attention["interrupted"][:20],
+        "interrupted_count": attention["counts"].get("interrupted_24h", 0),
+        "settled": attention["settled"][:20],
+        "settled_count": attention["counts"].get("settled_24h", 0),
+        "approval_history": attention["history"][:20],
         "failed_cron_runs": cron.get("failed") or [],
         "failed_cron_count": len(cron.get("failed") or []),
         "superseded_cron_runs": cron.get("superseded") or [],
         "superseded_count": len(cron.get("superseded") or []),
-        "failed_chat_runs": failed,
-        "failed_chat_count": len(failed),
+        "digest": {"failed_runs_24h": attention["counts"].get("failed_runs_24h", 0),
+                   "approvals_waiting": attention["counts"].get("approvals_waiting", 0)},
         "active_sessions": sum(1 for s in sessions["items"] if s["status"] == "aktiv"),
-        "total": approvals["count"] + len(cron.get("failed") or []) + len(failed),
+        "total": (attention["counts"].get("attention_total", 0) + len(cron.get("failed") or [])),
     }
     payload["build_ms"] = int((time.time() - started) * 1000)
     return payload
@@ -673,10 +757,14 @@ button.dismiss:hover{color:var(--fg);border-color:var(--fg)}
 button.dismiss.all{font-size:12px;padding:2px 10px}
 .hiddenline{display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap}
 .hidden,.superseded{border-top:1px dashed var(--line);margin-top:8px;padding-top:6px}
+.it.calm{color:var(--muted)}
+.it.done{color:var(--muted)}
+.it.hist{color:var(--muted)}
 label.toggle{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);cursor:pointer}
 </style></head>
 <body><div class="wrap" id="root"><div class="empty">lade …</div></div>
 <script>
+var LEDGER_META = __META__;
 __APP_JS__
 </script></body></html>
 """
@@ -694,7 +782,11 @@ def app_js() -> str:
                '"app.js fehlt in dieser Installation (hermcp/ledger_assets/app.js)";'
 
 
-def page_html(poll_seconds: int) -> str:
-    """The page with the poll interval baked in; nothing else is interpolated."""
+def page_html(poll_seconds: int, view_error: str = "", view_key: str = "", view_name: str = "") -> str:
+    """The page with the poll interval and the view key baked in; nothing else is interpolated."""
     poll = str(int(poll_seconds) or POLL_SECONDS_DEFAULT)
-    return PAGE.replace("__APP_JS__", app_js()).replace("__POLL__", poll)
+    meta = json.dumps({"view_key": view_key or "", "view_name": view_name or "",
+                       "view_error": view_error or ""}, ensure_ascii=False).replace("<", "\\u003c")
+    return (PAGE.replace("__APP_JS__", app_js())
+            .replace("__POLL__", poll)
+            .replace("__META__", meta))

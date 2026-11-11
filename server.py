@@ -207,6 +207,9 @@ class HermcpApp:
         In ``HERMCP_LEDGER_AUTH=none`` the caller needs no credential at all: the page then
         always runs as the internal read-only principal, and only private/loopback clients are
         served (see ``ledger.request_allowed``).
+
+        This principal decides *access* to the page. What the page then *shows* is decided by
+        :meth:`_ledger_view` — with ``HERMCP_LEDGER_VIEW_KEY`` set, by that key's view.
         """
         if self.settings.ledger_auth == "none":
             return Principal(LB.PAGE_PRINCIPAL_ID, LB.PAGE_PRINCIPAL_NAME,
@@ -222,6 +225,34 @@ class HermcpApp:
             return None, ""
         from_query = req.query_params.get("key") or ""
         return Principal(rec.id, rec.name, rec.scopes), from_query
+
+    def _ledger_view(self, principal: Principal) -> Principal:
+        """The principal the page queries with: the configured view key, or the caller's own.
+
+        ``HERMCP_LEDGER_VIEW_KEY`` names a key **by ID** (never a token). Its scopes, profile and
+        toolset filters, deny list and read state then decide what the page shows, so the page and
+        that key's MCP tools answer identically. An unknown, disabled or expired key raises
+        :class:`LedgerViewKeyError` — the page says so instead of silently widening the view.
+        """
+        if not self.settings.ledger_view_key:
+            return principal
+        return self._ledger_view_principal()
+
+    def _ledger_view_principal(self) -> Principal:
+        """Resolve the configured view key by ID. Raises ``LedgerViewKeyError`` with a readable reason."""
+        wanted = self.settings.ledger_view_key
+        try:
+            self.keystore._load()                      # pick up a rotated/disabled store without a restart
+            rec = self.keystore._keys.get(wanted)      # by ID only: a name must never resolve here
+        except Exception as exc:  # noqa: BLE001 - an unreadable store is a readable error, not a crash
+            raise LB.LedgerViewKeyError(f"Keystore nicht lesbar: {type(exc).__name__}") from exc
+        if rec is None:
+            raise LB.LedgerViewKeyError(f"HERMCP_LEDGER_VIEW_KEY={wanted}: kein Schlüssel mit dieser ID")
+        if rec.disabled:
+            raise LB.LedgerViewKeyError(f"HERMCP_LEDGER_VIEW_KEY={wanted}: der Schlüssel ist deaktiviert")
+        if rec.expired():
+            raise LB.LedgerViewKeyError(f"HERMCP_LEDGER_VIEW_KEY={wanted}: der Schlüssel ist abgelaufen")
+        return Principal(rec.id, rec.name, rec.scopes)
 
     def _ledger_cached(self, key: tuple, build):
         now = time.monotonic()
@@ -265,7 +296,16 @@ class HermcpApp:
             resp.set_cookie(self.LEDGER_COOKIE, from_query, httponly=True, samesite="strict",
                             secure=self.client_info(req).proto == "https", path="/ledger")
             return resp
-        return Response(LB.page_html(self.settings.ledger_poll_seconds), media_type="text/html")
+        try:
+            view = self._ledger_view(principal)
+        except LB.LedgerViewKeyError as exc:
+            log.warning("ledger: view key unusable: %s", exc)
+            return Response(LB.page_html(self.settings.ledger_poll_seconds,
+                                         view_error=str(exc)), media_type="text/html", status_code=503)
+        return Response(LB.page_html(self.settings.ledger_poll_seconds,
+                                     view_key=view.id if self.settings.ledger_view_key else "",
+                                     view_name=view.name if self.settings.ledger_view_key else ""),
+                        media_type="text/html")
 
     async def ledger_legacy_redirect(self, req: Request) -> Response:
         """308 from the old /lagebild* address to /ledger* (deprecated, one-day name)."""
@@ -282,6 +322,11 @@ class HermcpApp:
         principal, _ = self._ledger_principal(req)
         if principal is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            principal = self._ledger_view(principal)
+        except LB.LedgerViewKeyError as exc:
+            log.warning("ledger: view key unusable: %s", exc)
+            return JSONResponse({"error": "view_key_unusable", "reason": str(exc)}, status_code=503)
         base = client_ip.request_base(self.client_info(req), str(req.base_url).rstrip("/"))
         window = int(self.settings.ledger_window_hours or 24)
         payload, age = self._ledger_cached(
@@ -297,6 +342,11 @@ class HermcpApp:
         principal, _ = self._ledger_principal(req)
         if principal is None:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            principal = self._ledger_view(principal)
+        except LB.LedgerViewKeyError as exc:
+            log.warning("ledger: view key unusable: %s", exc)
+            return JSONResponse({"error": "view_key_unusable", "reason": str(exc)}, status_code=503)
         payload, age = self._ledger_cached(
             ("jobs", principal.id), lambda: LB.build_jobs(self.registry, principal, self.settings))
         return JSONResponse({**payload, "cache_age_s": age})
