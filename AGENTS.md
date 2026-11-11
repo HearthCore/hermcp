@@ -429,6 +429,8 @@ non-secret result). A `read` key is enough for steps 1, 2, 3 and 5; step 4 needs
   re-reads the profile `.env` per request.
 - Do not write secrets into the repo, chat, logs, commits, or a project-scoped client config.
 - Do not push to `main`, force-push, or bypass the pre-push hook (`--no-verify`).
+- Do not open a pull request without a `CHANGELOG.md` entry under `[Unreleased]` that links the
+  commit(s) and the PR (rules: `CONTRIBUTING.md`, "Rules of the road"). Add it in the same PR, not afterwards.
 - Do not grant `dangerous`, `approvals_always`, `secrets_write`, `approvals` or `inbox_push` unasked,
   and do not use `*` for convenience.
 - Do not bind to `0.0.0.0`, put `*` into `HERMCP_ALLOWED_HOSTS`, or enable proxy-level auth on the MCP routes.
