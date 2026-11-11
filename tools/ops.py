@@ -139,22 +139,22 @@ RESTART_TIMER_STATES = ("active", "activating")
 RESTART_VERIFY_TRIES = 3
 
 
-def _restart_state_path():
+def _restart_state_path(settings=None):
     from ..settings import data_dir
-    return data_dir() / "restart_state.json"
+    return data_dir(getattr(settings, "hermes_home", None) or None) / "restart_state.json"
 
 
-def _restart_last_requested() -> float:
+def _restart_last_requested(settings=None) -> float:
     import json
     try:
-        return float(json.loads(_restart_state_path().read_text(encoding="utf-8")).get("last_requested", 0.0))
+        return float(json.loads(_restart_state_path(settings).read_text(encoding="utf-8")).get("last_requested", 0.0))
     except (OSError, ValueError, TypeError):
         return 0.0
 
 
-def _restart_record(now: float) -> None:
+def _restart_record(now: float, settings=None) -> None:
     import json
-    p = _restart_state_path()
+    p = _restart_state_path(settings)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps({"last_requested": now}), encoding="utf-8")
 
@@ -210,7 +210,7 @@ def hermcp_restart(ctx, confirm=False):
     now = time.time()
     old_pid = os.getpid()
     old_started = meta.PROCESS_STARTED
-    since_last = now - _restart_last_requested()
+    since_last = now - _restart_last_requested(ctx.settings)
     retry_after = max(0.0, RESTART_MIN_INTERVAL_S - since_last)
     stamp = int(now)
     unit_name = _restart_unit_name(stamp)
@@ -267,5 +267,5 @@ def hermcp_restart(ctx, confirm=False):
                         f"systemd-run returned 0 but timer {unit_name}.timer is {state}; no restart was queued",
                         timer_state=state, exit_code=cp.returncode, **extra_error)
     # rate limit is consumed only for a restart that was really queued
-    _restart_record(now)
+    _restart_record(now, ctx.settings)
     return {"applied": True, "scheduled_in_s": RESTART_DELAY_S, "timer_state": state, **base}
