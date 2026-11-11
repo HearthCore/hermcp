@@ -35,7 +35,10 @@ def home(tmp_path, monkeypatch):
 def happ(home):
     from hermcp.app import create_app
     from hermcp.settings import load_settings
-    return create_app(load_settings({"HERMES_HOME": str(home), "HERMCP_ALLOWED_HOSTS": "testserver,127.0.0.1"}))
+    # load_settings also reads the plugin's own .env; blank the opt-in switches so a developer
+    # machine that has one enabled does not leak it into the default-behaviour tests.
+    return create_app(load_settings({"HERMES_HOME": str(home), "HERMCP_ALLOWED_HOSTS": "testserver,127.0.0.1",
+                                     "HERMCP_DEBUG_CAPTURE": ""}))
 
 
 @pytest.fixture()
