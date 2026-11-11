@@ -55,7 +55,10 @@ driven by the main agent. They disappear from `doctor`, `profile-keys status|set
 `sessions_list`, `profiles_show`, ...) rejects them with code `profile_ignored` (not `profile_not_active`).
 This is **not** a key scope: keys stay unrestricted, so global data (kanban boards, gateway state, global
 config) remains visible. Names that do not exist on disk are ignored, and `default` cannot be ignored. It
-does not change which profiles the Hermes gateway serves.
+does not change which profiles the Hermes gateway serves. The gateway's `served_profiles` /
+`parked_profiles` lists (in `hermes_health`, `status_gateway`, `orchestration_overview`) leave ignored names out
+by default and report how many were left out as `hidden_profiles`; pass `debug: true` for the raw lists, with the
+ignored names under `ignored_profiles`. Per-platform gateway rows stay as the gateway reports them.
 
 `hermes_health` mirrors that split: `reachable_profiles` (served, active first), `inactive_profiles`
 (settings only) and `unknown_profiles` (state not determinable), plus `served_source`. The legacy flat

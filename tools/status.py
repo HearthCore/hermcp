@@ -9,8 +9,12 @@ from .. import __version__, meta
 from ..adapters import overview as OV
 from ..adapters.common import cli_text, hermes_scope, list_profile_names, profile_home  # noqa: F401
 from ..adapters.served import served_info, split_profiles
-from ..settings import hermes_home
+from ..settings import hermes_home, ignored_profiles
 from . import reg
+
+DEBUG_PROP = {"type": "boolean", "default": False,
+              "description": "Raw gateway data: also list profiles on the host ignore list (HERMCP_PROFILES_IGNORE) in "
+                             "served_profiles / parked_profiles and name them under ignored_profiles"}
 
 
 def _pid_alive(pid) -> bool:
@@ -31,9 +35,10 @@ def _pid_alive(pid) -> bool:
                        "platform_toolsets, served / parked, live adapters, MCP set and effective skill counts per "
                        "platform; skills=false skips the skill counts. Every platform entry carries updated_at, "
                        "writer_pid and a stale flag."),
-          properties={"detail": {"type": "boolean", "default": False}, "skills": {"type": "boolean", "default": True}})
-def hermes_health(ctx, detail=False, skills=True):
-    gw = scope_gateway(_gateway_state(profile_home("default")), ctx)
+          properties={"detail": {"type": "boolean", "default": False}, "skills": {"type": "boolean", "default": True},
+                      "debug": DEBUG_PROP})
+def hermes_health(ctx, detail=False, skills=True, debug=False):
+    gw = scope_gateway(_gateway_state(profile_home("default")), ctx, debug)
     sp = split_profiles([n for n in list_profile_names() if ctx.principal.scopes.profile_allowed(n)], served_info())
     ver = None
     try:
@@ -51,8 +56,33 @@ def hermes_health(ctx, detail=False, skills=True):
             **({"profile_details": OV.profile_details(sp["ordered"], gw, with_skills=skills)} if detail else {})}
 
 
-def scope_gateway(gw: dict, ctx) -> dict:
-    """Profile-restricted keys see only the adapters / served entries of their own profile(s)."""
+def hide_ignored(gw: dict, debug: bool = False) -> dict:
+    """The gateway's served/parked lists name profiles hermcp is told to ignore. By default they are left out
+    (`hidden_profiles` counts them); debug=True keeps the raw lists and names them in `ignored_profiles`."""
+    skip = ignored_profiles() if isinstance(gw, dict) else set()
+    if not skip:
+        return gw
+    out = dict(gw)
+    served = gw.get("served_profiles") if isinstance(gw.get("served_profiles"), list) else []
+    parked = gw.get("parked_profiles") if isinstance(gw.get("parked_profiles"), dict) else {}
+    named = sorted(skip & (set(served) | set(parked)))
+    if debug:
+        if named:
+            out["ignored_profiles"] = named
+        return out
+    if served:
+        out["served_profiles"] = [p for p in served if p not in skip]
+    if parked:
+        out["parked_profiles"] = {p: v for p, v in parked.items() if p not in skip}
+    if named:
+        out["hidden_profiles"] = len(named)
+    return out
+
+
+def scope_gateway(gw: dict, ctx, debug: bool = False) -> dict:
+    """Profile-restricted keys see only the adapters / served entries of their own profile(s).
+    Profiles on the host ignore list are left out of served/parked unless debug=True."""
+    gw = hide_ignored(gw, debug)
     if not ctx.restricted or not isinstance(gw, dict):
         return gw
     allowed = set(ctx.principal.scopes.profiles)
@@ -156,9 +186,11 @@ def status_version(ctx):
                        "state file (read-only). `platforms` are the current reports of the running process; "
                        "`stale_platforms` are leftovers of dead processes and are ignored for health; platforms disabled "
                        "in config are flagged, not reported as errors. `health` is ok or degraded; `attention` lists "
-                       "platforms that need action."))
-def status_gateway(ctx):
-    return scope_gateway(_gateway_state(profile_home(ctx.profile)), ctx)
+                       "platforms that need action. debug=true shows the raw served/parked lists including profiles on "
+                       "the host ignore list."),
+          properties={"debug": DEBUG_PROP})
+def status_gateway(ctx, debug=False):
+    return scope_gateway(_gateway_state(profile_home(ctx.profile)), ctx, debug)
 
 
 @reg.tool("agents_live", toolset="status", core=True,

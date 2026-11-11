@@ -124,3 +124,41 @@ def test_ignore_is_not_a_scope_kanban_stays_visible_to_an_unrestricted_key(ignor
     assert "hidden" not in r["kanban"] and [b["slug"] for b in r["kanban"]["boards"]] == ["default"]
     blob = json.dumps(r)
     assert "worker-a" not in blob and "worker-b" not in blob
+
+
+# ---- gateway served/parked lists --------------------------------------------------------
+def _gateway(home, extra=()):
+    (home / "gateway_state.json").write_text(json.dumps({
+        "pid": __import__("os").getpid(), "gateway_state": "running", "platforms": {},
+        "served_profiles": ["default", "researcher", *extra], "parked_profiles": {n: "x" for n in extra}}))
+
+
+def test_gateway_lists_hide_ignored_profiles_by_default(ignore, call, home):
+    _gateway(home, ignore)
+    ok, r = call("hermes_health")
+    assert ok and r["gateway"]["served_profiles"] == ["default", "researcher"]
+    assert r["gateway"]["parked_profiles"] == {} and r["gateway"]["hidden_profiles"] == 2
+    assert "ignored_profiles" not in r["gateway"]
+    ok, r = call("status_gateway")
+    assert ok and r["served_profiles"] == ["default", "researcher"]
+    ok, r = call("orchestration_overview")
+    assert ok and r["gateway"]["served_profiles"] == ["default", "researcher"] and r["gateway"]["hidden_profiles"] == 2
+
+
+def test_debug_shows_the_raw_gateway_lists(ignore, call, home):
+    _gateway(home, ignore)
+    ok, r = call("hermes_health", debug=True)
+    assert ok and r["gateway"]["served_profiles"] == ["default", "researcher", *ignore]
+    assert r["gateway"]["ignored_profiles"] == ignore and "hidden_profiles" not in r["gateway"]
+    ok, r = call("status_gateway", debug=True)
+    assert ok and r["ignored_profiles"] == ignore
+    ok, r = call("orchestration_overview", debug=True)
+    assert ok and r["gateway"]["ignored_profiles"] == ignore
+
+
+def test_gateway_lists_untouched_without_the_variable(workers, call, home, monkeypatch):
+    monkeypatch.delenv("HERMCP_PROFILES_IGNORE", raising=False)
+    _gateway(home, workers)
+    ok, r = call("hermes_health")
+    assert ok and r["gateway"]["served_profiles"] == ["default", "researcher", *workers]
+    assert "hidden_profiles" not in r["gateway"]
