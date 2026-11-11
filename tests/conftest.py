@@ -50,3 +50,36 @@ def cli_log(home):
         p = Path(os.environ["FAKE_HERMES_LOG"])
         return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
     return read
+
+
+# ---------------------------------------------------------------------------
+# safety net: a test must never be able to delete the live key store
+# ---------------------------------------------------------------------------
+# Why: `Settings.data` once re-read os.environ, so a settings object built with a temp
+# HERMES_HOME still pointed at the live ~/.hermes/plugin-data/hermcp — and a test that cleaned
+# up with shutil.rmtree(settings.data) deleted the running server's keys.json. The root cause
+# is fixed (settings.py) and tests/test_settings_data_dir.py holds that down; this fixture is
+# the belt-and-braces check that the live store is still byte-identical after every test.
+
+LIVE_DATA = Path.home() / ".hermes" / "plugin-data" / "hermcp"
+
+
+def _live_signature():
+    p = LIVE_DATA / "keys.json"
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+@pytest.fixture(autouse=True)
+def live_key_store_untouched():
+    """Fail the test that changed (or removed) the live keys.json — before and after."""
+    before = _live_signature()
+    yield
+    after = _live_signature()
+    assert after == before, (
+        "a test touched the LIVE key store at "
+        f"{LIVE_DATA / 'keys.json'} (before={before}, after={after}). Tests must resolve "
+        "settings.data inside their own tmp HERMES_HOME — see tests/test_settings_data_dir.py.")

@@ -56,3 +56,18 @@ def test_a_plain_settings_object_resolves_the_process_home(monkeypatch, tmp_path
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "process-home"))
 
     assert Settings().data == tmp_path / "process-home" / "plugin-data" / "hermcp"
+
+
+def test_a_temp_home_can_never_reach_the_live_key_store(tmp_path):
+    """The exact accident this file exists for: cleanup of a temp home must stay in the temp home.
+
+    A test used to build settings with a temp HERMES_HOME and call
+    ``shutil.rmtree(settings.data)``; because ``Settings.data`` re-read the process env, that
+    removed the live key store. Here the live directory is never even an ancestor.
+    """
+    live = Path.home() / ".hermes" / "plugin-data" / "hermcp"
+    s = load_settings({"HERMES_HOME": str(tmp_path / "case-home"), "HERMCP_LEDGER_AUTH": "key"})
+
+    assert s.data != live
+    assert live not in s.data.parents          # rmtree(s.data) cannot reach the live store
+    assert s.data.parent.parent == tmp_path / "case-home"
