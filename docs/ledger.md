@@ -187,6 +187,10 @@ Portfolio. Die Regel ist bewusst klein und stabil:
 | `more=sessions,runs,cron` | aufgeklappte Listen der Startseite („Mehr anzeigen") |
 | `jobs=1` | Cron-Job-Konfiguration eingeblendet |
 
+![Pop-up aus einem geteilten Link (?peek=session:…): Dialog offen, "⧉ Link kopieren" in der Fußzeile](img/ledger-url-deeplink.png)
+
+*Ein geteilter Link öffnet den Eintrag direkt — nach dem Laden, auch nach einem Reload.*
+
 Eigenschaften:
 
 * **Direktaufruf und Reload** funktionieren auf jeder Seite — auch für ein Pop-up: `?peek=…` öffnet
