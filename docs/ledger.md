@@ -174,6 +174,34 @@ Die Zähler oben („Fehlschläge 24 h“, „Braucht Aufmerksamkeit“) rechnen
 Es gibt dafür keinen Endpunkt: die Seite bleibt strukturell read-only, der Principal bleibt
 `access=read`, nichts an Hermes-Daten (Cron-Ledger, Sessions, `executions.db`) wird geändert.
 
+## Zustand in der URL
+
+Jede Ansicht ist ein Link. Der **Pfad** ist die Seite, die **Query** ist das, was offen ist — wie im
+Portfolio. Die Regel ist bewusst klein und stabil:
+
+| Query | Bedeutung |
+|---|---|
+| `peek=<kind>:<id>` | das Pop-up (`session`, `run`, `cron`, `approval`) |
+| `status`, `profile`, `surface`, `state`, `job`, `hours`, `q` | Filter der Unterseiten |
+| `offset` | Seite im Pager (Vielfaches des Limits) |
+| `more=sessions,runs,cron` | aufgeklappte Listen der Startseite („Mehr anzeigen") |
+| `jobs=1` | Cron-Job-Konfiguration eingeblendet |
+
+Eigenschaften:
+
+* **Direktaufruf und Reload** funktionieren auf jeder Seite — auch für ein Pop-up: `?peek=…` öffnet
+  den Dialog nach dem Laden. Eine unbekannte oder gelöschte ID öffnet den Dialog trotzdem und zeigt
+  dort den Fehlerzustand, statt die Seite abzubrechen.
+* **Zurück/Vor** baut die Ansicht aus der URL neu auf; das Schließen des Pop-ups (Esc, Backdrop, ✕)
+  entfernt `peek` aus der Adresse. Tippen in der Suche ersetzt den Verlaufseintrag (`replaceState`),
+  eine bewusste Auswahl (Filter, Pager, „Mehr anzeigen") setzt einen neuen (`pushState`).
+* **Nur IDs und Filterwerte** landen in der URL, alles URL-encoded, Schlüsselreihenfolge fest — dieselbe
+  Ansicht ist immer derselbe Link. Keine Nachrichteninhalte, keine Secrets; Werte außerhalb des
+  erlaubten Zeichensatzes werden verworfen statt geraten.
+* **⧉ Link kopieren** im Pop-up und in der Session-Vollansicht kopiert die aktuelle Adresse
+  (Clipboard-API; ohne sicheren Kontext — LAN über `http` — erscheint ein bereits markiertes
+  Textfeld als Fallback).
+
 ## Das Detail-Pop-up
 
 Jede Zeile im Attention-Bereich und in den Listen ist ein `<button>`. Ein Klick öffnet ein
