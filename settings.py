@@ -21,8 +21,17 @@ def hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()
 
 
-def data_dir() -> Path:
-    d = hermes_home() / "plugin-data" / "hermcp"
+def data_dir(home: Path | str | None = None) -> Path:
+    """`<HERMES_HOME>/plugin-data/hermcp`, created on demand.
+
+    Without an argument this resolves the *process* environment. Callers that hold a Settings
+    object must pass ``settings.hermes_home`` instead: an instance built from an explicit env
+    (tests, doctor runs, an embedded server) points at its own home, and must never fall back
+    to whatever the surrounding process happens to have set — that mismatch once made a test
+    delete the live key store.
+    """
+    base = Path(home).expanduser() if home else hermes_home()
+    d = base / "plugin-data" / "hermcp"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -98,6 +107,10 @@ class Settings:
 
     profiles_ignore: list[str] = field(default_factory=list)  # host-wide: profiles hermcp leaves out (not a key scope)
 
+    # Resolved at load time from the same env this instance was built with. Never re-read from
+    # the process at use time: `Settings.data` must describe *this* instance's home.
+    hermes_home: str = ""
+
     invalid_scopes: list[str] = field(default_factory=list)   # set by load_settings(strict=False) only
 
     @property
@@ -118,7 +131,7 @@ class Settings:
 
     @property
     def data(self) -> Path:
-        return data_dir()
+        return data_dir(self.hermes_home or None)
 
 
 LEDGER_AUTH_MODES = ("key", "none")
@@ -191,7 +204,12 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
     """strict=False (doctor, hooks inside the gateway) never raises for a bad scope: it falls back to `system`
     and `scope_errors(settings)` tells what was wrong."""
     merged = _read_dotenv(PKG_DIR / ".env")
-    merged.update(os.environ if env is None else env)
+    # Precedence as documented: process env beats the .env file, an explicit dict beats both
+    # (that is how tests and embedded callers pin an instance). Dropping the process env whenever
+    # a dict was passed made `load_settings({"X": ...})` silently fall back to the live
+    # ~/.hermes — the same class of mistake that once deleted the running key store.
+    merged.update(os.environ)
+    merged.update(env or {})
     # Deprecated: the page was called "Lagebild" for one day. Old names still work
     # where the new one is unset; the new name always wins.
     for old_name, new_name in (("HERMCP_LAGEBILD", "HERMCP_LEDGER"),
@@ -249,6 +267,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger_runs_limit=_ledger_limit(g("HERMCP_LEDGER_RUNS_LIMIT"), default_limit,
                                         "HERMCP_LEDGER_RUNS_LIMIT"),
         profiles_ignore=[n for n in _csv(g("HERMCP_PROFILES_IGNORE", "")) if n != "default"],
+        hermes_home=str(Path(g("HERMES_HOME") or (Path.home() / ".hermes")).expanduser()),
     )
     bad = scope_errors(s) + ledger_errors(s) + proxy_errors(s)
     if bad:

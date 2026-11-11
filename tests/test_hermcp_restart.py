@@ -94,7 +94,7 @@ def test_second_restart_within_60s_is_rate_limited(happ, mocked):
 def test_rate_limit_expires(happ, mocked, monkeypatch):
     assert _call(happ, {"confirm": True})["ok"]
     real = O._restart_last_requested
-    monkeypatch.setattr(O, "_restart_last_requested", lambda: real() - 120)
+    monkeypatch.setattr(O, "_restart_last_requested", lambda *a, **kw: real(*a, **kw) - 120)
     assert _call(happ, {"confirm": True})["ok"]
     assert len(mocked.argvs) == 2
 
