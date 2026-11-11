@@ -211,7 +211,11 @@ def _session_meta(registry, principal, settings, profile: str, session_id: str) 
         row = call(registry, principal, settings, "sessions_get", session_id=session_id, profile=profile) or {}
     except Exception as exc:  # noqa: BLE001 - `call` already prefixes the tool name
         raise DetailError(str(exc)) from exc
-    return row if isinstance(row, dict) else {}
+    row = row if isinstance(row, dict) else {}
+    # `sessions_get` names it last_activity_at, `sessions_list` last_active; the page wants one name.
+    if row.get("last_active") is None and row.get("last_activity_at") is not None:
+        row["last_active"] = row["last_activity_at"]
+    return row
 
 
 def _session_messages(registry, principal, settings, profile: str, session_id: str,

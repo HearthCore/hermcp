@@ -483,3 +483,22 @@ def test_the_session_route_stays_a_session_page():
     assert '"page": "session"' in html
     assert '"session_id": "local-1"' in html
     assert '"page": "attention"' not in html
+
+
+def test_last_activity_is_normalised_across_the_two_session_tools(inbox_seeded):
+    """`sessions_get` returns last_activity_at (epoch), `sessions_list` last_active (ISO).
+
+    The pop-up's fourth fact was empty because the detail view read the list's field name.
+    """
+    class EpochRegistry(FakeRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "sessions_get":
+                return {"ok": True, "result": {"id": "local-aaaa", "title": "t", "source": "desktop",
+                                               "model": "m", "started_at": NOW - 600,
+                                               "last_activity_at": NOW - 30, "ended_at": None,
+                                               "message_count": 2, "profile_name": "default"}}
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    d = LD.build_peek(EpochRegistry(), make_principal(), inbox_seeded, CONFIG, "session", "local-aaaa")
+    assert d["facts"]["last_active"], d["facts"]
+    assert d["live"] is True
