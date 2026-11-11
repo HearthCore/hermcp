@@ -85,6 +85,15 @@ def test_post_settles_the_same_row_instead_of_adding_one(home):
     assert hook._seen == {}
 
 
+def test_post_settles_a_row_opened_by_another_process(home):
+    """A prompt opened before an hermcp restart must still settle: the post hook finds it by session+command."""
+    hook.handle_pre_approval_request(**PRE)
+    hook._seen.clear()                       # the in-memory map of the process that opened it is gone
+    hook.handle_post_approval_response(**PRE, choice="deny")
+    row = events(home)[0]
+    assert row["approval_state"] == "denied" and row["approval_decision"] == "deny"
+
+
 def test_deny_and_timeout_map_to_distinct_states(home):
     hook.handle_pre_approval_request(**PRE)
     hook.handle_post_approval_response(**PRE, choice="smart_deny")

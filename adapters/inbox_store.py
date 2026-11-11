@@ -554,6 +554,28 @@ class Inbox:
                               approval_id: str | None = None) -> dict[str, Any] | None:
         return self.find_approval(session_key=session_key, run_id=run_id, approval_id=approval_id)
 
+    def find_waiting_approval_for_hook(self, *, session_key: str | None = None,
+                                       action: str | None = None) -> dict[str, Any] | None:
+        """The row a post hook belongs to when the pre hook ran in another process.
+
+        `_seen` is in-memory, so a prompt opened before an hermcp restart (or before an upgrade) would
+        otherwise never settle. Matches on what the payload does carry: session key, and the redacted
+        command text when present. Newest waiting row wins.
+        """
+        if not session_key and not action:
+            return None
+        with self._db() as db:
+            q = "SELECT * FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL"
+            a: list[Any] = []
+            if session_key:
+                q += " AND session_key=?"
+                a.append(session_key)
+            if action:
+                q += " AND action=?"
+                a.append(clean_text(action)[:MAX_ACTION])
+            r = db.execute(q + " ORDER BY id DESC LIMIT 1", tuple(a)).fetchone()
+        return self._row(r) if r else None
+
     def close_run_approvals(self, run_id: str, state: str = "expired", decision: str | None = None,
                             note: str = "") -> list[str]:
         """Close every still-waiting approval of this run (the run ended, or the prompt is gone).
