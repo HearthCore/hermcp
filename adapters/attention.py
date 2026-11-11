@@ -97,5 +97,5 @@ def counts(buckets: Dict[str, List[Dict[str, Any]]]) -> Dict[str, int]:
 def describe() -> str:
     """The wording the page and the tools both use for the default view."""
     return ("open approvals, failed or lost runs that nothing settled, and runs waiting for an approval. "
-            "Settled failures and decided approvals stay readable in the history (`settled_reason`, "
-            "`superseded_by`, `approval_detail`).")
+            "Settled failures and decided approvals are not shown on the page; the tools keep them "
+            "(`inbox_attention`, `inbox_list detail=true`, `approval_detail`).")

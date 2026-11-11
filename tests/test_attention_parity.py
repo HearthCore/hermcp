@@ -263,3 +263,11 @@ def test_the_page_never_asks_inbox_list_for_its_attention(box):
     LB.build_overview(reg, principal, _settings(), {}, "")
     assert "inbox_list" not in reg.calls
     assert "inbox_attention" in reg.calls
+
+
+def test_the_shared_wording_points_at_the_tools_not_at_a_page_group():
+    """The page has no history group any more; the sentence both surfaces share must say so."""
+    text = AT.describe()
+    assert "not shown on the page" in text
+    assert "inbox_attention" in text and "approval_detail" in text
+    assert "stay readable in the history" not in text

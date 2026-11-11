@@ -272,7 +272,7 @@ function render(d){
   }
 
   var k = el("div","kpis panel"); k.id = "panel-kpis";
-  [[ "aktive Sessions",att.active_sessions||0,""],["Sessions gelistet",(sec.sessions&&sec.sessions.count)||sessions.length,""],
+  [[ "aktive Sessions",att.active_sessions||0,""],["Sessions gelistet",sessions.length,""],
    ["offene Freigaben",counts.approvals,counts.approvals?"bad":""],
    ["Fehlschläge 24 h",counts.failed,(counts.failed?"bad":"")],
    ["unterbrochen 24 h",(att.interrupted_count!==undefined?att.interrupted_count:interrupted.length),""],
