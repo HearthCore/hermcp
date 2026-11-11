@@ -141,3 +141,78 @@ test("superseded runs are not part of the failure list the badge sees", () => {
   assert.equal(H.attentionCount(att, {}).total, 1);
   assert.equal(H.attentionCount(att, { run_a: 1 }).total, 0);
 });
+
+// ---------------------------------------------------------------------------
+// routing, pop-up URLs and the list query
+// ---------------------------------------------------------------------------
+
+test("the route is read from the path, with a safe fallback", () => {
+  const H = load();
+  assert.deepEqual(j(H.pageOf("/ledger")), { page: "attention", id: "" });
+  assert.deepEqual(j(H.pageOf("/ledger/")), { page: "attention", id: "" });
+  assert.deepEqual(j(H.pageOf("/ledger/sessions")), { page: "sessions", id: "" });
+  assert.deepEqual(j(H.pageOf("/ledger/runs")), { page: "runs", id: "" });
+  assert.deepEqual(j(H.pageOf("/ledger/cron")), { page: "cron", id: "" });
+  assert.deepEqual(j(H.pageOf("/ledger/gateway")), { page: "gateway", id: "" });
+  assert.deepEqual(j(H.pageOf("/ledger/session/local-abc")), { page: "session", id: "local-abc" });
+  // an unknown path never becomes a page of its own
+  assert.equal(H.pageOf("/ledger/whatever").page, "attention");
+  assert.equal(H.pageOf("").page, "attention");
+});
+
+test("the session path encodes the id and refuses an empty one", () => {
+  const H = load();
+  assert.equal(H.sessionPath("local-abc"), "/ledger/session/local-abc");
+  assert.equal(H.sessionPath("a b"), "/ledger/session/a%20b");
+  assert.equal(H.sessionPath(""), "");
+});
+
+test("the peek url carries kind, id and only the given options", () => {
+  const H = load();
+  assert.equal(H.peekUrl("session", "local-1"),
+    "/ledger/api/peek?kind=session&id=local-1");
+  assert.equal(H.peekUrl("cron", "r1", { profile: "default", job: "j1" }),
+    "/ledger/api/peek?kind=cron&id=r1&profile=default&job=j1");
+  // a missing kind falls back, values are always encoded
+  assert.ok(H.peekUrl("", "a&b").startsWith("/ledger/api/peek?kind=session&id="));
+  assert.ok(H.peekUrl("run", "a&b").includes("a%26b"));
+});
+
+test("the list url drops empty filters and keeps the fixed key order", () => {
+  const H = load();
+  assert.equal(H.listUrl("sessions", {}), "/ledger/api/list?kind=sessions");
+  assert.equal(H.listUrl("runs", { status: "settled", q: "", profile: "default", offset: 25 }),
+    "/ledger/api/list?kind=runs&status=settled&profile=default&offset=25");
+  // keys outside the whitelist never reach the query
+  assert.equal(H.listUrl("cron", { evil: "x" }), "/ledger/api/list?kind=cron");
+});
+
+test("truncate cuts at the budget and marks it, and never invents text", () => {
+  const H = load();
+  assert.equal(H.truncate("abcdef", 4), "abcd…");
+  assert.equal(H.truncate("abc", 10), "abc");
+  assert.equal(H.truncate(null, 3), "");
+  assert.equal(H.truncate(undefined, 3), "");
+  assert.equal(H.truncate("abc"), "abc");
+});
+
+test("symbols and tones stay consistent between the pages", () => {
+  const H = load();
+  assert.equal(H.symbolFor("ok"), "●");
+  assert.equal(H.symbolFor("bad"), "✕");
+  assert.equal(H.symbolFor("run"), "◌");
+  assert.equal(H.symbolFor("warn"), "▲");
+  assert.equal(H.symbolFor("muted"), "○");
+  assert.equal(H.tone("aktiv"), "ok");
+  assert.equal(H.tone("waiting"), "warn");
+  assert.equal(H.tone("failed"), "bad");
+  assert.equal(H.tone("irgendwas"), "muted");
+});
+
+test("the nav is the fixed order the design asks for", () => {
+  const H = load();
+  assert.deepEqual(j(H.NAV.map((n) => n.key)), ["attention", "sessions", "runs", "cron", "gateway"]);
+  assert.deepEqual(j(H.NAV.map((n) => n.label)),
+    ["~/attention", "~/sessions", "~/runs", "~/cron", "~/gateway"]);
+  H.NAV.forEach((n) => assert.ok(n.icon, n.key));
+});
