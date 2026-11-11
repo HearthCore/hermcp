@@ -216,3 +216,16 @@ test("the nav is the fixed order the design asks for", () => {
     ["~/attention", "~/sessions", "~/runs", "~/cron", "~/gateway"]);
   H.NAV.forEach((n) => assert.ok(n.icon, n.key));
 });
+
+test("an empty attention area draws no panel at all", () => {
+  const H = load();
+  // nothing waiting, no open failure, nothing dismissed, no interruption
+  assert.equal(H.attentionEmpty({ waiting: 0, cron: 0, chat: 0, hidden: 0, interrupted: 0 }), true);
+  assert.equal(H.attentionEmpty({}), true);
+  // every single reason keeps the panel (the "Clear errors" control must stay reachable)
+  assert.equal(H.attentionEmpty({ waiting: 1 }), false);
+  assert.equal(H.attentionEmpty({ cron: 1 }), false);
+  assert.equal(H.attentionEmpty({ chat: 1 }), false);
+  assert.equal(H.attentionEmpty({ hidden: 2 }), false);
+  assert.equal(H.attentionEmpty({ interrupted: 1 }), false);
+});

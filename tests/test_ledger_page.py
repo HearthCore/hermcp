@@ -765,3 +765,14 @@ def test_the_overview_route_passes_more_through_to_the_builder(home, monkeypatch
     c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
     assert c.get("/ledger/overview?more=cron,sessions,bogus").status_code == 200
     assert seen["expand"] == ["cron", "sessions"]
+
+
+def test_the_page_hides_the_attention_panel_when_nothing_is_open():
+    """Empty attention draws one dim line, not an empty panel (and no "Clear errors")."""
+    page = LB.page_html(15)
+    assert "attentionEmpty" in page            # the decision lives in one pure helper
+    assert "attention-zero" in page and "zero active interruptions" in page
+    assert "panel-interrupted" in page         # interruptions keep their own panel
+    # the panel is only appended inside the non-empty branch
+    body = page[page.index("var a = panel(\"01\""):page.index("if(interrupted.length)")]
+    assert "leftCol.appendChild(a.panel)" in body

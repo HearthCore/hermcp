@@ -282,6 +282,18 @@ button { font: inherit; color: inherit; }
 .sym.muted { color: var(--dim); }
 
 .empty { padding: 10px 2px; color: var(--dim); font-size: 12px; }
+
+/* "nothing open": one dim line instead of an empty panel, so the lists get the room. */
+.zero-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--dim);
+  letter-spacing: 0.2px;
+}
+.zero-line .sym { color: var(--green); }
 .legend { color: var(--dim); font-size: 10.5px; line-height: 1.5; padding: 2px 0; }
 
 /* ---------------------------------------------------------------- tables */

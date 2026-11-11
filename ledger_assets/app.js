@@ -102,6 +102,15 @@ function attentionCount(att, dismissed){
           total: approvals + cron + chat};
 }
 
+// Is there anything at all to show in the attention area? Pure: the page only draws.
+// `waiting` = approvals still open, `cron`/`chat` = the open failures still visible after this
+// browser's own "Clear errors", `hidden` = rows this browser put aside (the control must stay
+// reachable), `interrupted` = restart interruptions. Nothing open ⇒ no panel at all.
+function attentionEmpty(flags){
+  flags = flags || {};
+  return !(flags.waiting || flags.cron || flags.chat || flags.hidden || flags.interrupted);
+}
+
 // The label of the "rest" control for one server-side list window. The count comes
 // from the server (`more_count`), never from a row count in the browser.
 function moreLabel(meta){
@@ -207,7 +216,7 @@ function countLabel(n, one, many){
 var HELPERS = {
   DISMISS_KEY: DISMISS_KEY, idOf: idOf, store: store, loadDismissed: loadDismissed,
   saveDismissed: saveDismissed, pruneDismissed: pruneDismissed, splitFailures: splitFailures,
-  attentionCount: attentionCount, moreLabel: moreLabel, NAV: NAV, pageOf: pageOf,
+  attentionCount: attentionCount, moreLabel: moreLabel, attentionEmpty: attentionEmpty, NAV: NAV, pageOf: pageOf,
   sessionPath: sessionPath, peekUrl: peekUrl, listUrl: listUrl, LIST_KEYS: LIST_KEYS,
   clock: clock, dayClock: dayClock, ago: ago, dur: dur, tone: tone, symbolFor: symbolFor,
   truncate: truncate, countLabel: countLabel
@@ -622,10 +631,25 @@ function renderAttention(d){
   // top row: attention (2/3) + gateway (1/3)
   var top = el("div", "grid-top");
 
+  var hiddenAny = cronSplit.hidden.length + chatSplit.hidden.length;
+  // Left column: the attention panel and (when there are any) the interruption panel.
+  var leftCol = el("div");
+  leftCol.style.cssText = "display:flex;flex-direction:column;gap:12px;min-width:0";
+  var open = {waiting: waiting.length, cron: cronSplit.active.length, chat: chatSplit.active.length,
+              hidden: hiddenAny, interrupted: interrupted.length};
+  if(attentionEmpty(open)){
+    // Nothing open: no panel frame, no "Clear errors", no empty lists — one dim line instead,
+    // which frees the room for the lists below.
+    var zero = el("div", "zero-line");
+    zero.id = "attention-zero";
+    zero.appendChild(el("span", "sym ok", "✓"));
+    zero.appendChild(document.createTextNode(" zero active interruptions"));
+    leftCol.appendChild(zero);
+  }
   var a = panel("01", "braucht Aufmerksamkeit", "inbox_attention", {accent: true, id: "panel-attention"});
   var aBody = a.body;
-  var hiddenAny = cronSplit.hidden.length + chatSplit.hidden.length;
-  if(counts.total || hiddenAny || cronSplit.active.length || chatSplit.active.length){
+  if(!attentionEmpty({waiting: waiting.length, cron: cronSplit.active.length, chat: chatSplit.active.length,
+                      hidden: hiddenAny, interrupted: 0})){
     if(counts.cron + counts.chat){
       var bar = el("div", "panel-foot");
       bar.style.borderTop = "0";
@@ -693,21 +717,22 @@ function renderAttention(d){
     }
     if(ap.hidden) aBody.appendChild(el("div", "legend", ap.hidden + " weitere Freigaben in anderen Profilen"));
     if(att.note) aBody.appendChild(el("div", "legend", att.note));
-  } else {
-    aBody.appendChild(el("div", "empty", "Nichts braucht gerade Aufmerksamkeit."));
+    leftCol.appendChild(a.panel);
   }
   if(interrupted.length){
-    aBody.appendChild(el("div", "legend", "Durch Neustart unterbrochen (" +
+    var ip = panel("01b", "durch Neustart unterbrochen", "inbox_attention", {id: "panel-interrupted"});
+    ip.body.appendChild(el("div", "legend", "kein Fehler — das Ergebnis fehlt aber (" +
       (att.interrupted_count !== undefined ? att.interrupted_count : interrupted.length) + ")"));
     interrupted.forEach(function(r){
-      aBody.appendChild(attentionRow("run", {tone: "warn", label: (r.profile || "?") + " · " +
+      ip.body.appendChild(attentionRow("run", {tone: "warn", label: (r.profile || "?") + " · " +
         (r.summary || "durch einen Neustart unterbrochen"), at: r.at},
         function(ev){ openPeek("run", r.run_id, {profile: r.profile}, ev.currentTarget); }));
     });
     var ib = moreButton(interruptedMeta, "runs");
-    if(ib){ var iw = el("div", "panel-foot"); iw.appendChild(ib); aBody.appendChild(iw); }
+    if(ib){ var iw = el("div", "panel-foot"); iw.appendChild(ib); ip.body.appendChild(iw); }
+    leftCol.appendChild(ip.panel);
   }
-  top.appendChild(a.panel);
+  top.appendChild(leftCol);
 
   var g = panel("02", "gateway", "status_gateway", {id: "panel-gateway"});
   var gBody = g.body;
