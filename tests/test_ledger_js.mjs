@@ -99,11 +99,48 @@ test("badges count approvals plus undismissed failures only", () => {
     failed_cron_runs: [CRON, { run_id: "run_c" }],
     failed_chat_runs: [CHAT],
   };
-  assert.deepEqual(j(H.attentionCount(att, {})), { approvals: 2, cron: 2, chat: 1, total: 5 });
-  assert.deepEqual(j(H.attentionCount(att, { run_a: 1, run_b: 1 })), { approvals: 2, cron: 1, chat: 0, total: 3 });
+  assert.deepEqual(j(H.attentionCount(att, {})), { approvals: 2, cron: 2, chat: 1, failed: 3, total: 5 });
+  assert.deepEqual(j(H.attentionCount(att, { run_a: 1, run_b: 1 })), { approvals: 2, cron: 1, chat: 0, failed: 3, total: 3 });
   // approvals are actionable: dismissing failures never removes them from the count
   assert.equal(H.attentionCount(att, { run_a: 1, run_c: 1, run_b: 1 }).total, 2);
-  assert.deepEqual(j(H.attentionCount({}, {})), { approvals: 0, cron: 0, chat: 0, total: 0 });
+  assert.deepEqual(j(H.attentionCount({}, {})), { approvals: 0, cron: 0, chat: 0, failed: 0, total: 0 });
+});
+
+test("the header numbers come from the server digest, not from the browser", () => {
+  const H = load();
+  // hermes_status says 4 open failures; this browser dismissed one of the two listed rows.
+  // The page must show the server's number (4), never re-add a settled row or double-count.
+  const att = {
+    digest: { failed_runs_24h: 4, approvals_waiting: 1 },
+    approvals: { count: 9 },                       // must be ignored in favour of the digest
+    failed_cron_runs: [CRON],
+    failed_chat_runs: [CHAT],
+    settled: [{ run_id: "run_settled", settled_reason: "superseded_by_completed" }],
+  };
+  const c = H.attentionCount(att, { run_a: 1 });
+  assert.equal(c.failed, 4);
+  assert.equal(c.approvals, 1);
+  assert.equal(c.total, 1 + 0 + 1);                // approvals + visible cron (one dismissed) + chat
+});
+
+test("settled failures and superseded cron runs form one done group", () => {
+  const H = load();
+  const items = H.doneItems({
+    settled: [{ run_id: "run_s", at: "2026-11-11T10:00:00+01:00", profile: "default",
+                summary: "Run failed", settled_text: "ersetzt durch einen Lauf, der abgeschlossen wurde",
+                superseded_by: "run_after", url: "https://x/#/run_after" }],
+    superseded_cron_runs: [{ run_id: "run_c", job_id: "j1", job_name: "relay",
+                             started_at: "2026-11-11T09:00:00+01:00", error: "timeout",
+                             ok_after: "2026-11-11T10:30:00+01:00" }],
+  });
+  assert.equal(items.length, 2);
+  assert.equal(items[0].kind, "chat");
+  assert.equal(items[0].superseded_by, "run_after");
+  assert.ok(items[0].note.includes("abgeschlossen"));
+  assert.equal(items[1].kind, "cron");
+  assert.ok(items[1].note.includes("wieder ok"));
+  assert.deepEqual(j(H.doneItems({})), []);
+  assert.deepEqual(j(H.doneItems(null)), []);
 });
 
 test("superseded runs are not part of the failure list the badge sees", () => {

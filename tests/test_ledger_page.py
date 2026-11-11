@@ -54,6 +54,27 @@ TOOLS = {
          "run_id": "run_x", "session_id": "run_x", "summary": "Run failed (boom)"},
         {"ts": "2020-01-01T00:00:00Z", "kind": "run_failed", "profile": "default",
          "run_id": "run_old", "session_id": "run_old", "summary": "zu alt"}]},
+    # The shared classification, exactly what `inbox_attention` returns: one waiting approval,
+    # one open failure, one settled failure, one interruption, one decided approval.
+    "inbox_attention": {
+        "waiting": [{"approval_key": "ap-1", "profile": "default", "ts": ago(1),
+                     "action": "rm -rf /tmp/x", "rationale": "cleanup", "run_id": "run_x"}],
+        "attention": [{"ts": ago(3), "kind": "run_failed", "profile": "default", "run_id": "run_x",
+                       "session_id": "run_x", "summary": "Run failed (boom)"}],
+        "interrupted": [{"ts": ago(5), "kind": "run_interrupted", "profile": "default",
+                         "run_id": "run_int", "session_id": "run_int", "summary": "interrupted"}],
+        "settled": [{"ts": ago(6), "kind": "run_failed", "profile": "default", "run_id": "run_settled",
+                     "session_id": "run_settled", "summary": "Run failed (old)",
+                     "settled_reason": "superseded_by_completed", "settled_at": ago(2),
+                     "superseded_by": "run_after"}],
+        "history": [{"approval_key": "ap-2", "profile": "default", "approval_state": "approved",
+                     "approval_decision": "once", "approval_surface": "telegram",
+                     "approval_closed_at": ago(4), "ts": ago(4), "action": "restart unit",
+                     "protocol": [{"ts": ago(4), "surface": "telegram", "outcome": "applied", "decision": "once"},
+                                  {"ts": ago(3), "surface": "cli", "outcome": "too_late_already_decided"}]}],
+        "counts": {"failed_runs_24h": 1, "approvals_waiting": 1, "interrupted_24h": 1,
+                   "settled_24h": 1, "attention_total": 2},
+    },
 }
 
 
@@ -193,14 +214,18 @@ def test_overview_assembles_every_section():
     assert payload["profiles"] == ["default", "developer"]
     assert payload["gateway"]["state"] == "running"
     assert payload["gateway"]["verdict"] == "degraded"
+    # approvals come from the shared classification, not from a second read path
     assert payload["sections"]["approvals"]["count"] == 1
-    assert payload["sections"]["approvals"]["hidden"] == 2
+    assert payload["sections"]["approvals"]["mode"] == "inbox"
     assert payload["attention"]["failed_cron_count"] == 1
     assert payload["attention"]["superseded_count"] == 0
     assert payload["attention"]["failed_chat_count"] == 1
+    assert payload["attention"]["digest"] == {"failed_runs_24h": 1, "approvals_waiting": 1}
     assert payload["errors"] == {}
     # every read went out with the read-only principal
     assert all(p.scopes.access == "read" for _, _, p in reg.calls)
+    # the page asks the shared tool, not inbox_list, for its attention buckets
+    assert any(name == "inbox_attention" for name, _, _ in reg.calls)
 
 
 def test_overview_never_leaks_personal_or_conversation_data():
@@ -229,6 +254,38 @@ def test_cron_runs_link_only_agent_runs_with_a_session():
 def test_failed_chat_runs_only_inside_the_window():
     payload = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)
     assert [r["summary"] for r in payload["attention"]["failed_chat_runs"]] == ["Run failed (boom)"]
+
+
+def test_settled_failures_leave_attention_but_stay_readable():
+    """The bug this change fixes: a settled run_failed must not sit in the attention list."""
+    att = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
+    assert [r["run_id"] for r in att["failed_chat_runs"]] == ["run_x"]
+    assert [r["run_id"] for r in att["settled"]] == ["run_settled"]
+    assert att["settled_count"] == 1
+    row = att["settled"][0]
+    assert row["settled_reason"] == "superseded_by_completed"
+    assert row["superseded_by"] == "run_after"
+    assert "abgeschlossen" in row["settled_text"]
+    assert row["superseded_url"]        # a link to the run that took over
+    assert row["settled_at"] and row["at"]
+
+
+def test_interrupted_runs_have_their_own_bucket():
+    att = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
+    assert [r["run_id"] for r in att["interrupted"]] == ["run_int"]
+    assert att["interrupted_count"] == 1
+    assert att["interrupted"][0]["kind"] == "run_interrupted"
+
+
+def test_decided_approvals_are_history_not_attention():
+    att = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
+    assert [h["approval_key"] for h in att["approval_history"]] == ["ap-2"]
+    h = att["approval_history"][0]
+    assert (h["state"], h["decision"], h["surface"]) == ("approved", "once", "telegram")
+    assert h["closed_at"] and h["attempt_count"] == 2
+    assert [a["outcome"] for a in h["attempts"]] == ["applied", "too_late_already_decided"]
+    # a waiting approval is attention, a decided one is not
+    assert [a["approval_key"] for a in att["waiting"]] == ["ap-1"]
 
 
 def test_a_broken_tool_is_reported_and_does_not_hide_the_rest():
@@ -489,7 +546,7 @@ def test_a_failure_whose_job_ran_ok_afterwards_moves_to_superseded():
     assert datetime.fromisoformat(att["superseded_cron_runs"][0]["ok_after"]) == \
         datetime.fromisoformat(ago(1.5))
     # superseded runs do not count as attention; the still-failing one does
-    assert att["total"] == 1 + 1 + 1          # failing cron + failing chat + approval
+    assert att["total"] == 1 + 2              # failing cron + (waiting approval + open failure)
 
 
 def test_a_broken_superseded_lookup_never_hides_a_failure():
@@ -509,3 +566,102 @@ def test_superseded_entries_are_part_of_the_page_but_not_of_the_badge():
     page = LB.page_html(15)
     assert "superseded_cron_runs" in page          # rendered in the collapsed group
     assert "attentionCount" in page                # the badge counts active only
+
+
+# ---------------------------------------------------------------------------
+# HERMCP_LEDGER_VIEW_KEY: the page renders one key's view
+# ---------------------------------------------------------------------------
+
+def test_view_key_is_absent_by_default(home):
+    s = load_settings({"HERMES_HOME": str(home)})
+    assert s.ledger_view_key == ""
+    s2 = load_settings({"HERMES_HOME": str(home), "HERMCP_LEDGER_VIEW_KEY": " 00054778 "})
+    assert s2.ledger_view_key == "00054778"       # whitespace trimmed, ID not token
+
+
+def test_view_key_scopes_the_page_to_that_keys_profiles(home, monkeypatch):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    rec, _ = app.keystore.create("viewer", Scopes(access="read", profiles=["researcher"]))
+    app.settings.ledger_view_key = rec.id
+    seen = {}
+
+    def spy(registry, principal, settings, config, base, window):
+        seen["id"], seen["profiles"], seen["access"] = principal.id, principal.scopes.profiles, principal.scopes.access
+        return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
+                "profiles": [], "attention": {}, "gateway": {}}
+
+    monkeypatch.setattr(LB, "build_overview", spy)
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    assert c.get("/ledger/overview").status_code == 200
+    assert seen == {"id": rec.id, "profiles": ["researcher"], "access": "read"}
+
+
+def test_an_admin_view_key_keeps_its_profiles_but_never_writes(home, monkeypatch):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    rec, _ = app.keystore.create("admin-viewer", Scopes(access="admin", profiles=["*"]))
+    app.settings.ledger_view_key = rec.id
+    seen = {}
+
+    def spy(registry, principal, settings, config, base, window):
+        seen["access"], seen["profiles"] = principal.scopes.access, principal.scopes.profiles
+        return {"sections": {}, "errors": {}, "links": {}, "poll_seconds": 15,
+                "profiles": [], "attention": {}, "gateway": {}}
+
+    monkeypatch.setattr(LB, "build_overview", spy)
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    assert c.get("/ledger/overview").status_code == 200
+    assert seen["profiles"] == ["*"]        # the view key's breadth is honoured …
+    # … and build_overview strips the write access before the first tool call
+    ro = LB.read_only_principal(Principal(rec.id, rec.name, rec.scopes))
+    assert (ro.scopes.access, ro.scopes.profiles) == ("read", ["*"])
+
+
+def test_an_unknown_view_key_shows_a_clear_error(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    app.settings.ledger_view_key = "0000ffff"
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    r = c.get("/ledger/overview")
+    assert r.status_code == 503
+    assert r.json()["error"] == "view_key_unusable"
+    assert "0000ffff" in r.json()["reason"]
+    page = c.get("/ledger")
+    assert page.status_code == 503
+    assert "nicht verfügbar" in page.text and "0000ffff" in page.text
+
+
+def test_a_disabled_view_key_shows_a_clear_error(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    rec, _ = app.keystore.create("old", Scopes(access="read", profiles=["*"]))
+    app.keystore.revoke(rec.id)
+    app.settings.ledger_view_key = rec.id
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    r = c.get("/ledger/overview")
+    assert r.status_code == 503 and "deaktiviert" in r.json()["reason"]
+
+
+def test_an_expired_view_key_shows_a_clear_error(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    rec, _ = app.keystore.create("short", Scopes(access="read", profiles=["*"]), expires=1)
+    app.keystore._keys[rec.id].expires = 1.0        # long past
+    app.settings.ledger_view_key = rec.id
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    r = c.get("/ledger/overview")
+    assert r.status_code == 503 and "abgelaufen" in r.json()["reason"]
+
+
+def test_a_key_name_is_not_accepted_as_a_view_key(home):
+    """A name is not an ID: it must not silently resolve (that is how the wrong view happens)."""
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    app.keystore.create("claude-ai-cloud", Scopes(access="read", profiles=["*"]))
+    app.settings.ledger_view_key = "claude-ai-cloud"
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    assert c.get("/ledger/overview").status_code == 503
+
+
+def test_the_page_carries_the_view_key_for_display(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    rec, _ = app.keystore.create("viewer", Scopes(access="read", profiles=["*"]))
+    app.settings.ledger_view_key = rec.id
+    c = TestClient(app.app, client=(ip4(10, 0, 0, 5), 51000))
+    page = c.get("/ledger").text
+    assert rec.id in page and "Sicht:" in page

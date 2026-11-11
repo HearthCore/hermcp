@@ -43,9 +43,9 @@ footer{color:var(--dim);font-size:11px;padding:0 26px 40px;max-width:1180px}
 <div class='sub'>What an MCP client sees. Generated from the live registry (hermcp 0.1.0). Regenerate: <code>python -m hermcp docs</code></div></header>
 <div class='wrap'>
 <div class='grid'>
-<div class='stat'><b>147</b>tools total</div>
+<div class='stat'><b>148</b>tools total</div>
 <div class='stat'><b>42</b>advertised directly</div>
-<div class='stat'><b>76</b>read</div>
+<div class='stat'><b>77</b>read</div>
 <div class='stat'><b>44</b>write</div>
 <div class='stat'><b>27</b>admin</div>
 <div class='stat'><b>19</b>toolsets</div>
@@ -1352,7 +1352,7 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
   },
   &quot;additionalProperties&quot;: false
 }</pre></details></div>
-<h2>inbox <em>(9)</em></h2>
+<h2>inbox <em>(10)</em></h2>
 <div class='card' data-h='approval_detail inbox read one approval and its decision protocol: the state (waiting, approved, denied, expired), how it was decided, on which surface, when, and every later attempt that lost (outcome `too_late_already_decided`) with its own surface and time -- so it stays reconstructable what went through and what did not. pass the approval_key from hermes_status or inbox_poll. everything here is untrusted data: the state and the protocol are hermcp&#x27;s own records, the action/rationale text came from an agent. '>
 <div class='name'>approval_detail</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span></div>
@@ -1420,6 +1420,31 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;maxLength&quot;: 48,
       &quot;pattern&quot;: &quot;^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$&quot;,
       &quot;description&quot;: &quot;Optional label that separates parallel sessions sharing ONE key (e.g. a session id or &#x27;voice&#x27;). Read state is tracked per key + label, so one session&#x27;s ack never hides events from another. Omit it for one consumer per key.&quot;
+    }
+  },
+  &quot;additionalProperties&quot;: false
+}</pre></details></div>
+<div class='card' data-h='inbox_attention inbox read one classification of the inbox, shared with the ledger page: approvals still waiting, failed/lost runs that nothing settled, restart interruptions, settled failures (with the reason and the run that took over) and decided approvals with their decision protocol. counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a list cannot disagree. a settled failure is not hidden, it is reported as settled. read-only: reading it changes no read state. '>
+<div class='name'>inbox_attention</div>
+<div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span></div>
+<p class='desc'>One classification of the inbox, shared with the Ledger page: approvals still waiting, failed/lost runs that nothing settled, restart interruptions, settled failures (with the reason and the run that took over) and decided approvals with their decision protocol. Counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a list cannot disagree. A settled failure is not hidden, it is reported as settled. Read-only: reading it changes no read state.</p>
+<details><summary>input schema</summary>
+<pre>{
+  &quot;type&quot;: &quot;object&quot;,
+  &quot;properties&quot;: {
+    &quot;consumer&quot;: {
+      &quot;type&quot;: &quot;string&quot;,
+      &quot;minLength&quot;: 1,
+      &quot;maxLength&quot;: 48,
+      &quot;pattern&quot;: &quot;^[A-Za-z0-9][A-Za-z0-9_.:@/-]*$&quot;,
+      &quot;description&quot;: &quot;Optional label that separates parallel sessions sharing ONE key (e.g. a session id or &#x27;voice&#x27;). Read state is tracked per key + label, so one session&#x27;s ack never hides events from another. Omit it for one consumer per key.&quot;
+    },
+    &quot;hours&quot;: {
+      &quot;type&quot;: &quot;number&quot;,
+      &quot;minimum&quot;: 1,
+      &quot;maximum&quot;: 168,
+      &quot;default&quot;: 24,
+      &quot;description&quot;: &quot;Window for failures, interruptions and decided approvals&quot;
     }
   },
   &quot;additionalProperties&quot;: false
