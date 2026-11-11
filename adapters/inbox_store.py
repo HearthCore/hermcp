@@ -973,9 +973,11 @@ class Inbox:
         Default (`attention_only`) counts only what needs a human: approvals still waiting, failed runs
         and runs waiting for approval. Resolved approvals, the decision protocol and the raw hook pairs
         are noise here -- they stay reachable through inbox_list / approval_detail.
+
+        The two headline numbers come from :meth:`attention_view`, the same call the Ledger page uses,
+        so a page badge and this digest cannot disagree about the same data.
         """
         sc, sa = self._scope_sql(profiles)
-        since = datetime.fromtimestamp(_now().timestamp() - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._db() as db:
             floor = self._floor(db, consumer)
             kinds = {r[0]: r[1] for r in db.execute(
@@ -985,16 +987,72 @@ class Inbox:
             older = db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id<=? AND "
                                f"{self._attention_sql(attention_only)}" + sc,
                                (consumer, floor, *sa)).fetchone()[0]
-            failed = db.execute("SELECT COUNT(*) FROM events WHERE kind IN ('run_failed','run_lost') AND ts>=? "
-                                "AND settled_reason IS NULL AND " + self._UNREAD + sc,
-                                (since, consumer, *sa)).fetchone()[0]
-            waiting = db.execute("SELECT COUNT(*) FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL"
-                                 + sc, sa).fetchone()[0]
+        head = self.attention_view(profiles=profiles, consumer=consumer, hours=hours)["counts"]
         return {"unread": sum(kinds.values()), "unread_by_kind": kinds, "older_unread": older,
-                "failed_runs_24h": failed, "approvals_waiting": waiting,
+                "failed_runs_24h": head["failed_runs_24h"], "approvals_waiting": head["approvals_waiting"],
                 "counts": "attention only (open approvals, failed runs, runs waiting for approval); "
                           "pass detail=true or use inbox_list for the full history",
                 "consumer": consumer}
+
+    def attention_view(self, *, profiles: list[str] | None = None, consumer: str = "", hours: float = 24.0,
+                       history_limit: int = 25) -> dict[str, Any]:
+        """The ONE classification of inbox rows: buckets plus the numbers the Ledger and the tools show.
+
+        Same profile scope, same window, same read state (`consumer`) as `digest`/`poll`, so the page
+        and the MCP tools answer from one query instead of two opinions:
+
+        * ``waiting``      approvals still waiting for a human (never filtered by read state: an open
+                           approval is work, not a notification)
+        * ``attention``    `run_failed`/`run_lost` in the window, not settled, not acked by this consumer
+        * ``interrupted``  `run_interrupted` in the window (a restart stopped it; not an error)
+        * ``settled``      failures a later run or an operator settled — kept, with `settled_reason`
+        * ``history``      decided approvals (approved/denied/expired) with surface, time and the
+                           decision protocol (second attempts included)
+        * ``counts``       `failed_runs_24h`, `approvals_waiting` and the bucket sizes
+
+        Read-only: it never writes read state, it only reads it.
+        """
+        from . import attention as AT
+
+        sc, sa = self._scope_sql(profiles)
+        since = datetime.fromtimestamp(_now().timestamp() - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._db() as db:
+            waiting = db.execute(
+                "SELECT * FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL" + sc +
+                " ORDER BY id DESC LIMIT 200", sa).fetchall()
+            failures = db.execute(
+                "SELECT * FROM events WHERE kind IN ('run_failed','run_lost') AND ts>=?" + sc +
+                " ORDER BY id DESC LIMIT 200", (since, *sa)).fetchall()
+            interrupted = db.execute(
+                "SELECT * FROM events WHERE kind='run_interrupted' AND ts>=?" + sc +
+                " ORDER BY id DESC LIMIT 100", (since, *sa)).fetchall()
+            history = db.execute(
+                "SELECT * FROM events WHERE approval_key IS NOT NULL AND approval_state IN ('approved','denied','expired')"
+                " AND ts>=?" + sc + " ORDER BY id DESC LIMIT ?", (since, *sa, history_limit)).fetchall()
+            acked = {r[0] for r in db.execute(
+                "SELECT event_id FROM reads WHERE consumer=?", (consumer,)).fetchall()} if consumer else set()
+
+        def rows(raw):
+            return [self._row(r) for r in raw]
+
+        def is_unread(row) -> bool:
+            return not (row.get("acked") or row.get("id") in acked)
+
+        all_failures = rows(failures)
+        settled = [r for r in all_failures if r.get("settled_reason")]
+        open_failures = [r for r in all_failures if not r.get("settled_reason") and is_unread(r)]
+        hist = rows(history)
+        for row in hist:                       # the decision protocol: who decided, where, and the losers
+            try:
+                row["protocol"] = self.approval_decisions(row["approval_key"])
+            except Exception:                  # noqa: BLE001 - a history row must not break the page
+                row["protocol"] = []
+        buckets = {"waiting": rows(waiting), "attention": open_failures,
+                   "interrupted": rows(interrupted), "settled": settled, "history": hist}
+        out_counts = AT.counts({AT.WAITING: buckets["waiting"], AT.ATTENTION: open_failures,
+                                AT.INTERRUPTED: buckets["interrupted"], AT.SETTLED: settled})
+        return {**buckets, "counts": out_counts, "window_hours": hours,
+                "consumer": consumer, "profiles": profiles or ["*"]}
 
     @staticmethod
     def _attention_sql(attention_only: bool) -> str:

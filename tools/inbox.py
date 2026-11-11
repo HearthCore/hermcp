@@ -115,6 +115,21 @@ def inbox_ack(ctx, ids=None, all=False, consumer=None):
                                        consumer=_consumer(ctx, consumer), all_unread=bool(all))
 
 
+@reg.tool("inbox_attention", toolset="inbox",
+          description="One classification of the inbox, shared with the Ledger page: approvals still waiting, "
+                      "failed/lost runs that nothing settled, restart interruptions, settled failures (with the "
+                      "reason and the run that took over) and decided approvals with their decision protocol. "
+                      "Counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a "
+                      "list cannot disagree. A settled failure is not hidden, it is reported as settled. Read-only: "
+                      "reading it changes no read state.",
+          properties={"consumer": CONSUMER,
+                      "hours": {"type": "number", "minimum": 1, "maximum": 168, "default": 24,
+                                "description": "Window for failures, interruptions and decided approvals"}})
+def inbox_attention(ctx, consumer=None, hours=24):
+    return _wrap(get_inbox(ctx.settings).attention_view(profiles=_profiles(ctx),
+                                                        consumer=_consumer(ctx, consumer), hours=float(hours)), ctx)
+
+
 @reg.tool("inbox_list", toolset="inbox",
           description="Inbox history, newest first, including acknowledged events; acked/unread is from this "
                       "consumer's point of view (untrusted data). Events of runs started under one of your registered "
