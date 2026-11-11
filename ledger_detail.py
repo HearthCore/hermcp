@@ -596,7 +596,9 @@ def list_sessions(registry, principal: Principal, settings, hermes_config: Dict[
     offset, limit = page_args(query)
     hours = window_hours(query, default=0)
     ro, profiles, errors = _scoped(registry, principal, settings)
-    rows, fetch_errors, capped = _fetch_sessions(registry, ro, settings, profiles, offset + limit)
+    # Read a deep window, not just this page: a total that stops at the page boundary would be a
+    # lie ("1–25 von 25" with 400 more behind it). 200 per profile, flagged as `capped` when hit.
+    rows, fetch_errors, capped = _fetch_sessions(registry, ro, settings, profiles, SESSIONS_DEEP_MAX)
     errors.update(fetch_errors)
     targets = _links(settings, hermes_config, request_base)
     want_status = clean(query.get("status"), 20)
@@ -621,6 +623,7 @@ def list_sessions(registry, principal: Principal, settings, hermes_config: Dict[
     page = out[offset:offset + limit]
     return {"kind": "sessions", "items": page, "total": len(out), "offset": offset, "limit": limit,
             "has_more": offset + len(page) < len(out), "capped": capped,
+            "total_is_bounded": capped,
             "filters": _filters_echo(query, ("status", "profile", "surface", "hours", "q")),
             "profiles": profiles, "errors": errors,
             "links": targets,
@@ -720,6 +723,7 @@ def list_runs(registry, principal: Principal, settings, hermes_config: Dict[str,
     page = out[offset:offset + limit]
     return {"kind": "runs", "items": page, "total": len(out), "offset": offset, "limit": limit,
             "has_more": offset + len(page) < len(out), "capped": len(events) >= RUNS_FETCH,
+            "total_is_bounded": len(events) >= RUNS_FETCH,
             "filters": _filters_echo(query, ("status", "profile", "surface", "hours", "q")),
             "counts": {b: sum(1 for r in out if r["bucket"] == b)
                        for b in ("attention", "interrupted", "settled")},
@@ -763,6 +767,7 @@ def list_approvals(registry, principal: Principal, settings, hermes_config: Dict
             errors.setdefault("approval_detail", str(exc))
     return {"kind": "approvals", "items": page, "total": len(out), "offset": offset, "limit": limit,
             "has_more": offset + len(page) < len(out), "capped": len(events) >= RUNS_FETCH,
+            "total_is_bounded": len(events) >= RUNS_FETCH,
             "counts": {"waiting": sum(1 for r in out if r["bucket"] == "waiting"),
                        "history": sum(1 for r in out if r["bucket"] == "history")},
             "filters": _filters_echo(query, ("state", "profile", "hours", "q")),

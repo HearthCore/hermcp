@@ -992,12 +992,13 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
       } else {
         p.body.appendChild(el("div", "empty", "Keine Einträge für diesen Filter."));
       }
+      listState.total_is_bounded = !!d.total_is_bounded;
       p.panel.appendChild(pager(listState, d.total || 0, function(offset){
         listState.offset = offset;
         loadPage();
       }));
       holder.appendChild(p.panel);
-      if(d.capped) holder.appendChild(el("div", "legend", "Die Abfrage ist an ihrer Obergrenze angekommen — enger filtern zeigt ältere Einträge."));
+      if(d.capped) holder.appendChild(el("div", "legend", "Die Abfrage ist an ihrer Obergrenze angekommen — enger filtern (Profil, Zeitraum, Freitext) zeigt ältere Einträge."));
     }).catch(function(e){
       holder.textContent = "";
       var box = el("div", "notice bad", "Abruf fehlgeschlagen: " + String(e));
