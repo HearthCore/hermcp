@@ -211,6 +211,34 @@ lesbaren Fehlerzustand im Dialog (`ok:false` + Satz), keinen Absturz.
 Nur `http(s)`-Adressen werden verwendet; ein Template ohne `{session_id}` oder mit anderem Schema
 ergibt keinen Link. Es sind reine Links, keine Aktionen.
 
+### „✦ Ask Claude"
+
+Im Pop-up (Fußzeile) und in der Session-Vollansicht (Kopfzeile) steht neben den App-Links ein
+Button **✦ Ask Claude**. Er ist ein reiner Link (`target="_blank"`, `rel="noopener noreferrer"`,
+Tooltip „öffnet Claude mit vorbereiteter Frage") — die Ledger-Seite sendet nichts, bestätigt nichts
+und schreibt nichts.
+
+Die Frage wird **serverseitig** gebaut, je Art des Eintrags:
+
+| Art | Frage |
+|---|---|
+| Freigabe wartend | Risiko des Befehls einordnen (Befehl nur gekürzt und maskiert), Empfehlung `once` / `session` / `deny` mit Begründung, ausdrücklich „Nicht selbst antworten, nur beraten." |
+| `run_failed` / Iterationslimit | Ursache, ob die Arbeit vollständig ist, was offen blieb, ob ein Weiterlaufen in derselben Session sinnvoll ist |
+| `run_interrupted` | was unterbrochen wurde, ob neu gestartet werden sollte |
+| Cron-Fehler / Cron | was passiert ist, ob noch etwas offen ist, ob sich ein Muster über die letzten Läufe zeigt |
+| Session / Run | Zusammenfassung, offene Punkte, nächste Schritte |
+
+Jede Frage nennt die IDs (Session, Run, Approval, Job), Art, Status, Zeiten, Profil und Oberfläche und
+fordert Claude auf, die Details selbst über die hermcp-Tools zu lesen (`hermes_status`,
+`inbox_attention`, `approval_detail`, `chat_run_status`, `sessions_messages`) — statt Inhalte in den
+Link zu schreiben.
+
+**Was im Link stehen darf** (und was nicht): nur IDs, Art, Status, Zeiten, Profil/Oberfläche und
+höchstens ein auf 120 Zeichen gekürzter, maskierter Befehlsanfang. Keine Nachrichteninhalte, keine
+Tool-Outputs, keine Secrets, Keys oder Tokens. Die Gesamtlänge der URL ist auf ~1800 Zeichen begrenzt
+(der Befehlsanfang ist vorher schon kurz); reicht der Platz nicht, kürzt hermcp den Prompt am Ende und
+markiert das mit `…`. Ist das Haupt-Template leer, wird der Button gar nicht gerendert.
+
 ## Die Session-Vollansicht
 
 `/ledger/session/<id>` funktioniert für Sessions, für Runs (deren `session_id`) und für Cron-Läufe
@@ -382,6 +410,8 @@ Why those shapes:
 | `HERMCP_LEDGER_RUNS_LIMIT` | value of `HERMCP_LEDGER_LIST_LIMIT` | window of the run lists (open failures, interruptions) |
 | `HERMCP_LEDGER_DESKTOP_URL` | empty | Template für den „In Desktop-App"-Button, z. B. `https://app.example.dev/?profile={profile}#/{session_id}`. Nur `http(s)`, nur mit `{session_id}`; leer = aus der bestehenden Link-Konfiguration |
 | `HERMCP_LEDGER_WEB_URL` | empty | Template für den „In Web-App"-Button, z. B. `https://hermes.example.dev/chat?profile={profile}&resume={session_id}`. Leer = `dashboard.public_url` im Dashboard-Modus, sonst kein Button |
+| `HERMCP_LEDGER_ASK_CLAUDE_URL` | `https://claude.ai/new?q={prompt}` | Template für „✦ Ask Claude". Musst `{prompt}` enthalten; `{prompt}` wird URL-encoded eingesetzt. Nur `http(s)://` und `claude://`. Leer oder ohne `{prompt}` = Button ausgeblendet |
+| `HERMCP_LEDGER_ASK_CLAUDE_DESKTOP_URL` | empty | Zweites Template für den Desktop-Weg, z. B. `claude://claude.ai/new?q={prompt}`. **Kein Default** — das Schema unterscheidet sich je Installation, hermcp rät es nicht. Nur gesetzt erscheint der Desktop-Button |
 | `HERMCP_LEDGER_VIEW_KEY` | empty | key **ID** (never the token) whose view the page renders — scopes, profile/toolset filters, `deny_tools`, read state. Empty = the read-only page principal. An unknown/disabled/expired ID shows an error instead of widening the view; see the warning above |
 
 ## Privacy
