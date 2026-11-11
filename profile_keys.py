@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .settings import PKG_DIR, Settings, _read_dotenv, hermes_home
+from .settings import PKG_DIR, Settings, _read_dotenv, hermes_home, ignored_profiles
 
 ENV_VAR = "API_SERVER_KEY"
 GLOBAL_VAR = "HERMES_API_KEY"
@@ -77,11 +77,14 @@ def clear_env_cache() -> None:
 
 # -- profiles / paths ---------------------------------------------------------------------
 def known_profiles() -> list[str]:
-    """All profile names: `default` plus every directory under $HERMES_HOME/profiles."""
+    """All profile names: `default` plus every directory under $HERMES_HOME/profiles,
+    minus the host-wide ignore list (HERMCP_PROFILES_IGNORE)."""
     root = hermes_home() / "profiles"
     names = ["default"]
     if root.is_dir():
-        names += sorted(d.name for d in root.iterdir() if d.is_dir() and not d.name.startswith("."))
+        skip = ignored_profiles()
+        names += sorted(d.name for d in root.iterdir()
+                        if d.is_dir() and not d.name.startswith(".") and d.name not in skip)
     return names
 
 

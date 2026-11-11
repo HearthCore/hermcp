@@ -19,7 +19,7 @@ from typing import Any, Iterator
 
 from .. import meta
 from ..registry import AdapterError, ToolError
-from ..settings import hermes_home, load_settings
+from ..settings import hermes_home, ignored_profiles, load_settings
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _path_lock = threading.Lock()
@@ -73,18 +73,28 @@ def profile_home(profile: str) -> Path:
     home = hermes_home()
     if profile in ("", "default"):
         return home
+    if profile in ignored_profiles():
+        raise ignored_error(profile)
     p = home / "profiles" / profile
     if not p.is_dir():
         raise ToolError("not_found", f"profile {profile!r} does not exist")
     return p
 
 
+def ignored_error(profile: str) -> ToolError:
+    return ToolError("profile_ignored",
+                     f"Profile {profile!r} is on this host's ignore list (HERMCP_PROFILES_IGNORE) and is not "
+                     "available through hermcp.", profile=profile)
+
+
 def list_profile_names() -> list[str]:
+    """`default` plus the profile directories, minus the host-wide ignore list (HERMCP_PROFILES_IGNORE)."""
     root = hermes_home() / "profiles"
     names = ["default"]
     if root.is_dir():
+        skip = ignored_profiles()
         names += sorted(d.name for d in root.iterdir()
-                        if d.is_dir() and not d.name.startswith(".") and d.name != "default")
+                        if d.is_dir() and not d.name.startswith(".") and d.name != "default" and d.name not in skip)
     return names
 
 

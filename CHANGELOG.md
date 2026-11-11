@@ -7,6 +7,9 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 
 ## [Unreleased]
 
+### Added
+- `HERMCP_PROFILES_IGNORE`: a host-wide list of profiles hermcp leaves out of `doctor`, `profile-keys`, `profiles_list` and the status tools; profile-targeted tools reject them with `profile_ignored`. It is not a key scope, so keys stay unrestricted ([`acd5774`](https://github.com/HearthCore/hermcp/commit/acd5774), [#44](https://github.com/HearthCore/hermcp/pull/44))
+
 ### Tests
 - Make the Ledger fixtures relative to the current time instead of fixed dates, and keep `HERMCP_DEBUG_CAPTURE` from a local `.env` out of the default-behaviour tests
 

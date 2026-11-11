@@ -10,7 +10,7 @@ from typing import Any, Callable
 from .audit import AuditLog
 from .client_id import clean_handle
 from .scopes import Scopes
-from .settings import Settings
+from .settings import Settings, ignored_profiles
 from . import validation
 from . import meta as _meta
 from .redact import redact, redact_result, redact_text
@@ -170,6 +170,9 @@ class Registry:
                 profile = args.pop("profile", None) or principal.scopes.default_profile()
                 if not PROFILE_RE.match(profile):
                     raise ToolError("invalid_arguments", f"bad profile name {profile!r}")
+                if profile in ignored_profiles():   # host-wide ignore list, checked before key scope
+                    from .adapters.common import ignored_error
+                    raise ignored_error(profile)
                 if not principal.scopes.profile_allowed(profile):
                     bound = principal.scopes.bound_profile()
                     raise ToolError("forbidden", (f"this key is bound to profile {bound!r}; requested profile {profile!r}. "

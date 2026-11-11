@@ -48,6 +48,15 @@ and the list of reachable profiles, instead of the api_server's raw 404. `sessio
 `sessions_search` and `sessions_messages` still read an inactive profile's `state.db` but add `profile`
 and `profile_active`.
 
+**Hiding profiles host-wide.** `HERMCP_PROFILES_IGNORE=name1,name2` (env or the plugin's `.env`) takes
+profiles out of hermcp for every key, for example worker profiles that only run a platform plugin and are
+driven by the main agent. They disappear from `doctor`, `profile-keys status|setup`, `profiles_list`,
+`hermes_status` and the status tools, and every profile-targeted tool (`chat_send`, `config_get`,
+`sessions_list`, `profiles_show`, ...) rejects them with code `profile_ignored` (not `profile_not_active`).
+This is **not** a key scope: keys stay unrestricted, so global data (kanban boards, gateway state, global
+config) remains visible. Names that do not exist on disk are ignored, and `default` cannot be ignored. It
+does not change which profiles the Hermes gateway serves.
+
 `hermes_health` mirrors that split: `reachable_profiles` (served, active first), `inactive_profiles`
 (settings only) and `unknown_profiles` (state not determinable), plus `served_source`. The legacy flat
 `profiles` list stays for compatibility, now ordered active-first.
