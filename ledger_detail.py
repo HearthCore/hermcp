@@ -104,8 +104,13 @@ def _now() -> float:
 
 
 def _runtime_s(started: Any, ended: Any) -> Optional[int]:
-    """Seconds between two ISO timestamps (or started and now when the session is still open)."""
+    """Seconds between two timestamps (or started and now when the session is still open)."""
     def _ts(value):
+        if isinstance(value, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(value), timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
         if not isinstance(value, str) or not value:
             return None
         text = value[:-1] + "+00:00" if value.endswith("Z") else value
@@ -130,7 +135,7 @@ def _message_rows(messages: List[Dict[str, Any]], limit_text: int = MSG_TEXT) ->
         role = clean(msg.get("role"), 16) or "?"
         text = msg.get("content") if isinstance(msg.get("content"), str) else ""
         tool = clean(msg.get("tool_name"), 40)
-        cut = limit_text if role != "tool" else MSG_TOOL_TEXT
+        cut = min(limit_text, MSG_TOOL_TEXT) if role == "tool" else limit_text
         body = clean(redacted(text), cut)
         entry = {
             "at": iso(msg.get("timestamp")),
