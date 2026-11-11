@@ -7,6 +7,9 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 
 ## [Unreleased]
 
+### Tests
+- Make the Ledger fixtures relative to the current time instead of fixed dates, and keep `HERMCP_DEBUG_CAPTURE` from a local `.env` out of the default-behaviour tests
+
 _Add your entry here, in the same pull request that makes the change._
 
 ### Added

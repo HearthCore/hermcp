@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 
 from starlette.testclient import TestClient
 
@@ -18,6 +19,13 @@ from hermcp.scopes import Scopes
 from hermcp.settings import load_settings
 
 NOW = time.time()
+
+
+def ago(hours):
+    """ISO timestamp ``hours`` before now: fixtures must age with the clock, because the ledger
+    only shows the last 24 h and a hard-coded date turns every test that relies on it red."""
+    return datetime.fromtimestamp(NOW - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
 
 TOOLS = {
     "profiles_list": {"count": 2, "profiles": [{"name": "default", "reachable": True},
@@ -35,14 +43,14 @@ TOOLS = {
     "approvals_pending": {"mode": "multiplex-shared", "count": 0, "hidden_other_profiles": 0, "pending": []},
     "cron_runs": {"count": 1, "truncated": False, "runs": [
         {"run_id": "r1", "job_id": "j1", "job_name": "watchdog", "status": "completed",
-         "started_at": "2026-11-10T07:00:00+01:00", "duration_s": 2.0,
+         "started_at": ago(2), "duration_s": 2.0,
          "session_id": "local-cron-run", "delivery_outcome": "delivered",
          "user_id": "u-2", "chat_context": "priv"}]},
     "cron_list": {"count": 1, "total": 1, "jobs": [
         {"id": "j1", "name": "watchdog", "schedule": "*/5 * * * *", "state": "scheduled",
          "profile": "default", "prompt": "ein Prompt, der nicht auf die Seite gehört"}]},
     "inbox_list": {"events": [
-        {"ts": "2026-11-10T05:00:00Z", "kind": "run_failed", "profile": "default",
+        {"ts": ago(3), "kind": "run_failed", "profile": "default",
          "run_id": "run_x", "session_id": "run_x", "summary": "Run failed (boom)"},
         {"ts": "2020-01-01T00:00:00Z", "kind": "run_failed", "profile": "default",
          "run_id": "run_old", "session_id": "run_old", "summary": "zu alt"}]},
@@ -85,7 +93,7 @@ class FakeRegistry:
         if name == "cron_runs" and args.get("status") == "error":
             return {"ok": True, "result": {"count": 1, "runs": [
                 {"run_id": "r2", "job_id": "j2", "job_name": "relay", "status": "error",
-                 "started_at": "2026-11-10T06:00:00+01:00", "error": "timeout"}]}}
+                 "started_at": ago(4), "error": "timeout"}]}}
         return {"ok": True, "result": self.overrides.get(name, TOOLS.get(name, {"count": 0}))}
 
 
@@ -455,17 +463,17 @@ class SupersededRegistry(FakeRegistry):
         if name == "cron_runs" and args.get("job_id") == "j2":
             return {"ok": True, "result": {"count": 1, "runs": [
                 {"run_id": "r3", "job_id": "j2", "job_name": "relay", "status": "completed",
-                 "started_at": "2026-11-10T07:30:00+01:00"}]}}
+                 "started_at": ago(1.5)}]}}
         if name == "cron_runs" and args.get("job_id") == "j9":
             return {"ok": True, "result": {"count": 1, "runs": [
                 {"run_id": "r9", "job_id": "j9", "job_name": "stuck", "status": "error",
-                 "started_at": "2026-11-10T07:40:00+01:00"}]}}
+                 "started_at": ago(1)}]}}
         if name == "cron_runs" and args.get("status") == "error":
             return {"ok": True, "result": {"count": 2, "runs": [
                 {"run_id": "r2", "job_id": "j2", "job_name": "relay", "status": "error",
-                 "started_at": "2026-11-10T06:00:00+01:00", "error": "timeout"},
+                 "started_at": ago(4), "error": "timeout"},
                 {"run_id": "r8", "job_id": "j9", "job_name": "stuck", "status": "error",
-                 "started_at": "2026-11-10T07:00:00+01:00", "error": "boom"}]}}
+                 "started_at": ago(2), "error": "boom"}]}}
         return super().invoke(name, args, principal, settings, audit, via)
 
 
@@ -479,7 +487,7 @@ def test_a_failure_whose_job_ran_ok_afterwards_moves_to_superseded():
     from datetime import datetime
     # timezone-independent: the payload carries local time of the machine running it
     assert datetime.fromisoformat(att["superseded_cron_runs"][0]["ok_after"]) == \
-        datetime.fromisoformat("2026-11-10T07:30:00+01:00")
+        datetime.fromisoformat(ago(1.5))
     # superseded runs do not count as attention; the still-failing one does
     assert att["total"] == 1 + 1 + 1          # failing cron + failing chat + approval
 
