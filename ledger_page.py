@@ -59,7 +59,8 @@ FETCH_MAX = 100          # cron_runs / sessions_list ceiling per call
 RUNS_FETCH_MAX = 200     # inbox_attention's own ceiling for failures
 LIST_NAMES = ("cron", "sessions", "runs")
 # The routes the shell knows. One shell, the script decides what to draw.
-PAGES = ("attention", "sessions", "runs", "cron", "gateway")
+# Every route the shell knows. "session" is a page too (with an id), even though it has no nav entry.
+PAGES = ("attention", "sessions", "runs", "cron", "gateway", "session")
 
 SAFE_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 ISO_SAFE = re.compile(r"^[A-Za-z0-9:.+~-]{4,40}$")
@@ -826,6 +827,6 @@ def route_of(path: str) -> tuple:
     head, _, tail = rest.partition("/")
     if head == "session" and tail:
         return "session", safe_token(tail) or ""
-    if head in PAGES[1:]:                       # sessions, runs, cron, gateway
+    if head in ("sessions", "runs", "cron", "gateway"):
         return head, ""
     return "attention", ""

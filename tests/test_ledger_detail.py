@@ -474,3 +474,12 @@ def test_home_route_of_the_shell():
     assert LB.route_of("/ledger/session/local-1") == ("session", "local-1")
     assert LB.route_of("/ledger/session/bad id") == ("session", "")
     assert LB.route_of("/ledger/whatever") == ("attention", "")
+
+
+def test_the_session_route_stays_a_session_page():
+    """The shell must keep `page: session` — PAGES once lacked the value, so /ledger/session/<id>
+    silently rendered the attention page."""
+    html = LB.page_html(15, page="session", session_id="local-1")
+    assert '"page": "session"' in html
+    assert '"session_id": "local-1"' in html
+    assert '"page": "attention"' not in html
