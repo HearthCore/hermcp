@@ -32,6 +32,7 @@ OWN = {
     "inbox_poll": "only run-watcher events of runs on the key's profile(s)",
     "inbox_list": "only run-watcher events of runs on the key's profile(s)",
     "inbox_ack": "only such events",
+    "approval_detail": "only approvals of the key's profile(s); another profile's approval answers not_found",
     "session_card_set": "only the key's own cards in hermcp's ledger; labels, no Hermes state",
     "session_cards_list": "only the key's own cards (scope=all is admin only)",
     "clients_overview": "only the key's own sessions (scope=all is admin only); open runs reduced to the key's profile(s)",

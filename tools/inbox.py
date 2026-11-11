@@ -140,7 +140,7 @@ def inbox_list(ctx, source=None, kind=None, status="all", limit=50, before_id=No
                                               session_key=session_key), ctx)
 
 
-@reg.tool("approval_detail", toolset="inbox", core=True,
+@reg.tool("approval_detail", toolset="inbox",
           description=("One approval and its decision protocol: the state (waiting, approved, denied, expired), how it "
                        "was decided, on which surface, when, and every later attempt that lost (outcome "
                        "`too_late_already_decided`) with its own surface and time -- so it stays reconstructable what "

@@ -363,15 +363,16 @@ def test_events_only_for_approval_and_terminal_states(home):
     box, w, tick, clock = mk_watcher(home)
     tick("running", "run.started"); tick("running", "tool.started"); tick("running", "reasoning.available")
     assert box.list()["events"] == []
-    for _ in range(3):                                        # approval stays pending over many ticks: one event
+    for _ in range(3):                                        # approval stays pending over many ticks: one row
         tick("waiting_for_approval", "approval.request", approval={"request_id": "rq1", "command": "x", "description": "d"})
-    evs = box.list()["events"]
-    assert [e["kind"] for e in evs] == ["needs_approval"]
+    assert [e for e in box.list()["events"] if e["kind"] != "approval"] == []   # an approval row, not an event
+    assert len(box.open_approvals()) == 1
     tick("running", "tool.started"); tick("running", "tool.completed")
     tick("completed", "run.completed", output="done")
     tick("completed", "run.completed", output="done")
-    kinds = [e["kind"] for e in box.list(limit=50)["events"]][::-1]
-    assert kinds == ["needs_approval", "run_finished"]
+    kinds = [e["kind"] for e in box.list(limit=50)["events"][::-1] if e["kind"] != "approval"]
+    assert kinds == ["run_finished"]                           # only the terminal state is an event
+    assert box.open_approvals() == []                          # the run ended: nothing left waiting
     assert box.get_watch("run_a")["activity"] == "finished" and box.get_watch("run_a")["done"] == 1
 
 
