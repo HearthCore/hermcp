@@ -157,6 +157,100 @@ function listUrl(kind, filters){
   return "/ledger/api/list?" + q.join("&");
 }
 
+// -- URL state --------------------------------------------------------------
+// The page keeps its view in the URL, the way the portfolio does: path = page, query = what is
+// open. Everything below is pure and runs in node (tests/test_ledger_js.mjs); the wiring lives
+// further down. Only whitelisted keys ever reach the URL — ids and filters, never content.
+
+var PEEK_KINDS = ["session", "run", "cron", "approval"];
+var FILTER_KEYS = ["status", "profile", "surface", "state", "job", "hours", "q"];
+var URL_ORDER = ["peek"].concat(FILTER_KEYS, ["offset", "more", "jobs"]);
+var ID_RE = /^[A-Za-z0-9_.:-]{1,160}$/;
+var NAME_RE = /^[A-Za-z0-9_.:@-]{1,64}$/;
+
+function parseQuery(search){
+  var out = {}, raw = String(search || "");
+  if(raw.charAt(0) === "?") raw = raw.slice(1);
+  if(!raw) return out;
+  raw.split("&").forEach(function(pair){
+    if(!pair) return;
+    var i = pair.indexOf("="), k = i < 0 ? pair : pair.slice(0, i);
+    var v = i < 0 ? "" : pair.slice(i + 1);
+    try{ k = decodeURIComponent(k.replace(/\+/g, " ")); v = decodeURIComponent(v.replace(/\+/g, " ")); }
+    catch(e){ return; }                       // a broken escape is dropped, never guessed
+    if(URL_ORDER.indexOf(k) >= 0) out[k] = v;
+  });
+  return out;
+}
+
+// "kind:id" — the whole pop-up state in one readable token.
+function parsePeek(value){
+  var text = String(value || "");
+  var i = text.indexOf(":");
+  if(i <= 0) return null;
+  var kind = text.slice(0, i), id = text.slice(i + 1);
+  if(PEEK_KINDS.indexOf(kind) < 0 || !ID_RE.test(id)) return null;
+  return {kind: kind, id: id};
+}
+
+function buildPeek(kind, id){
+  if(PEEK_KINDS.indexOf(String(kind)) < 0 || !ID_RE.test(String(id || ""))) return "";
+  return kind + ":" + id;
+}
+
+// The current view as one object. Missing/invalid values fall back to the defaults, never throw.
+function readUrlState(search){
+  var raw = parseQuery(search), st = {filters: {}, offset: 0, more: [], peek: null, jobs: false};
+  FILTER_KEYS.forEach(function(k){
+    var v = raw[k];
+    if(v !== undefined && v !== "" && v.length <= 120) st.filters[k] = v;
+  });
+  if(/^[0-9]{1,6}$/.test(raw.offset || "")) st.offset = parseInt(raw.offset, 10) || 0;
+  if(raw.more){
+    st.more = String(raw.more).split(",").filter(function(n){ return /^[a-z]{1,16}$/.test(n); });
+  }
+  st.jobs = raw.jobs === "1";
+  st.peek = parsePeek(raw.peek);
+  return st;
+}
+
+// state -> "?…" with a fixed key order, empty values dropped. Always a string ("" for nothing).
+function buildSearch(st){
+  st = st || {};
+  var parts = [];
+  function add(k, v){ if(v !== undefined && v !== null && v !== "") parts.push(k + "=" + encodeURIComponent(String(v))); }
+  if(st.peek) add("peek", buildPeek(st.peek.kind, st.peek.id));
+  FILTER_KEYS.forEach(function(k){
+    var v = (st.filters || {})[k];
+    if(v !== undefined && v !== null && v !== "") add(k, v);
+  });
+  if(st.offset) add("offset", st.offset);
+  if(st.more && st.more.length) add("more", st.more.join(","));
+  if(st.jobs) add("jobs", "1");
+  return parts.length ? "?" + parts.join("&") : "";
+}
+
+// Merge a patch into a state without mutating the input (filters merge one level deep).
+function mergeUrlState(base, patch){
+  var st = {filters: {}, offset: (base && base.offset) || 0, more: ((base && base.more) || []).slice(),
+            peek: (base && base.peek) || null, jobs: !!(base && base.jobs)};
+  var src = (base && base.filters) || {};
+  Object.keys(src).forEach(function(k){ st.filters[k] = src[k]; });
+  patch = patch || {};
+  if(patch.filters){
+    Object.keys(patch.filters).forEach(function(k){
+      var v = patch.filters[k];
+      if(v === undefined || v === null || v === "") delete st.filters[k];
+      else st.filters[k] = v;
+    });
+  }
+  if(patch.offset !== undefined) st.offset = Math.max(0, parseInt(patch.offset, 10) || 0);
+  if(patch.more !== undefined) st.more = patch.more.slice();
+  if(patch.peek !== undefined) st.peek = patch.peek;
+  if(patch.jobs !== undefined) st.jobs = !!patch.jobs;
+  return st;
+}
+
 // -- formatting -------------------------------------------------------------
 
 function pad(n){ return n < 10 ? "0" + n : String(n); }
@@ -218,8 +312,10 @@ var HELPERS = {
   saveDismissed: saveDismissed, pruneDismissed: pruneDismissed, splitFailures: splitFailures,
   attentionCount: attentionCount, moreLabel: moreLabel, attentionEmpty: attentionEmpty, NAV: NAV, pageOf: pageOf,
   sessionPath: sessionPath, peekUrl: peekUrl, listUrl: listUrl, LIST_KEYS: LIST_KEYS,
+  parseQuery: parseQuery, parsePeek: parsePeek, buildPeek: buildPeek, readUrlState: readUrlState,
+  buildSearch: buildSearch, mergeUrlState: mergeUrlState, URL_ORDER: URL_ORDER, FILTER_KEYS: FILTER_KEYS,
   clock: clock, dayClock: dayClock, ago: ago, dur: dur, tone: tone, symbolFor: symbolFor,
-  askLink: askLink, askButtons: askButtons, askUrl: askUrl,
+  askLink: askLink, askButtons: askButtons, askUrl: askUrl, copyLinkButton: copyLinkButton,
   truncate: truncate, countLabel: countLabel
 };
 if(typeof globalThis !== "undefined") globalThis.__LEDGER_HELPERS__ = HELPERS;
@@ -237,16 +333,42 @@ var footEl = document.getElementById("foot");
 var storage = store(window);
 var dismissed = loadDismissed(storage);
 var showHidden = false;
+// The view lives in the URL (see the URL-state helpers above): path = page, query = what is open.
+// `urlState` is the single source of truth for pop-up, filters, page and the expanded lists.
+var urlState = readUrlState(typeof location === "undefined" ? "" : location.search);
 // Which growing lists the reader opened ("Mehr anzeigen"). Sent to the server as ?more=…,
 // so the rest is fetched there instead of being hidden in the browser.
 var expanded = {};
+(urlState.more || []).forEach(function(name){ expanded[name] = true; });
 var lastPayload = null;
-var jobsOpen = false;
+var jobsOpen = urlState.jobs;
 var jobs = null;
 var route = pageOf(META.page ? "/ledger" + (META.page === "attention" ? "" : "/" + META.page) : location.pathname);
 if(META.page === "session" && META.session_id) route = {page: "session", id: META.session_id};
-var listState = {offset: 0, filters: {}};
+var listState = {offset: urlState.offset || 0, filters: urlState.filters || {}};
 var dialogState = {open: false, trigger: null};
+// Set by the list pages: re-renders the current list from `urlState` (used by popstate, so
+// back/forward does not need a full page load).
+var pageReloader = null;
+
+// Write the view into the URL. `mode` is "push" for a deliberate step (opening a pop-up, paging)
+// and "replace" for typing, so the back button does not collect one entry per keystroke.
+function syncUrl(patch, mode){
+  var next = mergeUrlState(urlState, patch);
+  var qs = buildSearch(next);
+  var url = (typeof location === "undefined" ? "" : location.pathname) + qs;
+  try{
+    if(mode === "replace") history.replaceState({ledger: true}, "", url);
+    else history.pushState({ledger: true}, "", url);
+  }catch(e){ /* file:// or a locked-down history: the view still works, only the URL lags */ }
+  urlState = next;
+  return next;
+}
+
+function clearPeekUrl(){
+  if(!urlState.peek) return;
+  syncUrl({peek: null}, "replace");
+}
 
 // -- tiny DOM helpers -------------------------------------------------------
 
@@ -289,6 +411,39 @@ function link(url, label, cls){
 function extLink(url, label){
   var a = link(url, label + " ↗");
   return a;
+}
+
+// "Link kopieren": puts the current view URL (page + ?peek=…) on the clipboard. Clipboard API
+// first; when it is unavailable (http on a LAN address is not a secure context) the button turns
+// into a selectable, already-selected text field — no silent failure, nothing hidden.
+function copyLinkButton(getUrl){
+  var b = button("btn dim", "⧉ Link kopieren", function(){
+    var url = getUrl();
+    if(!url) return;
+    var done = function(){
+      b.textContent = "✓ kopiert";
+      setTimeout(function(){ b.textContent = "⧉ Link kopieren"; }, 1800);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(url).then(done, function(){ b.textContent = "⧉ Link kopieren"; fallback(); });
+    } else fallback();
+    function fallback(){
+      var row = el("div", "copy-fallback");
+      var input = el("input");
+      input.type = "text";
+      input.value = url;
+      input.readOnly = true;
+      input.className = "copy-input";
+      row.appendChild(input);
+      b.parentNode.insertBefore(row, b.nextSibling);
+      input.focus();
+      input.select();
+      if(document.execCommand){
+        try{ document.execCommand("copy"); input.setSelectionRange(0, url.length); }catch(e){ /* selecting is enough */ }
+      }
+    }
+  });
+  return b;
 }
 
 // "Ask Claude": a plain link that opens Claude with a prepared question. Nothing is sent from
@@ -418,6 +573,8 @@ function moreButton(meta, name){
   if(!label) return null;
   return button("btn dim", label, function(){
     expanded[name] = true;
+    var names = Object.keys(expanded).filter(function(n){ return expanded[n]; });
+    syncUrl({more: names}, "push");
     load();
   });
 }
@@ -432,6 +589,10 @@ function withMore(node, meta, name){
 
 function openPeek(kind, id, opts, trigger){
   opts = opts || {};
+  if(!opts.fromUrl){
+    var token = buildPeek(kind, id);
+    if(token) syncUrl({peek: {kind: kind, id: id}}, "push");
+  }
   var dlg = document.getElementById("peek");
   if(!dlg){
     dlg = el("dialog", "peek");
@@ -477,6 +638,7 @@ function openPeek(kind, id, opts, trigger){
 function closePeek(){
   var dlg = document.getElementById("peek");
   if(!dlg) return;
+  clearPeekUrl();
   if(typeof dlg.close === "function" && dlg.open) dlg.close();
   else dlg.removeAttribute("open");
   var trigger = dialogState.trigger;
@@ -570,6 +732,9 @@ function renderPeek(dlg, d){
   if(links.desktop) foot.appendChild(extLink(links.desktop, "In Desktop-App"));
   if(links.web) foot.appendChild(extLink(links.web, "In Web-App"));
   askButtons(d.ask).forEach(function(b){ foot.appendChild(b); });
+  foot.appendChild(copyLinkButton(function(){
+    return location.origin + location.pathname + buildSearch(urlState);
+  }));
   foot.appendChild(el("span", "peek-note", "read-only"));
   close.focus();
 }
@@ -879,7 +1044,11 @@ function renderAttention(d){
   var cb = el("input");
   cb.type = "checkbox";
   cb.checked = jobsOpen;
-  cb.onchange = function(){ jobsOpen = cb.checked; load(); };
+  cb.onchange = function(){
+    jobsOpen = cb.checked;
+    syncUrl({jobs: jobsOpen}, "replace");
+    load();
+  };
   lab.appendChild(cb);
   lab.appendChild(document.createTextNode("Cron-Jobs (Konfiguration) anzeigen"));
   tog.appendChild(lab);
@@ -1032,9 +1201,16 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
       opts.options = opts.options || {};
       if(Array.isArray(d.profiles) && d.profiles.length) opts.options.profiles = d.profiles;
       holder.appendChild(filterBar(kind, opts.options || {}, listState, function(key, value){
-        if(key === "__reset"){ listState.filters = {}; listState.offset = 0; }
-        else {
-          if(value) listState.filters[key] = value; else delete listState.filters[key];
+        var mode = key === "q" ? "replace" : "push";     // typing replaces, a choice is a step
+        if(key === "__reset"){
+          listState.filters = {};
+          listState.offset = 0;
+          syncUrl({filters: {}, offset: 0}, "push");
+        } else {
+          var next = {};
+          next[key] = value || null;
+          syncUrl({filters: next, offset: 0}, mode);
+          listState.filters = urlState.filters;
           listState.offset = 0;
         }
         loadPage();
@@ -1051,7 +1227,8 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
       }
       listState.total_is_bounded = !!d.total_is_bounded;
       p.panel.appendChild(pager(listState, d.total || 0, function(offset){
-        listState.offset = offset;
+        syncUrl({offset: offset}, "push");
+        listState.offset = urlState.offset;
         loadPage();
       }));
       holder.appendChild(p.panel);
@@ -1062,6 +1239,11 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
       holder.appendChild(box);
     });
   }
+  pageReloader = function(){
+    listState.filters = urlState.filters;
+    listState.offset = urlState.offset;
+    loadPage();
+  };
   loadPage();
 }
 
@@ -1287,6 +1469,9 @@ function renderSession(){
     head.appendChild(backBtn);
     var links = d.links || {};
     askButtons(d.ask).forEach(function(b){ head.appendChild(b); });
+    head.appendChild(copyLinkButton(function(){
+      return location.origin + location.pathname + buildSearch({filters: {}, offset: 0, more: [], peek: null, jobs: false});
+    }));
     if(links.desktop) head.appendChild(extLink(links.desktop, "In Desktop-App"));
     if(links.web) head.appendChild(extLink(links.web, "In Web-App"));
     holder.appendChild(head);
@@ -1457,5 +1642,57 @@ if(META.view_error){
 } else {
   load();
   var timer = setInterval(function(){ if(!document.hidden) load(); }, POLL * 1000);
+}
+
+// -- the URL is the view's memory ------------------------------------------
+
+// Back/forward: rebuild the view from the URL instead of from a snapshot.
+window.addEventListener("popstate", function(){
+  var prevPeek = urlState.peek;
+  urlState = readUrlState(location.search);
+  expanded = {};
+  (urlState.more || []).forEach(function(name){ expanded[name] = true; });
+  jobsOpen = urlState.jobs;
+  listState.filters = urlState.filters;
+  listState.offset = urlState.offset;
+  var peek = urlState.peek;
+  if(peek && (!prevPeek || prevPeek.kind !== peek.kind || prevPeek.id !== peek.id)){
+    openPeek(peek.kind, peek.id, {fromUrl: true}, null);
+  } else if(!peek && !prevPeek){
+    // nothing to do with the dialog
+  } else if(!peek){
+    var dlg = document.getElementById("peek");
+    if(dlg && dlg.open) closePeekFromHistory();
+  }
+  if(route.page === "attention") load();
+  else if(route.page === "session") renderSession();
+  else if(route.page === "gateway") renderGateway();
+  else if(pageReloader){
+    pageReloader();
+  }
+});
+
+function closePeekFromHistory(){
+  var dlg = document.getElementById("peek");
+  if(!dlg) return;
+  if(typeof dlg.close === "function" && dlg.open) dlg.close();
+  else dlg.removeAttribute("open");
+  dialogState = {open: false, trigger: null};
+}
+
+// A shared link (?peek=kind:id) opens the dialog on load — after the page has its data, so the
+// row (and its focus target) exists. A deleted id still opens the dialog: it shows the error.
+if(urlState.peek){
+  var wanted = urlState.peek;
+  // wait for the page's first successful render
+  var tries = 0;
+  var opener = setInterval(function(){
+    tries += 1;
+    var ready = document.querySelector("#panel-attention .linkish, #panel-attention .lrow, .lrow");
+    if(ready || tries > 60){
+      clearInterval(opener);
+      openPeek(wanted.kind, wanted.id, {fromUrl: true}, null);
+    }
+  }, 250);
 }
 })();

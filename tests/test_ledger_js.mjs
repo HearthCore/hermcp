@@ -242,3 +242,87 @@ test("the Ask-Claude url and its hidden cases", () => {
   assert.deepEqual(j(H.askButtons(null)), []);
   assert.deepEqual(j(H.askButtons({})), []);
 });
+
+// ---------------------------------------------------------------------------
+// URL state: read/build/merge + the peek token
+// ---------------------------------------------------------------------------
+
+test("the peek token round-trips and rejects anything else", () => {
+  const H = load();
+  assert.equal(H.buildPeek("session", "local-abc"), "session:local-abc");
+  assert.equal(H.buildPeek("approval", "ap-1"), "approval:ap-1");
+  assert.deepEqual(j(H.parsePeek("session:local-abc")), { kind: "session", id: "local-abc" });
+  assert.deepEqual(j(H.parsePeek("cron:run_1:x")), { kind: "cron", id: "run_1:x" });  // ids may contain ':'
+  // unknown kind, empty id, missing colon, path tricks: no peek at all
+  ["secrets:abc", "session:", ":abc", "session", "", null,
+   "session:../../etc/passwd"].forEach((v) => assert.equal(H.parsePeek(v), null, String(v)));
+  assert.equal(H.buildPeek("nope", "x"), "");
+});
+
+test("the query is read with a whitelist and defaults", () => {
+  const H = load();
+  const st = H.readUrlState("?peek=session%3Alocal-1&status=aktiv&profile=default&offset=25&more=runs,cron&jobs=1");
+  assert.deepEqual(j(st.peek), { kind: "session", id: "local-1" });
+  assert.equal(st.filters.status, "aktiv");
+  assert.equal(st.filters.profile, "default");
+  assert.equal(st.offset, 25);
+  assert.deepEqual(j(st.more), ["runs", "cron"]);
+  assert.equal(st.jobs, true);
+  // unknown keys, bad offsets and junk are ignored, never trusted
+  const junk = H.readUrlState("?evil=1&offset=abc&more=../x&peek=bogus");
+  assert.deepEqual(j(junk.filters), {});
+  assert.equal(junk.offset, 0);
+  assert.deepEqual(j(junk.more), []);
+  assert.equal(junk.peek, null);
+  assert.deepEqual(j(H.readUrlState("")), { filters: {}, offset: 0, more: [], peek: null, jobs: false });
+});
+
+test("state builds a stable, encoded query", () => {
+  const H = load();
+  assert.equal(H.buildSearch({ filters: {}, offset: 0, more: [], peek: null, jobs: false }), "");
+  assert.equal(H.buildSearch({ peek: { kind: "session", id: "a:b" }, filters: {}, offset: 0, more: [], jobs: false }),
+    "?peek=session%3Aa%3Ab");
+  // an id outside the charset is not put into a URL at all
+  assert.equal(H.buildSearch({ peek: { kind: "session", id: "a b" }, filters: {}, offset: 0, more: [], jobs: false }), "");
+  const q = H.buildSearch({ filters: { status: "aktiv", q: "böse & <x>" }, offset: 50,
+                            more: ["runs"], peek: null, jobs: true });
+  assert.ok(q.indexOf("status=aktiv") > 0);
+  assert.ok(q.indexOf("offset=50") > 0);
+  assert.ok(q.indexOf("more=runs") > 0);
+  assert.ok(q.indexOf("jobs=1") > 0);
+  assert.ok(q.indexOf("%26") > 0 && q.indexOf("<") < 0);       // encoded, never raw markup
+  // key order is fixed, so the same view is always the same URL
+  const again = H.buildSearch(H.readUrlState(q));
+  assert.equal(again, q);
+});
+
+test("mergeUrlState never mutates its input and clears values on null", () => {
+  const H = load();
+  const base = { filters: { status: "aktiv", profile: "default" }, offset: 25, more: ["runs"],
+                 peek: { kind: "run", id: "r1" }, jobs: true };
+  const out = H.mergeUrlState(base, { filters: { status: null, q: "abc" }, offset: 0, peek: null });
+  assert.equal(out.filters.profile, "default");
+  assert.equal(out.filters.status, undefined);
+  assert.equal(out.filters.q, "abc");
+  assert.equal(out.offset, 0);
+  assert.equal(out.peek, null);
+  assert.equal(out.jobs, true);
+  // the base is untouched
+  assert.equal(base.filters.status, "aktiv");
+  assert.equal(base.peek.kind, "run");
+  assert.deepEqual(j(base.more), ["runs"]);
+});
+
+test("a full roundtrip keeps the view identical", () => {
+  const H = load();
+  const view = { filters: { status: "settled", profile: "developer", hours: "168", q: "x y" },
+                 offset: 75, more: ["sessions", "runs"], peek: { kind: "approval", id: "ap-1" }, jobs: true };
+  const back = H.readUrlState(H.buildSearch(view));
+  assert.equal(back.offset, 75);
+  assert.equal(back.filters.status, "settled");
+  assert.equal(back.filters.q, "x y");
+  assert.deepEqual(j(back.more), ["sessions", "runs"]);
+  assert.deepEqual(j(back.peek), { kind: "approval", id: "ap-1" });
+  assert.equal(back.jobs, true);
+  assert.equal(H.buildSearch(back), H.buildSearch(view));
+});
