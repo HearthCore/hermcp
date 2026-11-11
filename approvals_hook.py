@@ -203,12 +203,20 @@ def handle_post_approval_response(**payload: Any) -> None:
         with _lock:
             hit = _seen.pop(ident, None)
         key = hit[0] if hit else None
+        box = get_inbox(settings)
         if key is None:
-            return                   # never announced (disabled, deduped or a coalesced follower): stay quiet
+            # The pre signal ran in another process (hermcp restarted between prompt and answer, or the
+            # prompt was opened before this version). Find the row by what the payload does carry.
+            row = box.find_waiting_approval_for_hook(
+                session_key=str(payload.get("session_key") or "") or None,
+                action=str(payload.get("command") or "") or None)
+            if row is None:
+                return               # never announced: stay quiet
+            key = row["approval_key"]
         choice = str(payload.get("choice") or "unknown")
         surface = str(payload.get("surface") or "unknown")
         user_id, chat = _user_and_chat(payload)
-        get_inbox(settings).settle_approval(
+        box.settle_approval(
             approval_key=key, decision=choice, surface=surface, user_id=user_id, chat=chat,
             actor="hermcp:hook", run_id=_run_id_from_session_key(payload.get("session_key")))
     except Exception:  # noqa: BLE001
