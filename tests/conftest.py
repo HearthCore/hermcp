@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -64,22 +65,29 @@ def cli_log(home):
 LIVE_DATA = Path.home() / ".hermes" / "plugin-data" / "hermcp"
 
 
-def _live_signature():
+def _live_key_ids():
+    """The live key ids, or None when there is no live store (CI, a fresh checkout).
+
+    Not mtime and not the bytes: the running server legitimately rewrites keys.json when a key
+    is used (last_used). What must never change is *which* keys exist — a deleted or truncated
+    store loses ids, and that is exactly the accident to catch.
+    """
     p = LIVE_DATA / "keys.json"
     try:
-        st = p.stat()
-    except OSError:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return None
-    return (st.st_mtime_ns, st.st_size)
+    rows = data if isinstance(data, list) else (data.get("keys") or [])
+    return sorted(str(r.get("id")) for r in rows if isinstance(r, dict))
 
 
 @pytest.fixture(autouse=True)
 def live_key_store_untouched():
-    """Fail the test that changed (or removed) the live keys.json — before and after."""
-    before = _live_signature()
+    """Fail the test that removed keys from the LIVE store — checked before and after."""
+    before = _live_key_ids()
     yield
-    after = _live_signature()
+    after = _live_key_ids()
     assert after == before, (
-        "a test touched the LIVE key store at "
-        f"{LIVE_DATA / 'keys.json'} (before={before}, after={after}). Tests must resolve "
-        "settings.data inside their own tmp HERMES_HOME — see tests/test_settings_data_dir.py.")
+        f"a test changed the LIVE key store at {LIVE_DATA / 'keys.json'} "
+        f"(before={before}, after={after}). Tests must resolve settings.data inside their own "
+        "tmp HERMES_HOME — see tests/test_settings_data_dir.py.")
