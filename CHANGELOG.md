@@ -16,6 +16,23 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 _Add your entry here, in the same pull request that makes the change._
 
 ### Added
+- One inbox row per approval instead of a pending/resolved pair: the state moves from `waiting` to `approved`, `denied` or `expired`, on the surface that decided it and with the time
+- `approval_detail` — one approval plus its decision protocol: every later attempt that lost is kept as `too_late_already_decided` with its own surface and time
+- `approval_user_id` / `approval_chat` on approvals, reserved for a future OIDC/user/group model; filled only when Hermes actually supplies an id
+- `hermes_status` lists the open approvals themselves (with their `approval_key`), not just a count
+
+### Changed
+- `hermes_status` and `inbox_poll` default to what needs attention: open approvals, failed/lost runs, runs waiting for approval. Resolved approvals, the decision protocol and the old hook pairs leave the digest; `detail=true` and the new `approval_key` / `run_id` / `session_key` filters reach them
+- The run watcher emits no `needs_approval` events any more — an approval is a row, and the watcher closes it when the run ends
+
+### Fixed
+- An approval that was never answered no longer hangs forever: a run that reaches `completed`, `failed`, `interrupted`, `cancelled` or `run_lost` closes its still-waiting approvals as `expired`
+- Legacy `needs_approval` rows whose run was already over, and legacy pending/resolved pairs, are folded into single approval rows by a one-time backfill on start
+
+### Documentation
+- The approval docs spell out how the two hook signals are correlated (a derived key, because the hook payload carries no `request_id`) and where a second decision attempt is *not* visible to hermcp (a second click inside a Hermes UI)
+
+### Added
 - This changelog, backfilled from the first 44 commits, and the rule to update it in every pull request ([#41](https://github.com/HearthCore/hermcp/issues/41))
 
 ## 2026-11-10

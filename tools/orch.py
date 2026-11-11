@@ -197,11 +197,22 @@ def hermes_status(ctx, consumer=None):
     else:
         out["approvals_pending"] = "not visible to this key"
     out["inbox"] = get_inbox(ctx.settings).digest(profiles=_profiles(ctx), consumer=_consumer(ctx, consumer))
+    try:                                    # Teil 4: the open approvals themselves, not just a count
+        waiting = get_inbox(ctx.settings).open_approvals(_profiles(ctx))
+        if waiting:
+            out["inbox"]["open_approvals"] = [
+                {k: a[k] for k in ("approval_key", "ts", "profile", "surface", "summary") if a.get(k)}
+                | {"action": a.get("action"), "run_id": a.get("run_id"), "session_key": a.get("session_key")}
+                for a in waiting[:10]]
+    except Exception:  # noqa: BLE001
+        pass
     nxt = []
     if verdict != "ok":
         nxt.append("status_gateway")
     if out["inbox"]["unread"]:
         nxt.append("inbox_poll")
+    if out["inbox"].get("approvals_waiting"):
+        nxt.append("approval_detail <approval_key> (state, decision, protocol)")
     if out["inbox"]["older_unread"]:
         nxt.append("inbox_ack all=true (or inbox_poll include_older=true)")
     if out["inbox"]["failed_runs_24h"]:

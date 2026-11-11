@@ -17,13 +17,12 @@ never produces `run_lost` -- that needs repeated 404s from a gateway that otherw
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 from typing import Any, Callable
 
 from . import hapi
-from .inbox_store import clean_text, get_inbox
+from .inbox_store import clean_text, get_inbox, run_approval_key
 
 log = logging.getLogger("hermcp.watcher")
 
@@ -94,6 +93,7 @@ class RunWatcher:
                 if n >= LOST_AFTER_404S and now - first >= LOST_MIN_SPAN:
                     emitted += self._emit(box, w, "run_lost", "Run is no longer known to the gateway "
                                           "(status expired or the gateway lost it).", "run_lost", "warning")
+                    self._close_approvals(box, w, "expired", "the run was lost by the gateway")
                     self._finish(box, w, "lost")
                 else:
                     self._next[rid] = now + self.settings.inbox_watch_interval * n
@@ -115,17 +115,21 @@ class RunWatcher:
             ap = st.get("approval") if isinstance(st.get("approval"), dict) else {}
             action, why = str(ap.get("command") or ""), str(ap.get("description") or "")
             rid = ap.get("request_id") if isinstance(ap.get("request_id"), str) else None
-            key = rid or "noid-" + hashlib.sha1(f"{action}|{why}".encode()).hexdigest()[:12]
-            return self._emit(box, w, "needs_approval",
-                              "Run is waiting for an approval. Read the pending request on the run itself "
-                              "(chat_run_status) before answering.",
-                              f"needs_approval:{key}", "warning", approval_id=rid, action=action, rationale=why,
-                              session_id=sid)
+            # One approval row, not an event: it stays visible until the run ends or the approval settles.
+            key = run_approval_key(w["run_id"], rid, action, why)
+            box.open_approval(
+                approval_key=key, origin="watcher", run_id=w["run_id"], session_id=sid,
+                profile=w["profile"], requester=w["key_name"], approval_id=rid,
+                action=action or None, rationale=why or None, surface="run",
+                summary="Run is waiting for an approval. Read the pending request on the run itself "
+                        "(chat_run_status) before answering.")
+            return 0
         if status == "completed":
             out = st.get("output")
             n = len(out) if isinstance(out, str) else 0
             e = self._emit(box, w, "run_finished", f"Run finished ({n} characters of output). "
                            "Read it with chat_run_status.", "run_finished", "info", session_id=sid)
+            self._close_approvals(box, w, "expired", "the run finished without the approval being answered")
             self._finish(box, w, status)
             return e
         if status in ("failed", "interrupted", "cancelled"):
@@ -139,9 +143,15 @@ class RunWatcher:
                 head = "Run was interrupted" if status == "interrupted" else "Run failed"
                 e = self._emit(box, w, "run_failed", f"{head}: {err}" if err else f"{head}.", "run_failed", "error",
                                session_id=sid)
+            self._close_approvals(box, w, "expired", f"the run ended ({status}) without the approval being answered")
             self._finish(box, w, status)
             return e
         return 0
+
+    def _close_approvals(self, box, w: dict, state: str, note: str) -> None:
+        """Teil 1: a run that is over cannot still be waiting for an approval — close its open rows."""
+        for key in box.close_run_approvals(w["run_id"], state=state, note=note):
+            log.info("run watcher: closed approval %s of run %s (%s)", key, w["run_id"], state)
 
     def _note_activity(self, box, run_id: str, status: str, st: dict) -> None:
         """One updated value per run. Writes only on change (or every ACTIVITY_REFRESH s of gateway time)."""

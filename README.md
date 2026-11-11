@@ -197,6 +197,10 @@ keys, and rotate them.
 - [ ] Not yet exposed (deliberately): `debug share`, `backup`, `import`, `uninstall`, `gateway
       migrate/uninstall`, `profile purge-identity` — they would need the `dangerous` scope
 - [ ] Clarify prompts (`PendingControls`) are not bridged, only command approvals
+- [ ] Two or three levels instead of many commands: the default becomes a short list of the last five
+      to ten entries (configurable through a plugin option), and whoever wants more goes into the
+      detail view. Briefly recent "relevant noise" should stay visible for a while — deliberately not
+      built yet, the slim attention-only default is the first step.
 - [ ] Live verification of the agent half inside a real gateway (needs the gateway restart)
 - [ ] `hermes plugins install` from this repo
 

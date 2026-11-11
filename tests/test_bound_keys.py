@@ -372,13 +372,13 @@ def test_inbox_and_runs_only_for_own_profile_events(rig):
     own = box.push_system(kind="run_finished", summary="own done", run_id="run_own", profile="p1", requester="w1", dedupe_key="a")
     foreign = box.push_system(kind="run_finished", summary="foreign done", run_id="run_other", profile="p2", requester="w1", dedupe_key="b")
     pushed = box.push(source="script", kind="info", summary="global note", ref=None, severity="info", pushed_by="x")
-    seen = rig.ok("w1", "inbox_poll")
+    seen = rig.ok("w1", "inbox_poll", detail=True)
     assert [e["id"] for e in seen["events"]] == [own["id"]] and seen["unread_total"] == 1
     assert [e["id"] for e in rig.ok("w1", "inbox_list")["events"]] == [own["id"]]
     ack = rig.ok("w1", "inbox_ack", ids=[own["id"], foreign["id"], pushed["id"]])
     assert ack["acked"] == [own["id"]] and sorted(ack["not_found"]) == sorted([foreign["id"], pushed["id"]])
     # read state is per key: w1's ack did not touch what adm has to read (all three events are still unread for it)
-    assert [e["id"] for e in rig.ok("adm", "inbox_poll")["events"]] == [own["id"], foreign["id"], pushed["id"]]
+    assert [e["id"] for e in rig.ok("adm", "inbox_poll", detail=True)["events"]] == [own["id"], foreign["id"], pushed["id"]]
     assert [r["run_id"] for r in rig.ok("w1", "runs_active")["runs"]] == ["run_own"]
     assert rig.call("w1", "inbox_push", source="a", kind="info", summary="x")["ok"] is False
 

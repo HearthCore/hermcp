@@ -43,7 +43,8 @@ class Rig:
         return self.w.tick()
 
     def events(self):
-        return self.box.list(limit=200)["events"][::-1]
+        """Inbox EVENTS (approval rows are a separate ledger, see open_approvals)."""
+        return [e for e in self.box.list(limit=200)["events"][::-1] if e["kind"] != "approval"]
 
 
 @pytest.fixture()
@@ -63,23 +64,56 @@ def test_lifecycle_approval_then_finish(rig):
     assert rig.tick() == 0
     ap = {"request_id": "rq1", "command": "rm -rf /tmp/x  token=hmcp_abcdef12_" + "z" * 30, "description": "delete temp"}
     rig.src.resp[("default", "run_a")] = st("waiting_for_approval", approval=ap, session_id="sess1")
-    assert rig.tick() == 1
-    assert rig.tick() == 0                                          # dedupe: same request again
+    assert rig.tick() == 0                                          # an approval row, not an event
+    assert rig.tick() == 0                                          # same request: one row
+    open_ = rig.box.open_approvals()
+    assert len(open_) == 1 and open_[0]["approval_state"] == "waiting"
     rig.src.resp[("default", "run_a")] = st("running")
     rig.tick()
     rig.src.resp[("default", "run_a")] = st("waiting_for_approval", approval={**ap, "request_id": "rq2"})
-    assert rig.tick() == 1                                          # a NEW request is a new event
+    assert rig.tick() == 0                                          # a NEW request is a new row
+    assert len(rig.box.open_approvals()) == 2
     rig.src.resp[("default", "run_a")] = st("completed", output="SECRET OUTPUT " * 100)
-    assert rig.tick() == 1
+    assert rig.tick() == 1                                          # the terminal event
     assert rig.tick() == 0 and rig.box.get_watch("run_a")["done"] == 1     # finished watches are not polled again
     evs = rig.events()
-    assert [e["kind"] for e in evs] == ["needs_approval", "needs_approval", "run_finished"]
-    a = evs[0]
-    assert a["origin"] == "watcher" and a["approval_id"] == "rq1" and a["run_id"] == "run_a" and a["requester"] == "claude"
+    assert [e["kind"] for e in evs] == ["run_finished"]
+    a = rig.box.get_approval("run:run_a:rq1")
+    assert a is not None and a["origin"] == "watcher" and a["approval_id"] == "rq1"
+    assert a["run_id"] == "run_a" and a["requester"] == "claude"
     assert a["session_id"] == "sess1" and a["profile"] == "default" and a["pushed_by"] == "hermcp:watcher"
     assert "rm -rf /tmp/x" in a["action"] and "hmcp_abcdef12" not in a["action"] and a["rationale"] == "delete temp"
-    assert set(a["untrusted_fields"]) == {"summary", "action", "rationale"} and a["severity"] == "warning"
+    assert set(a["untrusted_fields"]) == {"summary", "action", "rationale"}
+    # Teil 1: the run finished, so neither approval may still count as waiting
+    assert rig.box.open_approvals() == []
+    assert a["approval_state"] == "expired" and a["approval_closed_at"]
     assert "SECRET OUTPUT" not in json.dumps(evs) and "characters of output" in evs[-1]["summary"]
+
+
+def test_approval_closes_when_the_run_ends(rig):
+    """Teil 1: a `needs_approval` whose run ends is closed, however the run ends."""
+    for status in ("completed", "failed", "cancelled", "interrupted"):
+        run = f"run_{status}"
+        rig.watch(run)
+        rig.src.resp[("default", run)] = (200, {"object": "hermes.run", "run_id": run, "status": "waiting_for_approval",
+                                                "approval": {"request_id": "rq", "command": "c"}})
+        rig.tick()
+        assert len(rig.box.open_approvals()) == 1
+        rig.src.resp[("default", run)] = (200, {"object": "hermes.run", "run_id": run, "status": status})
+        rig.tick()
+        assert rig.box.open_approvals() == [], status
+
+
+def test_approved_approval_is_not_closed_as_expired(rig):
+    """Teil 1: an approval that was decided stays decided when the run later finishes."""
+    rig.watch()
+    rig.src.resp[("default", "run_a")] = st("waiting_for_approval", approval={"request_id": "rq1", "command": "c"})
+    rig.tick()
+    settled, applied = rig.box.settle_approval(approval_key="run:run_a:rq1", decision="once", surface="telegram")
+    assert applied and settled["approval_state"] == "approved"
+    rig.src.resp[("default", "run_a")] = st("completed", output="")
+    rig.tick()
+    assert rig.box.get_approval("run:run_a:rq1")["approval_state"] == "approved"
 
 
 @pytest.mark.parametrize("status,kind,sev", [("failed", "run_failed", "error"), ("interrupted", "run_failed", "error"),
@@ -142,10 +176,12 @@ def test_per_run_cap_keeps_a_slot_for_the_terminal_event(home):
     for i in range(10):
         r.src.resp[("default", "run_a")] = st("waiting_for_approval", approval={"request_id": f"rq{i}", "command": "c"})
         r.tick()
-    assert len(r.events()) == 3                                      # cap 4, one slot reserved
+    assert r.events() == []                                          # approvals are rows, not events
+    assert len(r.box.open_approvals()) == 10                          # ... and each one is its own approval
     r.src.resp[("default", "run_a")] = st("completed", output="")
     r.tick()
-    assert [e["kind"] for e in r.events()][-1] == "run_finished" and len(r.events()) == 4
+    assert [e["kind"] for e in r.events()] == ["run_finished"] and len(r.events()) == 1
+    assert r.box.open_approvals() == []                                # the run ended: none still waiting
 
 
 def test_watch_limit_per_key_and_expiry(home):
