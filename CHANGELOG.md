@@ -8,6 +8,8 @@ request, where there is one). `CONTRIBUTING.md` explains how to keep this file c
 ## [Unreleased]
 
 ### Added
+- `run_interrupted`: a run the gateway stopped by a gateway/process shutdown **after it had produced output** is its own class (warning, out of the attention view and out of `failed_runs_24h`) instead of a `run_failed`
+- Failed runs carry `settled_reason`, `settled_at` and `superseded_by`: a `run_failed`/`run_lost` leaves the attention view once a later run of the same session completed (`superseded_by_completed`) or also failed (`superseded_by_failure`, only the newest counts); the history keeps the row with the mark
 - `HERMCP_PROFILES_IGNORE`: a host-wide list of profiles hermcp leaves out of `doctor`, `profile-keys`, `profiles_list` and the status tools; profile-targeted tools reject them with `profile_ignored`. It is not a key scope, so keys stay unrestricted ([`acd5774`](https://github.com/HearthCore/hermcp/commit/acd5774), [#44](https://github.com/HearthCore/hermcp/pull/44))
 
 ### Tests
@@ -23,9 +25,11 @@ _Add your entry here, in the same pull request that makes the change._
 
 ### Changed
 - `hermes_status` and `inbox_poll` default to what needs attention: open approvals, failed/lost runs, runs waiting for approval. Resolved approvals, the decision protocol and the old hook pairs leave the digest; `detail=true` and the new `approval_key` / `run_id` / `session_key` filters reach them
+- `hermes_status.inbox.failed_runs_24h` counts only failures that are still open **and** unread for the asking consumer, so an acknowledged or superseded failure no longer shows up there
 - The run watcher emits no `needs_approval` events any more — an approval is a row, and the watcher closes it when the run ends
 
 ### Fixed
+- A failed run no longer stays in the attention view forever: a later run of the same session that completed (or also failed) settles it, and one-time backfills settle the rows that were open when this landed (idempotent, nothing deleted, the reason stays on the row)
 - An approval that was never answered no longer hangs forever: a run that reaches `completed`, `failed`, `interrupted`, `cancelled` or `run_lost` closes its still-waiting approvals as `expired`
 - Legacy `needs_approval` rows whose run was already over, and legacy pending/resolved pairs, are folded into single approval rows by a one-time backfill on start
 

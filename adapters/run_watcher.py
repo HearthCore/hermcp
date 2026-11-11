@@ -103,6 +103,8 @@ class RunWatcher:
                 continue
             self._nf.pop(rid, None)
             emitted += self._handle(box, w, body)
+        if emitted:                     # a run just ended: settle the failures its session moved past
+            box.settle_failures()
         return emitted
 
     # -- state machine -------------------------------------------------------------------
@@ -136,11 +138,25 @@ class RunWatcher:
             err = clean_text(str(st.get("error") or ""))[:MAX_ERROR]
             # hermcp's own control note (chat_run_cancel, chat_send mode=interrupt): fixed text, never gateway text
             why = f" ({w['control']})" if w.get("control") else ""
+            out = st.get("output")
+            produced = len(out) if isinstance(out, str) else 0
             if status == "cancelled":
                 e = self._emit(box, w, "run_cancelled", f"Run was cancelled{why}.", "run_cancelled", "info",
                                session_id=sid)
+            elif status == "interrupted" and produced:
+                # Its own class, not a real failure: the gateway only marks a run `interrupted` when it was
+                # stopped by a gateway/process shutdown, and this one had already produced output. It stays
+                # in the history (inbox_list) and out of the attention view.
+                e = self._emit(box, w, "run_interrupted",
+                               f"Run was interrupted by a restart{why} after producing {produced} characters of "
+                               "output — read it with chat_run_status.", "run_interrupted", "warning",
+                               session_id=sid)
             else:
                 head = "Run was interrupted" if status == "interrupted" else "Run failed"
+                if status == "interrupted":
+                    head += " before it produced any output"
+                # keep the whole summary within the documented error budget (prefix + 200 chars)
+                err = err[:MAX_ERROR - max(0, len(head) - len("Run failed"))]
                 e = self._emit(box, w, "run_failed", f"{head}: {err}" if err else f"{head}.", "run_failed", "error",
                                session_id=sid)
             self._close_approvals(box, w, "expired", f"the run ended ({status}) without the approval being answered")

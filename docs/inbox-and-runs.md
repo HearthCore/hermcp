@@ -41,7 +41,8 @@ events **directly to the store** — no HTTP, no token, no Hermes hook, no gatew
 |---|---|---|
 | `needs_approval` | status `waiting_for_approval` | **since the approval ledger: an approval row (kind `approval`, state `waiting`), not an event** — `approval_id` (the run's `request_id` when the status carries one), `action` (redacted command, max 800), `rationale` (max 400); one row per request, closed when the run ends |
 | `run_finished` | `completed` | only "N characters of output" — output text never goes into an event |
-| `run_failed` | `failed`, `interrupted` | error text cleaned, max 200 chars |
+| `run_failed` | `failed`, `interrupted` without output | error text cleaned, max 200 chars |
+| `run_interrupted` | `interrupted` after the run had already produced output | own class, **not** a real failure: the gateway only marks a run `interrupted` when a gateway/process shutdown stopped it. Summary names the output length, never the output |
 | `run_cancelled` | `cancelled` | |
 | `run_lost` | 3 consecutive 404s over at least 5 s from a gateway that otherwise answers | never emitted for unreachable gateway/5xx/401 |
 
@@ -155,7 +156,8 @@ already over and folds legacy `approval_pending`/`approval_resolved` pairs into 
 #### What the default view shows
 
 `hermes_status` and `inbox_poll` default to **attention only**: approvals still `waiting`, `run_failed`, `run_lost`
-and runs waiting for an approval. Resolved approvals, the decision protocol, the raw hook kinds and finished runs stay
+that nothing settled yet, and runs waiting for an approval. Resolved approvals, the decision protocol, the raw hook
+kinds, finished runs, restart interruptions and settled failures stay
 out of the digest and out of the default poll; they remain reachable through
 
 - `inbox_poll detail=true` / `inbox_list attention_only=false` for the full history,
@@ -164,6 +166,63 @@ out of the digest and out of the default poll; they remain reachable through
 
 The filter is exclusion-based, so an event from an external producer (a cron script, another agent) never disappears
 from the slim default. An open approval stays visible until it is decided.
+
+#### When a failed run stops needing attention
+
+A `run_failed` is not a permanent alarm. It leaves the attention view — and only that view; `inbox_list` and
+`inbox_poll detail=true` keep it, with the reason on the row (`settled_reason`, `settled_at`, `superseded_by`) —
+when one of three things happened:
+
+| route | rule | `settled_reason` |
+|---|---|---|
+| a later run of the same session (`session_id`) completed | the later run's result is the answer | `superseded_by_completed`, `superseded_by=<run_id>` |
+| a later run of the same session also failed | the **newest** failure is the one that counts; the older one is history | `superseded_by_failure`, `superseded_by=<newest run_id>` |
+| the consumer acknowledged it (`inbox_ack`) | read state is per consumer (`reads`), so one session's ack never hides the event from another | — (the row stays unsettled, it is just read) |
+
+Nothing is settled while the successor is still running (the failure stays visible until it is through), and a
+cancelled successor does not settle anything: a cancelled run delivered no result. `run_lost` follows the same rule.
+The check runs in the watcher on every tick (`Inbox.settle_failures`, idempotent: only rows with `settled_reason IS
+NULL` are touched), and once as a one-time backfill on start.
+
+Acknowledgement and settlement are independent on purpose: settlement says "the work is done by another run",
+acknowledgement says "I have seen this". Both take the row out of the attention count of the consumer that asks;
+neither deletes anything.
+
+#### Restart artefacts vs real failures (and why `run_interrupted` exists)
+
+The gateway itself distinguishes the cases in the run status, so hermcp does not have to guess:
+
+- `status: interrupted` + `error: "Gateway shutdown interrupted the run."` / `"The gateway restarted before this run
+  settled."` — the run was stopped by a gateway/process shutdown, not by its own work. When it had already produced
+  output, hermcp emits `run_interrupted` (severity `warning`): its own class, out of the attention view, out of
+  `failed_runs_24h`, visible in the history with the output length. Without output the row stays `run_failed`,
+  because then the restart really did lose work.
+- `status: failed` with `turn_exit_reason: max_iterations_reached(…)` — a real failure, even when the partial answer
+  is long. A run that burned its iteration budget may have been cut mid-work (the interesting case) or finished and
+  then run into the cap; the status carries no "the answer is complete" flag, so hermcp does not invent one. Such a
+  row is settled by a completed successor run of the same session, or by an acknowledgement.
+
+Where the boundary is: `turn_exit_reason` and `output` are only known while the gateway retains the run. hermcp reads
+them from the status it already polls and stores nothing but the derived class — it does not re-derive a class later
+from a status that may be gone.
+
+**Live finding that shaped this (2026-11-11).** Two failed runs of one session were stuck in the attention view:
+`run_2d2a…` (event 509) and `run_5506…` (event 512). Read from `runs_idempotency.db` and the gateway's own status:
+
+| run | `status` | `interrupted` | `turn_exit_reason` | output |
+|---|---|---|---|---|
+| `run_2d2a…` | `failed` | `false` | `max_iterations_reached(90/90)` | a mid-work status report |
+| `run_5506…` | `failed` | `false` | `max_iterations_reached(90/90)` | the complete final report |
+
+So the assumption that 512 had been failed *by a restart* was wrong: the gateway recorded a genuine iteration-limit
+failure, and `interrupted` was `false`. It could therefore not be classified as a restart artefact without guessing.
+509 was settled by the generic rule (the later run of the same session also failed → the newest failure counted,
+`superseded_by=run_5506…`); 512 was settled by a documented one-time operator backfill
+(`settled_reason='operator_backfill_20261111: …'`), because the caller had consumed the delivered result. The open
+gap, stated plainly: **a run that fails at the iteration cap after delivering its complete answer is
+indistinguishable from one that was cut mid-work** — same status, same exit reason. A future core change that
+distinguishes "cap hit after the final answer" would let hermcp classify it automatically; until then it needs a
+human (ack) or a completed successor.
 
 Getting other Hermes completions in (documented, **not** wired by hermcp): Hermes has two hook routes that
 need a config change plus a gateway restart, so hermcp leaves them alone. (1) Shell hook: a `hooks:` entry
