@@ -374,7 +374,8 @@ class Inbox:
         cap suppresses a non-terminal event."""
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._db() as db:
-            n = db.execute("SELECT COUNT(*) FROM events WHERE run_id=? AND origin='watcher'", (run_id,)).fetchone()[0]
+            n = db.execute("SELECT COUNT(*) FROM events WHERE run_id=? AND origin='watcher' "
+                           "AND approval_key IS NULL", (run_id,)).fetchone()[0]
             # one slot of the per-run cap is reserved for the terminal event
             if n >= (self.run_max_events if kind in TERMINAL_KINDS else self.run_max_events - 1):
                 return None

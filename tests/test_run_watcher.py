@@ -43,7 +43,8 @@ class Rig:
         return self.w.tick()
 
     def events(self):
-        return self.box.list(limit=200)["events"][::-1]
+        """Inbox EVENTS (approval rows are a separate ledger, see open_approvals)."""
+        return [e for e in self.box.list(limit=200)["events"][::-1] if e["kind"] != "approval"]
 
 
 @pytest.fixture()
