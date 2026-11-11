@@ -219,6 +219,7 @@ var HELPERS = {
   attentionCount: attentionCount, moreLabel: moreLabel, attentionEmpty: attentionEmpty, NAV: NAV, pageOf: pageOf,
   sessionPath: sessionPath, peekUrl: peekUrl, listUrl: listUrl, LIST_KEYS: LIST_KEYS,
   clock: clock, dayClock: dayClock, ago: ago, dur: dur, tone: tone, symbolFor: symbolFor,
+  askLink: askLink, askButtons: askButtons, askUrl: askUrl,
   truncate: truncate, countLabel: countLabel
 };
 if(typeof globalThis !== "undefined") globalThis.__LEDGER_HELPERS__ = HELPERS;
@@ -288,6 +289,35 @@ function link(url, label, cls){
 function extLink(url, label){
   var a = link(url, label + " ↗");
   return a;
+}
+
+// "Ask Claude": a plain link that opens Claude with a prepared question. Nothing is sent from
+// here — the URL (and therefore the whole question) is built server-side from ids only.
+// Rendered only when the server produced a URL, i.e. when HERMCP_LEDGER_ASK_CLAUDE_URL is set.
+function askUrl(ask){
+  if(!ask) return "";
+  return ask.web || ask.desktop || "";
+}
+
+function askLink(ask, cls){
+  var url = askUrl(ask);
+  if(!url) return null;
+  var a = el("a", cls || "btn ask", "✦ " + (ask.label || "Ask Claude"));
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.title = ask.tooltip || "öffnet Claude mit vorbereiteter Frage";
+  return a;
+}
+
+function askButtons(ask){
+  var out = [];
+  var web = askLink(ask && ask.web ? {web: ask.web, label: ask.label, tooltip: ask.tooltip} : null, "btn ask");
+  if(web) out.push(web);
+  if(ask && ask.desktop){
+    out.push(askLink({desktop: ask.desktop, label: ask.label, tooltip: ask.tooltip}, "btn dim ask"));
+  }
+  return out;
 }
 
 // A whole row as one button: keyboard reachable, no inner markup from data.
@@ -539,6 +569,7 @@ function renderPeek(dlg, d){
   }
   if(links.desktop) foot.appendChild(extLink(links.desktop, "In Desktop-App"));
   if(links.web) foot.appendChild(extLink(links.web, "In Web-App"));
+  askButtons(d.ask).forEach(function(b){ foot.appendChild(b); });
   foot.appendChild(el("span", "peek-note", "read-only"));
   close.focus();
 }
@@ -1255,6 +1286,7 @@ function renderSession(){
     backBtn.href = "/ledger/sessions";
     head.appendChild(backBtn);
     var links = d.links || {};
+    askButtons(d.ask).forEach(function(b){ head.appendChild(b); });
     if(links.desktop) head.appendChild(extLink(links.desktop, "In Desktop-App"));
     if(links.web) head.appendChild(extLink(links.web, "In Web-App"));
     holder.appendChild(head);

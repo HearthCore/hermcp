@@ -388,6 +388,15 @@ td.wrap { white-space: normal; overflow-wrap: anywhere; }
 .btn.dim:hover { color: var(--ink); }
 .btn.wide { width: 100%; justify-content: center; }
 
+/* "Ask Claude": a link, styled like the other footer buttons, with a hint of its own colour. */
+.btn.ask {
+  border-color: rgba(57, 200, 224, 0.45);
+  color: var(--cyan);
+}
+.btn.ask:hover { background: rgba(57, 200, 224, 0.08); }
+.btn.ask.dim { border-color: rgba(57, 200, 224, 0.3); color: var(--dim); }
+.btn.ask.dim:hover { color: var(--cyan); }
+
 .linkish {
   background: none;
   border: 0;

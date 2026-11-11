@@ -229,3 +229,16 @@ test("an empty attention area draws no panel at all", () => {
   assert.equal(H.attentionEmpty({ hidden: 2 }), false);
   assert.equal(H.attentionEmpty({ interrupted: 1 }), false);
 });
+
+test("the Ask-Claude url and its hidden cases", () => {
+  const H = load();
+  // web wins, desktop is the fallback the server only sends when configured
+  assert.equal(H.askUrl({ web: "https://claude.ai/new?q=hi", desktop: null }), "https://claude.ai/new?q=hi");
+  assert.equal(H.askUrl({ web: null, desktop: "claude://x?q=hi" }), "claude://x?q=hi");
+  assert.equal(H.askUrl(null), "");
+  assert.equal(H.askUrl({}), "");
+  // no URL: no button (never a dead link) — this path touches no DOM
+  assert.deepEqual(j(H.askButtons({ web: null, desktop: null })), []);
+  assert.deepEqual(j(H.askButtons(null)), []);
+  assert.deepEqual(j(H.askButtons({})), []);
+});

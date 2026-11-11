@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from .adapters import attention as AT
+from . import ledger_ask as ASK
 from .adapters.inbox_store import get_inbox
 from .ledger_page import (WINDOW_HOURS_DEFAULT, call, clean, dashboard_url, desktop_url,
                           iso, link_targets, build_link, read_only_principal, redacted, safe_token,
@@ -102,6 +103,36 @@ def tone_for(state: Any) -> str:
 
 def _now() -> float:
     return time.time()
+
+
+def _age_s(ts: Any) -> Optional[int]:
+    """Seconds since an ISO timestamp (or an epoch), None when unreadable."""
+    if isinstance(ts, (int, float)):
+        return max(0, int(_now() - float(ts)))
+    if not isinstance(ts, str) or not ts:
+        return None
+    text = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+
+
+def _attach_ask(out: Dict[str, Any], settings, kind: str, facts: Dict[str, Any]) -> None:
+    """Add the 'Ask Claude' button payload; never raises — a bad template just hides the button."""
+    try:
+        out["ask"] = ASK.ask_links(settings, kind, facts)
+    except Exception:  # noqa: BLE001 - a broken prompt must not take the pop-up down
+        out["ask"] = {"web": None, "desktop": None, "label": "Ask Claude"}
+
+
+def _ask_kind_for_event(event: Optional[Dict[str, Any]], default: str = "session") -> str:
+    """Map an inbox event to the prompt family that fits it."""
+    kind = str((event or {}).get("kind") or "")
+    return {"run_failed": "run_failed", "run_lost": "run_failed",
+            "run_interrupted": "run_interrupted"}.get(kind, default)
 
 
 def _runtime_s(started: Any, ended: Any) -> Optional[int]:
@@ -290,6 +321,12 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
                 out["facts"]["profile"] = clean(event.get("profile"), 40) or prof
                 out["title"] = clean(redacted(event.get("summary")), PEEK_TEXT) or ""
         detail = _peek_session(registry, ro, settings, out["facts"]["profile"] or prof, sid, targets, out)
+        ask_kind = _ask_kind_for_event(event) if kind == "run" else "session"
+        _attach_ask(out, settings, ask_kind, {
+            "session_id": sid, "run_id": ident, "profile": out["facts"]["profile"],
+            "surface": out["facts"]["surface"], "at": out["facts"]["last_active"],
+            "state": "fehlgeschlagen" if ask_kind == "run_failed" else "unterbrochen" if ask_kind == "run_interrupted" else None,
+        })
         return {**out, **detail}
 
     if kind == "cron":
@@ -310,6 +347,10 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
         sid = safe_token(row.get("session_id"))
         if sid:
             _peek_session(registry, ro, settings, prof, sid, targets, out, title_fallback=out["title"])
+        _attach_ask(out, settings, "cron" if tone != "bad" else "cron_error", {
+            "job_name": row.get("job_name"), "job_id": row.get("job_id"), "run_id": ident,
+            "profile": prof, "at": out["facts"]["last_active"], "state": status,
+        })
         return out
 
     # approval
@@ -346,6 +387,10 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
                       title_fallback=out["title"], silent=True)
     out["links"].update(session=f"/ledger/session/{quote(sid, safe='')}" if sid else None,
                         **app_links(settings, targets, out["facts"]["profile"], sid))
+    _attach_ask(out, settings, "approval", {
+        "approval_key": key, "profile": out["facts"]["profile"], "surface": out["facts"]["surface"],
+        "age_s": _age_s(approval.get("ts")), "command": approval.get("action"),
+    })
     return out
 
 
@@ -520,6 +565,10 @@ def build_session(registry, principal: Principal, settings, hermes_config: Dict[
         "signals": signals,
         "links": {"session": f"/ledger/session/{quote(sid, safe='')}",
                   **app_links(settings, targets, used_profile, sid)},
+        "ask": ASK.ask_links(settings, "session", {
+            "session_id": sid, "profile": used_profile, "surface": surface_label(meta.get("source")),
+            "at": iso(meta.get("last_active")), "state": state,
+        }),
         "errors": errors,
         "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
     }

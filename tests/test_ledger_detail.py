@@ -502,3 +502,36 @@ def test_last_activity_is_normalised_across_the_two_session_tools(inbox_seeded):
     d = LD.build_peek(EpochRegistry(), make_principal(), inbox_seeded, CONFIG, "session", "local-aaaa")
     assert d["facts"]["last_active"], d["facts"]
     assert d["live"] is True
+
+
+# ---------------------------------------------------------------------------
+# "Ask Claude" in the payloads
+# ---------------------------------------------------------------------------
+
+def test_peek_carries_an_ask_button_for_a_session_and_an_approval(inbox_seeded):
+    d = LD.build_peek(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, "session", "local-aaaa")
+    assert d["ask"]["web"].startswith("https://claude.ai/new?q=")
+    assert "local-aaaa" in d["ask"]["prompt"]
+    assert d["ask"]["desktop"] is None            # no default, no guess
+
+    ap = LD.build_peek(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, "approval", "ap-1")
+    assert "ap-1" in ap["ask"]["prompt"]
+    assert "Nicht selbst antworten" in ap["ask"]["prompt"]
+
+
+def test_peek_carries_no_ask_button_without_a_template(inbox_seeded):
+    settings = load_settings({"HERMES_HOME": "/tmp/hermcp-ledger-detail-test", "HERMCP_LEDGER_AUTH": "key"})
+    settings.ledger_ask_claude_url = ""
+    d = LD.build_peek(FakeRegistry(), make_principal(), settings, CONFIG, "session", "local-aaaa")
+    assert d["ask"]["web"] is None and d["ask"]["desktop"] is None
+
+
+def test_session_view_carries_an_ask_button(inbox_seeded):
+    d = LD.build_session(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, "local-aaaa")
+    assert d["ask"]["web"].startswith("https://claude.ai/new?q=")
+    assert "local-aaaa" in d["ask"]["prompt"]
+
+
+def test_the_ask_prompt_never_leaks_the_secret_from_the_command(inbox_seeded):
+    d = LD.build_peek(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, "approval", "ap-1")
+    assert "hmcp_live" not in json.dumps(d["ask"])
