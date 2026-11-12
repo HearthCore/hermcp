@@ -225,10 +225,34 @@ def render(result: dict[str, Any]) -> str:
 # ----------------------------------------------------------------------------------------
 # Meta tools (bound to a registry instance)
 # ----------------------------------------------------------------------------------------
+# Words an agent searches for that the tool texts do not carry (search only; never sent in tools/list).
+SEARCH_KEYWORDS: dict[str, str] = {
+    "orchestration_overview": "orchestrate orchestrator orchestrating delegate dispatch coordinate setup who",
+    "clients_overview": "ledger orchestrate orchestrator orchestration who started attribution",
+    "session_card_set": "ledger register handle orchestrator orchestration claim recover takeover",
+    "session_cards_list": "ledger handle orchestrator orchestration who",
+    "runs_active": "ledger orchestration progress running delegate",
+    "inbox_list": "ledger history events",
+    "inbox_poll": "ledger events notifications",
+    "approval_detail": "ledger decision protocol history",
+    "agents_live": "orchestration workers running delegate",
+    "chat_send": "delegate orchestrate orchestration task prompt ask agent",
+    "chat_run_status": "result output answer delegate",
+    "kanban_create": "delegate dispatch orchestrate orchestration orchestrator worker hand over job",
+    "kanban_show": "worker result orchestration follow",
+    "kanban_log": "worker output orchestration follow",
+    "kanban_assignees": "workers dispatch orchestration who",
+    "kanban_list": "orchestration board backlog dispatch",
+}
+
+
 def _score(tool: Tool, terms: list[str]) -> int:
     hay = f"{tool.name} {tool.toolset} {tool.description}".lower()
+    extra = SEARCH_KEYWORDS.get(tool.name, "").split()
     s = 0
     for term in terms:
+        if term in extra:
+            s += 2
         if term in tool.name.lower():
             s += 3
         if term == tool.toolset:
@@ -240,9 +264,12 @@ def _score(tool: Tool, terms: list[str]) -> int:
 
 def install_meta_tools(reg: Registry) -> None:
     @reg.tool("hermes_search_tools", toolset="meta", meta=True,
-              description="Search all tools available to this key by keyword (name, toolset, description). "
+              description="Search all tools available to this key by keyword (name, toolset, description and "
+                          "a few concept words such as orchestration, delegate, ledger). Any word may match; best "
+                          "matches first. An empty query with `toolset` lists that toolset. "
                           "Use hermes_describe_tool for the schema, hermes_call to run.",
-              properties={"query": {"type": "string"}, "toolset": {"type": "string"},
+              properties={"query": {"type": "string", "description": "One or more keywords, e.g. 'cron model' or 'ledger'"},
+                          "toolset": {"type": "string", "description": "Only this toolset (names: see `toolsets` in any result)"},
                           "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}})
     def search(ctx: CallContext, query: str = "", toolset: str | None = None, limit: int = 20):
         terms = [w for w in re.split(r"\W+", query.lower()) if w]
@@ -254,9 +281,15 @@ def install_meta_tools(reg: Registry) -> None:
             if sc:
                 out.append((sc, t))
         out.sort(key=lambda p: (-p[0], p[1].name))
-        return {"count": len(out), "tools": [
+        res = {"count": len(out), "tools": [
             {"name": t.name, "toolset": t.toolset, "access": t.access, "description": t.description}
             for _, t in out[:limit]], "toolsets": ctx.registry.toolsets(ctx.principal.scopes)}
+        if not out:
+            res["hint"] = ("no tool in your scope matches; try a single word, or pass one of `toolsets` as toolset "
+                           "with an empty query to list it")
+        elif len(out) > limit:
+            res["hint"] = f"showing the best {limit} of {len(out)}; narrow with `toolset` or raise `limit`"
+        return res
 
     @reg.tool("hermes_describe_tool", toolset="meta", meta=True,
               description="Description, access level and JSON input schema of one tool in your scope. Read it "

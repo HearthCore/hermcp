@@ -56,8 +56,7 @@ def _compact(r):
 
 @reg.tool("cron_list", toolset="cron", profile_aware=True, core=True,
           description=("A profile's scheduled jobs. DEFAULT: compact, only ACTIVE jobs (scheduled / running) plus any job wh"
-                       'ose last run failed; `_meta.list` counts the hidden paused / completed ones (changed: it used to lis'
-                       't all with prompts). include=all adds them. view=summary = counters per state plus failing jobs. pro'
+                       'ose last run failed; `_meta.list` counts the hidden paused / completed ones. include=all adds them. view=summary = counters per state plus failing jobs. pro'
                        'files=all or a comma list = jobs of those profiles, each read live, with a `profile` field. detail=t'
                        'rue restores prompt (200 chars), skills, script and `route` (pinned, provider, model, credential-fre'
                        'e base_url, `effective` model and its source). `defaults` = cron.model, main model, fallback chain. '

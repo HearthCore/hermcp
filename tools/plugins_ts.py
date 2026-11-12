@@ -25,7 +25,7 @@ def _matches_source(p, source):
 
 @reg.tool("plugins_list", toolset="plugins", profile_aware=True, core=True,
           description=('Installed plugins of a profile. DEFAULT: compact, only ENABLED plugins (name, status, source, versio'
-                       'n); `_meta.list` counts the hidden ones (changed: it used to list all with descriptions). include=al'
+                       'n); `_meta.list` counts the hidden ones. include=al'
                        'l adds disabled ones. view=summary = counters per source. profiles=all or a comma list = matrix plug'
                        'in x profile (on | off | absent), each profile asked live via its own `hermes plugins list` (about 7'
                        ' s each, in parallel). Filters: query, source (prefix: bundled, user, git, catalog), limit/offset; t'

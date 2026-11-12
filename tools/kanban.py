@@ -43,8 +43,8 @@ def _write(ctx, summary, argv, board, stdin=None, json_out=False):
     return {"applied": True, "output": out[-4000:]}
 
 
-@reg.tool("kanban_boards", toolset="kanban", core=True, description="List kanban boards with task counts.",
-          properties={"all": {"type": "boolean", "default": False}})
+@reg.tool("kanban_boards", toolset="kanban", core=True, description="List kanban boards with task counts per status. Pass a board's slug as `board` to the other kanban tools.",
+          properties={"all": {"type": "boolean", "default": False, "description": "Also list archived boards"}})
 def kanban_boards(ctx, all=False):
     return cli_json(["kanban", "boards", "list", "--json"] + (["--all"] if all else []), None, 30)
 
@@ -56,8 +56,7 @@ def _krow(t):
 
 @reg.tool("kanban_list", toolset="kanban", core=True,
           description=('Kanban tasks of the default board (or `board`). DEFAULT: compact, only OPEN tasks (not done / archiv'
-                       'ed; id, title, status, assignee, priority, created_at); `_meta.list` counts the hidden ones (changed'
-                       ': it used to include done tasks with body excerpts). include=all adds done and archived. An explicit'
+                       'ed; id, title, status, assignee, priority, created_at); `_meta.list` counts the hidden ones. include=all adds done and archived. An explicit'
                        ' `status` always shows that status. view=summary = counters per status and assignee. detail=true res'
                        'tores full rows (text cut at 300 characters). Filters: query (title), status, assignee, tenant, limi'
                        't/offset; total, returned, truncated are always stated. No profiles matrix: tasks belong to boards, '
@@ -172,19 +171,33 @@ def kanban_stats(ctx, board=None):
     return cli_json(_base(board) + ["stats", "--json"], None, 30)
 
 
-@reg.tool("kanban_assignees", toolset="kanban", description="Profiles that can be assigned, with task counts.",
+@reg.tool("kanban_assignees", toolset="kanban", description="Profiles a task can be assigned to, with their task counts per status. Use one as `assignee` in kanban_create or `profile` in kanban_assign.",
           properties={"board": BOARD})
 def kanban_assignees(ctx, board=None):
     return cli_json(_base(board) + ["assignees", "--json"], None, 30)
 
 
-@reg.tool("kanban_create", toolset="kanban", access="write", core=True, description=("Create a kanban task. With an assignee the dispatcher can start a worker agent for it, so "
-                                                                                     "creating a task can trigger work. Use idempotency_key to avoid duplicates on a retry."),
+@reg.tool("kanban_create", toolset="kanban", access="write", core=True, description=(
+              "Create a kanban task: the way to hand work to the Hermes dispatcher instead of talking to one profile "
+              "with chat_send. CREATING A TASK CAN START WORK: with an assignee (a profile from kanban_assignees) the "
+              "dispatcher starts a worker agent for it; without one the board's kanban config decides who picks it up "
+              "(orchestration_overview shows orchestrator_profile, default_assignee and dispatch_profiles). The body "
+              "is the worker's whole brief: it does not see your conversation. Follow the task with kanban_show "
+              "(status, comments, runs) and kanban_log (worker log); the worker's turn appears in agents_live, not "
+              "in runs_active. Use idempotency_key so a retry never creates a second task; dry_run shows the plan."),
           properties={"board": BOARD, "title": {"type": "string", "minLength": 1, "maxLength": 300},
-                      "body": {"type": "string"}, "assignee": {"type": "string"},
-                      "parents": {"type": "array", "items": TASK}, "priority": {"type": "integer"},
-                      "triage": {"type": "boolean", "default": False}, "tenant": {"type": "string"},
-                      "idempotency_key": {"type": "string"}, "skills": {"type": "array", "items": {"type": "string"}}},
+                      "body": {"type": "string", "description": "The full brief for the worker: goal, limits, what to report back"},
+                      "assignee": {"type": "string", "description": "Profile that should do the work (see kanban_assignees)"},
+                      "parents": {"type": "array", "items": TASK,
+                                  "description": "Task ids that must be done first; this task stays todo until then"},
+                      "priority": {"type": "integer"},
+                      "triage": {"type": "boolean", "default": False,
+                                 "description": "Create it in triage (not ready for dispatch yet)"},
+                      "tenant": {"type": "string"},
+                      "idempotency_key": {"type": "string",
+                                          "description": "Same key on a retry returns the existing task instead of a duplicate"},
+                      "skills": {"type": "array", "items": {"type": "string"},
+                                 "description": "Skill names the worker should load for this task"}},
           required=["title"])
 def kanban_create(ctx, title, board=None, body=None, assignee=None, parents=None, priority=None, triage=False,
                   tenant=None, idempotency_key=None, skills=None):
@@ -218,7 +231,8 @@ def kanban_edit(ctx, task_id, board=None, title=None, body=None, priority=None):
     return _write(ctx, "edit task", argv, board)
 
 
-@reg.tool("kanban_comment", toolset="kanban", access="write", description="Add a comment to a task; it is posted as hermcp:<key name>.",
+@reg.tool("kanban_comment", toolset="kanban", access="write", description=("Add a comment to a task; it is posted as hermcp:<key name>. Comments are how you give a worker "
+                       "more input or an authorization: a worker that picks the task up again sees them."),
           properties={"board": BOARD, "task_id": TASK, "text": {"type": "string", "minLength": 1}},
           required=["task_id", "text"])
 def kanban_comment(ctx, task_id, text, board=None):
@@ -226,8 +240,10 @@ def kanban_comment(ctx, task_id, text, board=None):
     return _write(ctx, "comment", ["comment", task_id, "--author", _author(ctx), "--", text], board)
 
 
-@reg.tool("kanban_assign", toolset="kanban", access="write", description="Assign a task to a profile ('none' unassigns). Assigning can trigger work.",
-          properties={"board": BOARD, "task_id": TASK, "profile": {"type": "string"}}, required=["task_id", "profile"])
+@reg.tool("kanban_assign", toolset="kanban", access="write", description=("Assign a task to a profile ('none' unassigns). ASSIGNING CAN START WORK: the dispatcher "
+                       "may start a worker agent of that profile for a ready task. kanban_assignees lists the profiles."),
+          properties={"board": BOARD, "task_id": TASK,
+                      "profile": {"type": "string", "description": "Assignee profile name, or 'none' to unassign"}}, required=["task_id", "profile"])
 def kanban_assign(ctx, task_id, profile, board=None):
     KS.require_own_task(ctx, task_id, board)
     if ctx.restricted and not ctx.own(profile):
@@ -236,7 +252,8 @@ def kanban_assign(ctx, task_id, profile, board=None):
     return _write(ctx, "assign", ["assign", task_id, profile], board)
 
 
-@reg.tool("kanban_block", toolset="kanban", access="write", description="Mark a task blocked with a reason.",
+@reg.tool("kanban_block", toolset="kanban", access="write", description=("Mark a task blocked with a reason: the dispatcher leaves it alone until kanban_unblock. "
+                       "The reason is shown to whoever picks the task up again."),
           properties={"board": BOARD, "task_id": TASK, "reason": {"type": "string"},
                       "kind": {"type": "string", "enum": ["dependency", "needs_input", "capability", "transient"]}},
           required=["task_id"])
@@ -249,7 +266,8 @@ def kanban_block(ctx, task_id, reason="", board=None, kind=None):
     return _write(ctx, "block", argv, board)
 
 
-@reg.tool("kanban_unblock", toolset="kanban", access="write", description="Unblock tasks (they become ready, or todo while parents are still open).",
+@reg.tool("kanban_unblock", toolset="kanban", access="write", description=("Unblock tasks: they become ready (the dispatcher may start a worker again), or todo while parents "
+                       "are still open. If the worker was waiting for an answer, give it with kanban_comment first."),
           properties={"board": BOARD, "task_ids": {"type": "array", "items": TASK, "minItems": 1},
                       "reason": {"type": "string"}}, required=["task_ids"])
 def kanban_unblock(ctx, task_ids, board=None, reason=None):
@@ -271,7 +289,7 @@ def kanban_complete(ctx, task_ids, board=None, result=None, summary=None):
     return _write(ctx, "complete", argv, board)
 
 
-@reg.tool("kanban_archive", toolset="kanban", access="admin", description="Archive a task.",
+@reg.tool("kanban_archive", toolset="kanban", access="admin", description="Archive a task: it leaves the board's open lists (kanban_list include=all still shows it).",
           properties={"board": BOARD, "task_id": TASK}, required=["task_id"])
 def kanban_archive(ctx, task_id, board=None):
     return _write(ctx, "archive", ["archive", task_id], board)

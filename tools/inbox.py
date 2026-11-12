@@ -254,6 +254,20 @@ def runs_active(ctx, all_keys=False, client_session=None):
     return out
 
 
+def _overview_next(has_cards: bool, has_free: bool) -> str:
+    """Only the advice that applies: no talk about runs when there are none to claim."""
+    out = ["You passed no client_session, so hermcp cannot mark which runs are yours."]
+    if has_cards:
+        out.append("If you are one of the sessions above (new chat, compacted context), take it over: "
+                   "session_card_set recover_from=<handle> (preview, then confirm=true).")
+    out.append("If you are new, register once with session_card_set (kind, purpose) and pass the handle as "
+               "client_session from then on.")
+    if has_free:
+        out.append("unclaimed_runs were started without a session: claim the ones you started with "
+                   "session_card_set claim_runs=[run_ids] (preview, then confirm=true); leave the others alone.")
+    return " ".join(out)
+
+
 def _session_overview(ctx, runs: list[dict]) -> dict | None:
     """Situation report for a caller that passed no client_session: who is around, which runs nobody claimed."""
     box = get_inbox(ctx.settings)
@@ -267,11 +281,7 @@ def _session_overview(ctx, runs: list[dict]) -> dict | None:
                       "purpose": c.get("purpose"), "last_seen": _iso(c["last_seen"]), "open_runs": c["open_runs"]}
                      for c in cards],
         "unclaimed_runs": [r["run_id"] for r in free[:10]],
-        "next": ("hermcp cannot tell which of these runs are yours. Are you one of the sessions above (new chat, "
-                 "compacted context)? Then take it over: session_card_set recover_from=<handle> (preview, then "
-                 "confirm=true). If you are new, register with session_card_set and pass the handle as "
-                 "client_session. Runs nobody claims (unclaimed_runs): claim the ones you started with "
-                 "session_card_set claim_runs=[run_ids] (preview, then confirm=true)."),
+        "next": _overview_next(bool(cards), bool(free)),
     }
 
 

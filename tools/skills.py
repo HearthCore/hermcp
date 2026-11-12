@@ -34,7 +34,7 @@ def _row_status(s, platform):
 
 @reg.tool("skills_list", toolset="skills", profile_aware=True, core=True,
           description=('Skills of a profile, computed in a fresh process (no cache). DEFAULT: compact, only ACTIVE skills (n'
-                       'ame, category, source, status); `_meta.list` counts what was hidden (changed: it used to list all). '
+                       'ame, category, source, status); `_meta.list` counts what was hidden. '
                        'include=all adds disabled ones (status; disabled_on = platforms such as api_server, cron, oneshot th'
                        'at switch it off). view=summary = counters per category and source. profiles=all or a comma list = m'
                        "atrix skill x profile (on | off | absent), each profile read live. `platform` makes 'active' mean ac"

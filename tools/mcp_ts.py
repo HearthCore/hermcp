@@ -28,7 +28,7 @@ def _transport(c):
 
 @reg.tool("mcp_list", toolset="mcp", profile_aware=True, core=True,
           description=('Configured MCP servers of a profile. DEFAULT: compact, only ENABLED servers (name -> enabled, transp'
-                       'ort); `_meta.list` counts the hidden disabled ones (changed: it used to list all with full config). '
+                       'ort); `_meta.list` counts the hidden disabled ones. '
                        'include=all adds them. view=summary = counters per transport. profiles=all or a comma list = matrix '
                        'server x profile (on | off | absent), read live per profile. detail=true restores the full config (e'
                        'nv, header, auth, oauth values masked as abcd********wxyz / ********; ${VAR} references stay). Filters: query, source = transport'

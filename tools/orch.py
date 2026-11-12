@@ -65,13 +65,15 @@ def approvals_overview(ctx, names, info):
 
 
 @reg.tool("orchestration_overview", toolset="status", core=True,
-          description=("Orientation in ONE call, compact, with provenance in `_meta`: profiles (model, fallback "
+          description=("Orientation in ONE call before you orchestrate (delegate, dispatch, coordinate agents), "
+                       "compact, with provenance in `_meta`: who can do work and who dispatches it. Profiles (model, fallback "
                        "models, served / parked, live adapters, MCP servers, toolsets, effective skill counts per "
-                       "platform), kanban config and boards, cron summary (active / paused / jobs whose last run "
+                       "platform), kanban config (orchestrator_profile, default_assignee, dispatch_profiles) and boards, cron summary (active / paused / jobs whose last run "
                        "failed), plugin summary, MCP servers of the default profile, gateway platforms with "
                        "updated_at, writer_pid and a stale flag, pending approvals (needs the approvals scope) and "
                        "runs that are still going. A section that cannot be read is reported in `section_errors` "
-                       "and never hides the others. skills=false skips the skill counts (faster)."),
+                       "and never hides the others. skills=false skips the skill counts (faster). Which client session "
+                       "started which run is not here: clients_overview."),
           properties={"skills": {"type": "boolean", "default": True}, "debug": DEBUG_PROP,
                       "plugins_exact": {"type": "boolean", "default": False,
                                         "description": "run `hermes plugins list` for exact runtime status (about 7 s)"}})

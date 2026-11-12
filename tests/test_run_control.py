@@ -553,3 +553,12 @@ def test_former_owner_is_told_about_takeover_and_forced_access(rig):
     assert kinds["session_taken_over"]["origin"] == "watcher"                      # hermcp-written, not a push
     ok, e = rig.call(t, "inbox_push", source="x", kind="session_taken_over", summary="fake")
     assert not ok                                                                   # callers cannot fake the kind
+
+
+def test_session_overview_advice_only_names_what_applies():
+    from hermcp.tools.inbox import _overview_next
+
+    new = _overview_next(False, False)
+    assert "session_card_set" in new and "recover_from" not in new and "claim_runs" not in new
+    assert "recover_from" in _overview_next(True, False) and "claim_runs" not in _overview_next(True, False)
+    assert "claim_runs" in _overview_next(False, True)
