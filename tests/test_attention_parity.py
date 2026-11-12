@@ -271,3 +271,36 @@ def test_the_shared_wording_points_at_the_tools_not_at_a_page_group():
     assert "not shown on the page" in text
     assert "inbox_attention" in text and "approval_detail" in text
     assert "stay readable in the history" not in text
+
+
+def test_inbox_attention_cuts_only_the_closed_lists(monkeypatch):
+    """An agent that asks what needs attention must not get every decided approval of the day."""
+    from types import SimpleNamespace
+    from hermcp.tools import inbox as TI
+
+    seen = {}
+
+    class Box:
+        def attention_view(self, **kw):
+            seen.update(kw)
+            return {"waiting": [{"id": i} for i in range(9)], "attention": [{"id": i} for i in range(8)],
+                    "interrupted": [], "settled": [{"id": i} for i in range(7)],
+                    "history": [{"id": i} for i in range(kw["history_limit"])], "counts": {}}
+
+    monkeypatch.setattr(TI, "get_inbox", lambda settings: Box())
+    ctx = SimpleNamespace(settings=None, restricted=False,
+                          principal=SimpleNamespace(id="k", scopes=SimpleNamespace(profiles=["*"], access="read")))
+    monkeypatch.setattr(TI, "_profiles", lambda c: None)
+    monkeypatch.setattr(TI, "_consumer", lambda c, consumer: "k")
+
+    out = TI.inbox_attention(ctx)
+    assert seen["history_limit"] == 6                                  # one more than shown: that is how "more" is known
+    assert len(out["waiting"]) == 9 and len(out["attention"]) == 8    # open work is never cut
+    assert len(out["settled"]) == 5 and out["settled_total"] == 7
+    assert len(out["history"]) == 5 and out["history_more"] is True and "history_limit" in out["more"]
+
+    zero = TI.inbox_attention(ctx, history_limit=0)
+    assert zero["settled"] == [] and zero["history"] == [] and zero["settled_total"] == 7
+
+    full = TI.inbox_attention(ctx, history_limit=200)
+    assert len(full["settled"]) == 7 and len(full["history"]) == 200

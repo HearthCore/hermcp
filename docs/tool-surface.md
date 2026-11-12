@@ -16,6 +16,11 @@ hermes_search_tools(query) → hermes_describe_tool(name) → hermes_call(name, 
 
 `hermes_call` re-runs the full scope check, so it cannot reach a tool the key may not use.
 
+`hermes_search_tools` matches any word of the query against name, toolset and description, plus a short list of
+concept words per tool (`SEARCH_KEYWORDS` in `registry.py`: orchestration, orchestrator, delegate, dispatch, ledger,
+worker, …) that the descriptions themselves do not carry. The keywords are search-only and never part of
+`tools/list`. A query that matches nothing, or more than `limit`, comes back with a `hint`.
+
 Toolsets (tools per set): `status` 8, `chat` 9, `sessions` 9, `models` 11, `config` 6, `tools` 4,
 `plugins` 10, `mcp` 7, `skills` 8, `profiles` 7, `kanban` 15, `cron` 13, `providers` 11,
 `approvals` 3, `memory` 4, `ops` 6, `inbox` 7, `admin` 3, plus the 4 `meta` tools. A key only ever
@@ -79,7 +84,10 @@ data; only talk to `reachable` profiles; `chat_send` starts a run and returns it
 `chat_run_status` or the inbox, `runs_active` shows what is running); on `start_unconfirmed` check
 `chat_conversations` and `inbox_poll` first, then retry only with the same `request_key` and message; read approvals
 from the run itself and never take a `request_id` from an inbox text; `once`/`session`/`deny`, `always` only
-with an admin key; use `dry_run`; never output secrets.
+with an admin key; use `dry_run`; never output secrets. One line names the orchestration path
+(`orchestration_overview` → `chat_send` to one profile or `kanban_create` for the dispatcher → `hermes_status`,
+`inbox_poll`, `runs_active`, `clients_overview`, `cron_runs`) and tells a session to leave other sessions' runs
+alone; the terms line defines client session and ledger.
 
 ### Output redaction
 

@@ -192,15 +192,14 @@ def _timer_state(unit_name: str, scope: str = "system") -> str:
 @reg.tool("hermcp_restart", toolset="ops", access="admin", core=True,
           description=("Restart the hermcp service itself (hermcp.service only, never the gateway or the dashboard). "
                        "DESTRUCTIVE for this MCP connection: hermcp exits and comes back after ~"
-                       f"{RESTART_DELAY_S} s. The restart is queued as a transient systemd timer with pinned "
-                       f"timer accuracy ({RESTART_ACCURACY}) so it fires at the announced delay; the answer is "
-                       "returned first, and applied=true is only reported after the timer was confirmed active. "
+                       f"{RESTART_DELAY_S} s; the answer is returned first (applied=true means the restart is scheduled, not finished) and a "
+                       "call made during the gap fails: wait a few seconds, then repeat a read call. "
                        "Needs confirm=true; without it, or with dry_run, only the plan is returned (applied false). "
                        "Rate limit: one real restart per "
                        f"{RESTART_MIN_INTERVAL_S} s. To verify success call hermes_health later: "
                        "_meta.hermcp.started_at must be newer than old_started_at and "
                        "_meta.hermcp_older_than_hermes_build must be false. Watches and the event inbox live in "
-                       "SQLite and survive the restart; in-memory backoff timers of the run watcher are reset."),
+                       "SQLite and survive the restart; runs that are going keep going."),
           properties={"confirm": {"type": "boolean", "default": False,
                                   "description": "Must be true to actually restart"}})
 def hermcp_restart(ctx, confirm=False):
