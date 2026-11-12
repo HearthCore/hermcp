@@ -1424,10 +1424,10 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
   },
   &quot;additionalProperties&quot;: false
 }</pre></details></div>
-<div class='card' data-h='inbox_attention inbox read one classification of the inbox, shared with the ledger page: approvals still waiting, failed/lost runs that nothing settled, restart interruptions, settled failures (with the reason and the run that took over) and decided approvals with their decision protocol. counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a list cannot disagree. a settled failure is not hidden, it is reported as settled. read-only: reading it changes no read state. '>
+<div class='card' data-h='inbox_attention inbox read one classification of the inbox, shared with the ledger page: approvals still waiting, failed/lost runs that nothing settled, restart interruptions, settled failures (with the reason and the run that took over) and decided approvals with their decision protocol. counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a list cannot disagree. a settled failure is not hidden, it is reported as settled. what is open (`waiting`, `attention`, `interrupted`) always comes in full; the two closed lists (`settled`, `history`) are cut to the newest `history_limit` rows; `settled_total` and `history_more` say whether there is more. read-only: reading it changes no read state. '>
 <div class='name'>inbox_attention</div>
 <div class='badges'><span class='b' style='color:#1f6feb;border-color:#1f6feb'>read</span></div>
-<p class='desc'>One classification of the inbox, shared with the Ledger page: approvals still waiting, failed/lost runs that nothing settled, restart interruptions, settled failures (with the reason and the run that took over) and decided approvals with their decision protocol. Counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a list cannot disagree. A settled failure is not hidden, it is reported as settled. Read-only: reading it changes no read state.</p>
+<p class='desc'>One classification of the inbox, shared with the Ledger page: approvals still waiting, failed/lost runs that nothing settled, restart interruptions, settled failures (with the reason and the run that took over) and decided approvals with their decision protocol. Counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a list cannot disagree. A settled failure is not hidden, it is reported as settled. What is open (`waiting`, `attention`, `interrupted`) always comes in full; the two closed lists (`settled`, `history`) are cut to the newest `history_limit` rows; `settled_total` and `history_more` say whether there is more. Read-only: reading it changes no read state.</p>
 <details><summary>input schema</summary>
 <pre>{
   &quot;type&quot;: &quot;object&quot;,
@@ -1445,6 +1445,13 @@ Core tools are listed; use hermes_search_tools / hermes_describe_tool / hermes_c
       &quot;maximum&quot;: 168,
       &quot;default&quot;: 24,
       &quot;description&quot;: &quot;Window for failures, interruptions and decided approvals&quot;
+    },
+    &quot;history_limit&quot;: {
+      &quot;type&quot;: &quot;integer&quot;,
+      &quot;minimum&quot;: 0,
+      &quot;maximum&quot;: 200,
+      &quot;default&quot;: 5,
+      &quot;description&quot;: &quot;Newest N rows of `settled` and of `history` (0 = counts only); one approval in full: approval_detail&quot;
     }
   },
   &quot;additionalProperties&quot;: false

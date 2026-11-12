@@ -120,14 +120,28 @@ def inbox_ack(ctx, ids=None, all=False, consumer=None):
                       "failed/lost runs that nothing settled, restart interruptions, settled failures (with the "
                       "reason and the run that took over) and decided approvals with their decision protocol. "
                       "Counts (`failed_runs_24h`, `approvals_waiting`) come from the same rows, so a badge and a "
-                      "list cannot disagree. A settled failure is not hidden, it is reported as settled. Read-only: "
-                      "reading it changes no read state.",
+                      "list cannot disagree. A settled failure is not hidden, it is reported as settled. What is open "
+                      "(`waiting`, `attention`, `interrupted`) always comes in full; the two closed lists (`settled`, "
+                      "`history`) are cut to the newest `history_limit` rows; `settled_total` and `history_more` say "
+                      "whether there is more. Read-only: reading it changes no read state.",
           properties={"consumer": CONSUMER,
                       "hours": {"type": "number", "minimum": 1, "maximum": 168, "default": 24,
-                                "description": "Window for failures, interruptions and decided approvals"}})
-def inbox_attention(ctx, consumer=None, hours=24):
-    return _wrap(get_inbox(ctx.settings).attention_view(profiles=_profiles(ctx),
-                                                        consumer=_consumer(ctx, consumer), hours=float(hours)), ctx)
+                                "description": "Window for failures, interruptions and decided approvals"},
+                      "history_limit": {"type": "integer", "minimum": 0, "maximum": 200, "default": 5,
+                                        "description": "Newest N rows of `settled` and of `history` (0 = counts only); "
+                                                       "one approval in full: approval_detail"}})
+def inbox_attention(ctx, consumer=None, hours=24, history_limit=5):
+    n = max(0, int(history_limit))
+    view = get_inbox(ctx.settings).attention_view(profiles=_profiles(ctx), consumer=_consumer(ctx, consumer),
+                                                  hours=float(hours), history_limit=n + 1)
+    # closed rows only: what is open (waiting, attention, interrupted) is never cut
+    settled, history = view.get("settled") or [], view.get("history") or []
+    view["settled_total"], view["settled"] = len(settled), settled[:n]
+    view["history_more"], view["history"] = len(history) > n, history[:n]
+    if view["history_more"] or view["settled_total"] > n:
+        view["more"] = ("closed rows were cut: raise history_limit (max 200), or read one approval with "
+                        "approval_detail, one run with inbox_list run_id=...")
+    return _wrap(view, ctx)
 
 
 @reg.tool("inbox_list", toolset="inbox",
