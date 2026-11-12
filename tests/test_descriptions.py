@@ -186,3 +186,37 @@ def test_cron_model_tools_explain_the_pin_and_their_limits(reg):
     for n in ("models_fallback_add", "models_fallback_remove"):
         assert "approvals" in reg.tools[n].description and "dry_run" in reg.tools[n].description
     assert "cron_model_set" in INSTRUCTIONS and len(INSTRUCTIONS.splitlines()) <= 15
+
+
+# ---- orchestration: an agent that asks for the concept finds the tools ------------------------
+def test_search_finds_the_orchestration_and_ledger_tools_by_concept(reg):
+    from hermcp.registry import SEARCH_KEYWORDS, _score
+
+    assert not [n for n in SEARCH_KEYWORDS if n not in reg.tools]      # no keyword for a tool that is gone
+
+    def hits(word):
+        return {t.name for t in reg.tools.values() if _score(t, [word])}
+
+    assert {"session_card_set", "session_cards_list", "clients_overview", "inbox_attention", "cron_runs"} <= hits("ledger")
+    for word in ("orchestration", "orchestrator"):
+        assert {"orchestration_overview", "kanban_create", "clients_overview", "session_card_set"} <= hits(word), word
+    assert {"chat_send", "kanban_create"} <= hits("delegate")
+
+
+def test_instructions_name_the_orchestration_path_and_the_ledger():
+    low = INSTRUCTIONS.lower()
+    for needle in ("orchestrating:", "orchestration_overview", "kanban_create", "clients_overview", "cron_runs",
+                   "session_cards_list", "the ledger is"):
+        assert needle in low, needle
+
+
+def test_descriptions_carry_no_changelog_notes(reg):
+    for name, where, text in all_texts(reg):
+        assert "it used to" not in text and "(changed:" not in text, (name, where)
+
+
+def test_kanban_write_tools_say_when_they_start_work(reg):
+    for n in ("kanban_create", "kanban_assign"):
+        assert "CAN START WORK" in reg.tools[n].description, n
+    d = reg.tools["kanban_create"].description
+    assert "kanban_show" in d and "kanban_log" in d and "idempotency_key" in d and "agents_live" in d
