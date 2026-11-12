@@ -26,7 +26,9 @@ Two key profiles, because "key" is a secret word in config files but an ID in ot
   GENERIC  everything else (sessions, cron, kanban, chat, status, ...)
 
 Deliberately NOT redacted: ids, names, paths, timestamps, URLs without credentials, UUIDs, commit hashes,
-numbers/bools, `${VAR}` references, names of env vars (`key_env`, `*_env`).
+numbers/bools, `${VAR}` references, names of env vars (`key_env`, `*_env`). Keys that carry "key" but name an
+id (`idempotency_key`, `request_key`, `approval_key`, `session_key`, `client_session`) and their CLI flags
+(`--idempotency-key VALUE`, ...) are not secrets either and stay readable.
 
 Containers named env/environment/headers/auth/oauth/... are credential containers: every string below them is
 masked unless it is clearly harmless (`${VAR}` reference, URL without credentials, path, number/boolean word,
@@ -112,6 +114,12 @@ _REF = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 # containers whose string members are credentials more often than not (entropy rule context)
 _SECRET_CONTEXT = re.compile(r"^(env|environment|headers|extra_headers|args|command|secrets|credentials|auth|"
                              r"params|options|extra_body|query)$", re.I)
+# keys that carry "key" but are ids, not secrets (kanban idempotency_key, approvals session_key): never masked.
+# Applies to the key-NAME layer and to the CLI-flag layer (--idempotency-key VALUE in argv lists).
+_KEY_LIKE_ID = re.compile(r"^(?:idempotency|request|approval|api_?request)[_-]?key$|"
+                          r"^(?:session_key|client_session|client_session_key)$", re.I)
+_NONSECRET_ID_FLAG = re.compile(r"^--?(?:idempotency|request|approval|api[_-]?request)[_-]?key$|"
+                                r"^--?(?:client[_-]?session|session[_-]?key)$", re.I)
 _NONSECRET_FLAG_SUFFIX = re.compile(r"-(file|path|dir|url|uri|name|id|env|count|size|length|type|mode)$", re.I)
 _SECRET_FLAG = re.compile(r"^--?(?:[a-z0-9]+-)*(token|secret|passw(?:or)?d|passwd|api-?key|apikey|key|auth|"
                           r"bearer|credential)(?:-[a-z0-9]+)*$", re.I)
@@ -253,6 +261,8 @@ def secret_key(key: Any, *, strict: bool) -> bool:
     if not isinstance(key, str) or not key:
         return False
     k = key.rsplit(".", 1)[-1]
+    if _KEY_LIKE_ID.match(k):
+        return False
     rx = _STRICT_KEY if strict else _GENERIC_KEY
     if _SAFE_EXACT.match(k) or _WEAK_KEY.match(k):
         return False
@@ -395,7 +405,7 @@ def redact(value: Any, key: str = "", *, strict: bool = False, partial: bool = F
             else:
                 res.append(redact(item, key, _ctx=_ctx, _cred=_cred, _depth=_depth + 1, **kw))
             prev_flag = (isinstance(item, str) and bool(_SECRET_FLAG.match(item)) and "=" not in item
-                         and not _NONSECRET_FLAG_SUFFIX.search(item))
+                         and not _NONSECRET_FLAG_SUFFIX.search(item) and not _NONSECRET_ID_FLAG.match(item))
         return type(value)(res) if isinstance(value, tuple) else res
     return _scalar(value, key, strict, _ctx, partial, _cred)
 

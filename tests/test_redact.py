@@ -106,6 +106,29 @@ def test_args_list_after_secret_flag():
     assert out["args"] == ["serve", "--token", MARK, "--port", "80", "--api-key", MARK]
 
 
+# ---- key-like ids are not secrets: idempotency/request/approval/session keys ----------------------
+def test_key_like_id_keys_and_flags_survive():
+    # kanban_create dry-run argv: the value of --idempotency-key is an id, not a secret
+    argv = ["hermes", "kanban", "create", "T", "--idempotency-key", "idem-abc-123",
+            "--request-key", "rk-1", "--approval-key", "ap-2"]
+    assert redact(argv) == argv
+    assert redact(argv, strict=True) == argv
+    # the same keys as field names (both profiles)
+    for key in ("idempotency_key", "request_key", "approval_key", "session_key", "client_session"):
+        assert redact({key: "abc-123-xyz"}, strict=True) == {key: "abc-123-xyz"}
+        assert redact({key: "abc-123-xyz"}) == {key: "abc-123-xyz"}
+
+
+def test_real_secrets_still_masked_besides_key_like_ids():
+    # Gegenprobe: the neighbouring actual secrets keep getting masked
+    out = redact({"args": ["create", "--idempotency-key", "idem-abc-123", "--api-key", S]}, strict=True)
+    assert out["args"] == ["create", "--idempotency-key", "idem-abc-123", "--api-key", MARK]
+    t = redact_text(f"token={S} failed")
+    assert S not in t and "token=" in t
+    assert redact({"env": {"API_SERVER_KEY": S}}, strict=True)["env"]["API_SERVER_KEY"] == MARK
+    assert redact({"api_key": S}, strict=True)["api_key"] == MARK
+
+
 # ---- entropy rule: careful, secret contexts only ----------------------------------------------
 def test_entropy_rule_only_in_secret_contexts():
     assert redact({"env": {"A": RND}}, strict=True)["env"]["A"] == MARK
