@@ -16,3 +16,9 @@ The symptoms worth knowing before opening an issue.
 | Many tests fail locally (`No module named 'ruamel'` in a probe) | Run `scripts/run_tests.sh`; see Development. |
 | Anything else | `hermes hermcp doctor` checks imports, permissions, lock, unit and proxy settings. |
 
+## `413` on `/mcp` or `/inbox`
+
+`POST /mcp` accepts bodies up to 1 MB, `POST /inbox` up to 8 KB. The limit is enforced while the body arrives: a
+`Content-Length` over the limit is refused before any byte is read, and without the header (chunked uploads) the read
+stops as soon as the running total passes the limit, so the process never buffers more than the limit plus one chunk.
+Split a large batch into several requests.

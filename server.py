@@ -87,6 +87,22 @@ MAX_BODY = 1_000_000
 MAX_INBOX_BODY = 8_192
 _HTTP_STATUS = {"invalid_arguments": 400, "forbidden": 403, "rate_limited": 429, "unknown_tool": 404}
 
+async def _read_capped(req: Request, limit: int) -> bytes | None:
+    """Read the request body, never buffering more than `limit` bytes; None = over the limit.
+
+    A declared Content-Length over the limit is refused before a single byte is read; without
+    (or with a lying) header the stream is cut off as soon as the running total passes the cap."""
+    declared = req.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        return None
+    buf = bytearray()
+    async for chunk in req.stream():
+        buf += chunk
+        if len(buf) > limit:
+            return None
+    return bytes(buf)
+
+
 Authenticator = Callable[[str], "Principal | None"]
 
 
@@ -517,8 +533,8 @@ class HermcpApp:
         if req.method == "DELETE":   # session termination is a no-op
             self._capture(req, principal, [])
             return Response(status_code=200)
-        body = await req.body()
-        if len(body) > MAX_BODY:
+        body = await _read_capped(req, MAX_BODY)
+        if body is None:
             return JSONResponse(rpc_error(None, -32600, "request too large"), status_code=413)
         try:
             msg = json.loads(body)
@@ -549,8 +565,8 @@ class HermcpApp:
         if principal is None:
             self.limiter.fail(ip)
             return self.unauthorized()
-        body = await req.body()
-        if len(body) > MAX_INBOX_BODY:
+        body = await _read_capped(req, MAX_INBOX_BODY)
+        if body is None:
             return JSONResponse({"ok": False, "error": {"code": "too_large", "message": "body too large"}}, status_code=413)
         try:
             args = json.loads(body)
