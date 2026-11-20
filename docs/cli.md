@@ -23,7 +23,7 @@ hermes hermcp keys scopes --help
 | `hermes hermcp status` | Who owns the server: instance lock (pid, role), port, bind address, systemd unit state, verdict. |
 | `hermes hermcp stop [--force]` | Stop the instance holding the lock; asks systemd when the unit manages it. `--force` signals a systemd-managed pid directly. |
 | `hermes hermcp install-service [--enable-now] [--dry-run] [--out PATH] [--no-auto-restart]` | Write the systemd units (`hermcp.service` + `hermcp-restart.path`/`.service`), `daemon-reload`, do not start unless `--enable-now`. |
-| `hermes hermcp doctor` | Install check: imports, permissions, key store, unit, proxy/allowlist, api_server keys per profile. `[warn]` is advice, exit 1 is a hard failure. |
+| `hermes hermcp doctor` | Install check: imports, permissions, key store, unit, proxy/allowlist, Ledger exposure, api_server keys per profile. `[warn]` is advice, exit 1 is a hard failure. |
 | `hermes hermcp selftest [--profiles a,b] [--json] [--skip-slow]` | Compare hermcp's answers with fresh-process references for every profile. Read-only; exit 1 on any FAIL. |
 | `hermes hermcp docs [--out PATH]` | Regenerate `docs/tools.html` from the live registry and rewrite the generated catalog counts in `README.md` and `docs/tool-surface.md` (also refreshed on every server start). |
 | `hermes hermcp oauth init [--client-id ID] [--rotate]` | Create the static OAuth client for Claude.ai; secret shown once. `--rotate` invalidates every issued token. |

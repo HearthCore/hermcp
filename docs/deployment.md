@@ -93,6 +93,11 @@ Rules, in code and not by convention:
 Rate limiting and the failed-auth limiter use the resolved client address, so per-IP
 limits stay per real client behind the proxy.
 
+`hermes hermcp doctor` checks the list, not the old flag: with `HERMCP_PUBLIC_URL` set and
+`HERMCP_TRUSTED_PROXIES` empty it warns that every client resolves to the proxy's address (one
+failed-auth bucket, one Ledger client), and a `HERMCP_TRUST_PROXY` that is still set is reported as
+deprecated rather than counted as configuration.
+
 **List exact addresses, not networks.** A `/24` trusts every container that ever lands in
 that subnet; if Pangolin/Traefik runs in Docker, pin the entry to the address the proxy
 actually uses toward hermcp (or its fixed container IP), and update the list when it

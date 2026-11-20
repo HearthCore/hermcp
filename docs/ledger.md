@@ -118,6 +118,12 @@ route behind the proxy's auth, and see
 `none` is **safe only inside a trusted network**. Never put it behind an edge that does not strip or
 overwrite forwarding headers, and never forward the port to the internet.
 
+`hermes hermcp doctor` says the combination out loud: with `HERMCP_LEDGER=1` and
+`HERMCP_LEDGER_AUTH=none` on a bind address that is not loopback, it prints a
+`[warn] Ledger exposure` row naming the port and the fix (`HERMCP_LEDGER_AUTH=key`, or bind
+`127.0.0.1`). It is a warning, not a failure — `serve` starts either way, because a LAN address is a
+documented setup. A loopback bind stays quiet.
+
 ### Deprecated (one-day) names
 
 The page shipped for one day as "Lagebild". These still work and are read only where the new name is
