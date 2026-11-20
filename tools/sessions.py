@@ -85,7 +85,7 @@ def sessions_export(ctx, session_id, max_chars=4000):
                 "messages": [S.slim(m, max_chars) for m in msgs[:2000]]}
 
 
-def _flag_tool(name, method, field, desc):
+def _flag_tool(name, setter, field, desc):
     @reg.tool(name, toolset="sessions", access="write", profile_aware=True, description=desc,
               properties={"session_id": SID, field: {"type": "boolean", "default": True}}, required=["session_id"])
     def _fn(ctx, session_id, **kw):
@@ -96,13 +96,12 @@ def _flag_tool(name, method, field, desc):
                 return ctx.plan(f"{name} {sid}", session_id=sid, **{field: val})
         with S.open_db(ctx.profile, read_only=False) as db:
             sid = S.resolve(db, session_id)
-            ok = call_inproc(getattr(db, method), sid, val)
-            return {"session_id": sid, field: val, "applied": bool(ok)}
+            return {"session_id": sid, field: val, "applied": setter(ctx.profile, db, sid, val)}
     return _fn
 
 
-_flag_tool("sessions_pin", "set_session_pinned", "pinned", "Pin (pinned=true, default) or unpin (pinned=false) a session. Reversible.")
-_flag_tool("sessions_archive", "set_session_archived", "archived", ("Hide (archived=true, default) or restore (archived=false) a session. Reversible; does not "
+_flag_tool("sessions_pin", S.set_pinned, "pinned", "Pin (pinned=true, default) or unpin (pinned=false) a session. Reversible.")
+_flag_tool("sessions_archive", S.set_archived, "archived", ("Hide (archived=true, default) or restore (archived=false) a session. Reversible; does not "
                                                                     "delete."))
 
 
@@ -114,7 +113,7 @@ def sessions_rename(ctx, session_id, title):
     if ctx.dry_run:
         with S.open_db(ctx.profile) as db:
             sid = S.resolve(db, session_id)
-            return ctx.plan("rename", session_id=sid, before=call_inproc(db.get_session_title, sid), after=title)
+            return ctx.plan("rename", session_id=sid, before=S.title(db, sid), after=title)
     with S.open_db(ctx.profile, read_only=False) as db:
         sid = S.resolve(db, session_id)
         return {"session_id": sid, "title": title, "applied": bool(call_inproc(db.set_session_title, sid, title))}
@@ -128,7 +127,7 @@ def sessions_delete(ctx, session_id):
     if ctx.dry_run:
         with S.open_db(ctx.profile) as db:
             sid = S.resolve(db, session_id)
-            return ctx.plan("delete", session_id=sid, would_delete=call_inproc(db.get_session_delete_targets, sid))
+            return ctx.plan("delete", session_id=sid, would_delete=S.delete_targets(ctx.profile, db, sid))
     with S.open_db(ctx.profile, read_only=False) as db:
         sid = S.resolve(db, session_id)
         return {"session_id": sid, "deleted": bool(call_inproc(db.delete_session, sid))}

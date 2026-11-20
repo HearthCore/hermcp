@@ -251,7 +251,14 @@ def test_config_set_unset_restore_responses(call):
         ok, r, raw = call("config_set", key="providers.x.api_key", value=PASS_B, dry_run=dry)
         assert ok and r["changes"] == [{"path": "providers.x.api_key", "change": "changed", "value": SECRET_CHANGED}], raw
         clean(raw)
-    assert _cfg(call)["providers"]["x"]["api_key"] == PASS_B
+    # Hermes keeps a credential in the profile's .env and stores only a ${NAME} reference in config.yaml
+    # (hermes_cli.config_secret_refs); older versions store the literal. Either way the effective value
+    # must be PASS_B, and the file must never hold it in a form the tool output leaks.
+    stored = _cfg(call)["providers"]["x"]["api_key"]
+    assert stored == PASS_B or re.fullmatch(r"\$\{[A-Z0-9_]+\}", stored), stored
+    ok, r, raw = call("config_get", key="providers.x.api_key")
+    assert ok and r["value"] == mask_value(PASS_B, True), raw
+    assert PASS_B not in raw and LONG not in raw
     ok, r, raw = call("config_set", key="providers.x.api_key", value=PASS_B)
     assert ok and r["changes"][0]["value"] == SECRET_UNCHANGED
     clean(raw)

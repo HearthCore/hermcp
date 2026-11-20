@@ -55,3 +55,56 @@ def resolve(db, session_id: str) -> str:
     if not sid:
         raise ToolError("not_found", f"no session matching {session_id!r}")
     return sid
+
+
+def title(db, session_id: str) -> str | None:
+    """A session's title, or None. `hermes_state.SessionDB` no longer carries `get_session_title` (Hermes
+    deprecates the class for the storage interface and keeps only the methods its plugin guide lists), so
+    read the row it does carry."""
+    row = call_inproc(db.get_session, session_id)
+    return None if row is None else row.get("title")
+
+
+@contextlib.contextmanager
+def store(profile: str, read_only: bool = True) -> Iterator[Any]:
+    """The storage interface handle on a profile's state.db. Hermes >= 0.27 deprecates
+    `hermes_state.SessionDB` for it and keeps only a subset of the class's methods; older Hermes has no
+    storage interface at all, which is why every caller below tries the class method first."""
+    try:
+        from persistence_assembly import open_persistence, open_persistence_reader, profile_scope
+    except ImportError as exc:
+        raise AdapterError(f"no storage interface: {exc}") from exc
+    home = profile_home(profile)
+    with hermes_scope(profile):
+        if read_only:
+            with open_persistence_reader(home / "state.db") as handle:
+                yield handle
+        else:
+            with open_persistence(profile_scope(home=home)) as handle:
+                yield handle
+
+
+def delete_targets(profile: str, db, session_id: str) -> list[str]:
+    """The session ids `delete_session` would remove: the session, its local lineage and its recursive
+    delegate children."""
+    fn = getattr(db, "get_session_delete_targets", None)
+    if fn is not None:
+        return call_inproc(fn, session_id)
+    with store(profile) as handle:
+        return [str(sid) for sid in handle.sessions.delete_targets(session_id)]
+
+
+def set_pinned(profile: str, db, session_id: str, pinned: bool) -> bool:
+    fn = getattr(db, "set_session_pinned", None)
+    if fn is not None:
+        return bool(call_inproc(fn, session_id, pinned))
+    with store(profile, read_only=False) as handle:
+        return bool(handle.sessions.set_pinned(session_id, pinned))
+
+
+def set_archived(profile: str, db, session_id: str, archived: bool) -> bool:
+    fn = getattr(db, "set_session_archived", None)
+    if fn is not None:
+        return bool(call_inproc(fn, session_id, archived))
+    with store(profile, read_only=False) as handle:
+        return bool(handle.sessions.set_archived(session_id, archived).changed)
