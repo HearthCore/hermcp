@@ -1,5 +1,10 @@
 # hermcp CLI → MCP tool parity
 
+> **Historical research draft — superseded.** Written before the implementation (October 2026) and
+> kept for provenance only. This is the German original; the shipped documentation is
+> [`docs/cli-parity.md`](../cli-parity.md) (English) and [`docs/CLI_INVENTORY.md`](../CLI_INVENTORY.md);
+> where the two disagree, those files are right. See [`README.md`](README.md) for the mapping.
+
 Automatisch erzeugt aus `hermes --help` (Hermes '') 
 am 2026-10-20. Quelle: `build.py` + `rows_final.json` im Scratch.
 

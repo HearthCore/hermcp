@@ -1,9 +1,19 @@
 # Approvals out-of-process for hermcp
 
+> **Historical research draft — superseded.** Written before the implementation (October 2026) and
+> kept for provenance only. The shipped documentation is [`docs/approvals.md`](../approvals.md);
+> where the two disagree, that file is right. See [`README.md`](README.md) for the mapping.
+
 Research artifact for the `hermcp` MCP server. Question under test: can a **separate process**
 list pending approval requests of running Hermes sessions and answer them, without patching
 Hermes core? Short answer: only for runs that process itself created via the API server. There
 is no out-of-process read path for an arbitrary chat-gateway session's pending approvals.
+
+> **Superseded answer:** the shipped bridge (`bridge.py`) does give a separate process a read path
+> to a gateway session's pending approvals. The plugin's agent half runs inside the gateway process
+> and publishes the queue on a loopback-only AF_UNIX socket (`approvals.sock`, mode 0600, peer uid
+> must match); the profile boundary is the session key's namespace. See
+> [`docs/approvals.md`](../approvals.md) §6.
 
 ---
 

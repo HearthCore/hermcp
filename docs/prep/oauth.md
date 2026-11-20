@@ -1,6 +1,10 @@
 # OAuth 2.1 for hermcp — concrete spec
 
-This is the authoritative implementation spec for `hermcp`'s OAuth 2.1 authorization
+> **Historical research draft — superseded.** Written before the implementation (October 2026) and
+> kept for provenance only. The shipped documentation is [`docs/oauth.md`](../oauth.md); where the
+> two disagree, that file is right. See [`README.md`](README.md) for the mapping.
+
+This was the pre-implementation spec for `hermcp`'s OAuth 2.1 authorization
 server + protected-resource layer. Every claim below is grounded in one of three sources
 (see §8): the MCP Python SDK's auth models and route builders installed under
 `/usr/local/lib/hermes-agent/venv/.../mcp/server/auth/`, Hermes' own OAuth client
