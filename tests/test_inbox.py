@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import warnings
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -104,9 +105,9 @@ def test_rotation_by_count_and_age(home):
     assert len(ids) == 5 and 1 not in ids and ids[0] == 9
     # age: events older than retention are dropped on next push (read state is per consumer, so age decides)
     b.app.settings.inbox_retention_days = 1.0
-    db = sqlite3.connect(b.app.settings.data / "inbox.db")
-    db.execute("UPDATE events SET ts='2020-01-01T00:00:00Z' WHERE id=?", (ids[-1],))
-    db.commit()
+    with closing(sqlite3.connect(b.app.settings.data / "inbox.db")) as db:
+        db.execute("UPDATE events SET ts='2020-01-01T00:00:00Z' WHERE id=?", (ids[-1],))
+        db.commit()
     b("producer", "inbox_push", source="s", kind="k", summary="trigger")
     left = [e["id"] for e in b("voice", "inbox_list")[1]["events"]]
     assert ids[-1] not in left
@@ -179,9 +180,9 @@ def _age_all(box, minutes):
     """Pretend every stored event is `minutes` old (the store compares ISO timestamps)."""
     from datetime import datetime, timedelta, timezone
     ts = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    db = sqlite3.connect(box.app.settings.data / "inbox.db")
-    db.execute("UPDATE events SET ts=?", (ts,))
-    db.commit()
+    with closing(sqlite3.connect(box.app.settings.data / "inbox.db")) as db:
+        db.execute("UPDATE events SET ts=?", (ts,))
+        db.commit()
 
 
 def test_ack_is_per_key(box):
@@ -502,14 +503,23 @@ def test_inbox_operations_do_not_grow_the_fd_table(home):
     assert len(os.listdir(fd_dir)) - before <= 2
 
 
-def test_inbox_connections_leave_no_resource_warning(home):
-    """Python 3.14 (CI) warns at GC for an unclosed connection; 3.11 stays silent, so this is the
-    guard that only bites where the leak was visible."""
+def test_inbox_connections_leave_no_resource_warning(home, opened):
+    """Nothing the store opened is left for the GC to warn about.
+
+    Python 3.14 (CI) warns `unclosed database in <sqlite3.Connection object at 0x...>` when a
+    connection is collected while open; 3.11 stays silent, so this guard only bites where the leak
+    was visible. The warnings are matched against the addresses of the connections *this* test
+    opened, so garbage from another test in the same process cannot redden it.
+    """
     box = _store(home)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for i in range(20):
             box.push(source="s", kind="k", summary=f"e{i}", ref=None, severity="info", pushed_by="t")
             box.poll(consumer="c")
+        mine = {hex(id(c)) for c in opened}
+        opened.clear()          # drop the strong refs: a leaked connection must be collectable here
         gc.collect()
-    assert [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)] == []
+    leaked = [str(w.message) for w in caught
+              if issubclass(w.category, ResourceWarning) and any(a in str(w.message) for a in mine)]
+    assert leaked == []
