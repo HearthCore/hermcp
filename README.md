@@ -21,12 +21,15 @@ Hermes install from there — including from a phone, including OAuth logins for
 
 
 
-> **Status: 0.1.0.** All four build phases are implemented and covered by tests. Today's catalog is
-> **144 tools — 46 advertised in `tools/list`, the rest reachable through
-> `hermes_search_tools` → `hermes_describe_tool` → `hermes_call`** — spread over 18 toolsets plus 4
-> meta tools: per-key scopes, OAuth 2.1 for Claude.ai connectors, run-scoped, cross-session and
-> hook-based approvals, client sessions, the event inbox with a run watcher, per-profile api_server
-> keys, output redaction, audit. Known gaps are listed in [Roadmap](#roadmap).
+> **Status: 0.1.0.** All four build phases are implemented and covered by tests.
+>
+> <!-- tool-counts:readme-status -->
+> Today's catalog is **148 tools** — 144 in 18 toolsets plus 4 meta tools — of which
+> **46 are advertised in `tools/list`** (a key sees only what its scopes and opt-in flags allow);
+> the rest is reachable through `hermes_search_tools` → `hermes_describe_tool` → `hermes_call`.
+> <!-- /tool-counts:readme-status -->
+>
+> Known gaps are listed in [Roadmap](#roadmap).
 
 ## Why
 
@@ -45,7 +48,7 @@ selftest` against a live install. Each row links to the section that documents i
 
 | Feature | What you get | Where |
 |---|---|---|
-| 145 tools, 19 toolsets | Full Hermes control surface behind one `/mcp` endpoint; 42 tools advertised, the rest through `hermes_search_tools` | [Tool surface](docs/tool-surface.md) |
+| <!-- tool-counts:readme-features-tools -->148 tools, 18 toolsets<!-- /tool-counts:readme-features-tools --> | Full Hermes control surface behind one `/mcp` endpoint; <!-- tool-counts:readme-features-advertised -->46 advertised<!-- /tool-counts:readme-features-advertised -->, the rest through `hermes_search_tools` | [Tool surface](docs/tool-surface.md) |
 | Trusted proxies | `HERMCP_TRUSTED_PROXIES`: forwarding headers (`X-Forwarded-For`/`Forwarded`/`X-Real-IP`/`-Proto`/`-Host`) are believed only from a configured proxy, read right to left; otherwise ignored entirely | [Reverse proxy](docs/deployment.md#trusted-proxies--the-only-place-forwarding-headers-are-believed) |
 | Per-key scopes | `access` + `toolsets` + `profiles` + explicit flags (`approvals`, `secrets_write`, `dangerous`, `inbox_push`, `approvals_always`); hidden tools never appear in `tools/list` | [Keys and scopes](docs/keys-and-scopes.md) |
 | Profile-bound keys | A key limited to one profile; global/admin tools and every indirect path (kanban, sessions, cron, skills, logs, approvals, inbox) closed | [Profile-bound keys](docs/profile-bound-keys.md) |
@@ -137,7 +140,9 @@ Everything else — `serve`, `status`, `stop`, `install-service`, `selftest`, `d
 
 ## Tool surface
 
-**144 tools in 18 toolsets, 46 advertised directly.** Models (and especially voice modes) degrade
+<!-- tool-counts:readme-surface -->
+**148 tools — 144 in 18 toolsets plus 4 meta tools — of which 46 are advertised directly.**
+<!-- /tool-counts:readme-surface --> Models (and especially voice modes) degrade
 with huge tool lists, so the long tail is reachable through three meta tools:
 
 ```
@@ -189,7 +194,7 @@ keys, and rotate them.
 
 ## Roadmap
 
-- [x] Key store, scopes, audit, meta tools, 140 tools across 18 toolsets
+- [x] Key store, scopes, audit, meta tools, <!-- tool-counts:readme-roadmap -->144 tools across 18 toolsets<!-- /tool-counts:readme-roadmap -->
 - [x] Single-instance lock, systemd migration path, status/stop/install-service
 - [x] Remote provider OAuth (device code / paste-back), write-only secrets
 - [x] OAuth 2.1 authorization server for Claude.ai custom connectors (persistent hashed tokens)

@@ -6,8 +6,9 @@ The tool catalog, the meta tools, the server instructions a client receives, and
 
 ---
 
-**144 tools in the catalog — 140 in 18 toolsets plus 4 meta tools — of which 46 are advertised
-directly** (4 of them the meta tools). Models (and especially voice modes) degrade with huge tool
+<!-- tool-counts:tool-surface -->
+**148 tools in the catalog — 144 in 18 toolsets plus 4 meta tools — of which 46 are advertised directly** (42 core tools plus 4 meta tools; a key sees only what its scopes and opt-in flags allow).
+<!-- /tool-counts:tool-surface --> Models (and especially voice modes) degrade with huge tool
 lists, so the long tail is reachable through meta tools:
 
 ```
