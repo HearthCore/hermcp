@@ -6,11 +6,18 @@ stdin. hermcp keeps that process alive on a PTY, hands the URL/code back over MC
 user can finish on a phone or another machine, and feeds whatever they paste back into the
 still-running process. Nothing secret is ever returned.
 
+A session holds a PTY fd and a child process, so it is bounded in time and in number: a finished
+session is dropped after `HERMCP_AUTH_SESSION_MAX_AGE` idle seconds, any session is closed after
+`HERMCP_AUTH_SESSION_HARD_CAP` seconds even while its process is still running (a login that waits
+on stdin forever never exits on its own), and starting one more than `HERMCP_AUTH_SESSION_MAX`
+closes the oldest.
+
 Secret tools (`secret_*`) are flagged `secrets=True`: they need the key's `secrets_write`
 scope, their arguments are fully redacted in the audit log, and a value is never echoed back.
 """
 from __future__ import annotations
 
+import itertools
 import os
 import pty
 import re
@@ -21,6 +28,7 @@ from pathlib import Path
 
 from ..adapters.common import hermes_bin, profile_home
 from ..registry import AdapterError, ToolError
+from ..settings import AUTH_SESSION_HARD_CAP, AUTH_SESSION_MAX, AUTH_SESSION_MAX_AGE
 from ._cli import run_write
 from . import reg
 
@@ -31,13 +39,38 @@ CODE_RE = re.compile(r"\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b")
 # auth_id -> session dict (pty fd, process, transcript, timestamps)
 _SESSIONS: dict[str, dict] = {}
 _MAX_TRANSCRIPT = 20000
+# Monotonic, never `len(_SESSIONS)`: closing a session frees a slot, and a reused number would make
+# a new session answer to an id the client still holds from the closed one.
+_SEQ = itertools.count(1)
 
 
-def _sessions_gc(max_age: float = 1800.0) -> None:
+def _limits(settings) -> tuple[float, float, int]:
+    """(idle max age, hard cap, max concurrent sessions) — settings, or the module defaults."""
+    if settings is None:
+        return AUTH_SESSION_MAX_AGE, AUTH_SESSION_HARD_CAP, AUTH_SESSION_MAX
+    return settings.auth_session_max_age, settings.auth_session_hard_cap, settings.auth_session_max
+
+
+def _sessions_gc(settings=None) -> None:
+    """Drop finished sessions after the idle max age, and close any session older than the hard cap.
+
+    The hard cap is the point: a hung `hermes auth add` waits on stdin forever, so its process never
+    exits and an "only when the process is gone" rule never matches — the PTY fd and the child stay
+    for the lifetime of the server. Age decides, and `_close` terminates the child.
+    """
+    max_age, hard_cap, _ = _limits(settings)
     now = time.time()
     for aid, s in list(_SESSIONS.items()):
-        if s["proc"].poll() is not None and now - s["last"] > max_age:
+        if now - s["created"] > hard_cap or (s["proc"].poll() is not None and now - s["last"] > max_age):
             _close(aid)
+
+
+def _make_room(settings=None) -> None:
+    """Keep at most `auth_session_max` sessions: the oldest one goes first."""
+    _, _, limit = _limits(settings)
+    while len(_SESSIONS) >= max(1, limit):
+        oldest = min(_SESSIONS, key=lambda aid: _SESSIONS[aid]["created"])
+        _close(oldest)
 
 
 def _close(auth_id: str) -> None:
@@ -51,6 +84,10 @@ def _close(auth_id: str) -> None:
                 s["proc"].wait(timeout=3)
             except subprocess.TimeoutExpired:
                 s["proc"].kill()
+                try:
+                    s["proc"].wait(timeout=3)   # reap it: a killed child must not stay a zombie
+                except subprocess.TimeoutExpired:
+                    pass
     finally:
         try:
             os.close(s["fd"])
@@ -161,14 +198,15 @@ def providers_add(ctx, name, base_url, key_env=None, models=None):
                       "wait_seconds": {"type": "integer", "minimum": 2, "maximum": 40, "default": 12}},
           required=["provider"])
 def provider_auth_start(ctx, provider, label=None, credential_type="oauth", wait_seconds=12):
-    _sessions_gc()
+    _sessions_gc(ctx.settings)
     argv = [hermes_bin(), "auth", "add", provider, "--type", credential_type, "--no-browser"]
     if label:
         argv += ["--label", label]
     if ctx.dry_run:
         return ctx.plan(f"would start {credential_type} auth for {provider}", command=argv)
+    _make_room(ctx.settings)
     sess = _spawn(argv)
-    auth_id = f"auth_{int(time.time())}_{len(_SESSIONS)}"
+    auth_id = f"auth_{int(time.time())}_{next(_SEQ)}"
     sess["provider"] = provider
     _SESSIONS[auth_id] = sess
     text = _read_available(sess, wait=float(wait_seconds))
@@ -199,7 +237,7 @@ def provider_auth_start(ctx, provider, label=None, credential_type="oauth", wait
 def provider_auth_continue(ctx, auth_id, input, wait_seconds=8):
     sess = _SESSIONS.get(auth_id)
     if not sess:
-        raise ToolError("not_found", f"unknown or finished auth session {auth_id}")
+        raise ToolError("not_found", f"unknown, finished or expired auth session {auth_id}")
     if ctx.dry_run:
         return ctx.plan(f"would send {len(input)} chars to {auth_id}")
     try:
@@ -224,7 +262,7 @@ def provider_auth_continue(ctx, auth_id, input, wait_seconds=8):
           description="State of running auth sessions (no secrets).",
           properties={"auth_id": {"type": "string"}})
 def provider_auth_status(ctx, auth_id=None):
-    _sessions_gc()
+    _sessions_gc(ctx.settings)
     ids = [auth_id] if auth_id else list(_SESSIONS)
     out = []
     for aid in ids:
@@ -239,7 +277,9 @@ def provider_auth_status(ctx, auth_id=None):
                     "age_seconds": round(time.time() - s["created"], 1),
                     "url": info["url"], "user_code": info["user_code"],
                     "tail": s["transcript"].strip()[-600:]})
-    return {"sessions": out, "count": len(out)}
+    max_age, hard_cap, limit = _limits(ctx.settings)
+    return {"sessions": out, "count": len(out),
+            "limits": {"idle_seconds": max_age, "hard_cap_seconds": hard_cap, "max_sessions": limit}}
 
 
 @reg.tool("provider_auth_cancel", toolset="providers", access="write",

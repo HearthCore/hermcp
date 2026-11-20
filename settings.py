@@ -83,6 +83,9 @@ class Settings:
     inbox_watch_interval: float = 2.0  # seconds between polls of the Hermes api_server
     inbox_watch_max_per_key: int = 50  # active watched runs per key
     session_max_runs: int = 8          # open runs per registered client session (0 = no limit)
+    auth_session_max_age: float = 1800.0   # provider auth: drop a finished PTY session after this idle time
+    auth_session_hard_cap: float = 3600.0  # provider auth: close a session after this, running or not
+    auth_session_max: int = 8              # provider auth: concurrent sessions; the oldest is closed first
     inbox_run_max_events: int = 20     # watcher events per run
     inbox_watch_ttl_hours: float = 24.0  # a watch that never saw a terminal state expires silently
     inbox_approvals: bool = True       # approval hooks: mirror pending/resolved approvals into the inbox
@@ -149,6 +152,12 @@ LEDGER_LIST_MAX = 100
 # (query strings, ids, profiles), so the cache needs a hard bound, not just a TTL (issue #65).
 LEDGER_CACHE_DEFAULT = 64
 LEDGER_CACHE_LIMIT_MAX = 10000
+# Provider auth sessions hold a PTY and a child process (`hermes auth add`). A hung login waits on
+# stdin forever, so the age of the session — not the state of its process — has to decide when it
+# goes (issue #68). Defaults: 30 min idle for a finished process, 1 h absolute, 8 at a time.
+AUTH_SESSION_MAX_AGE = 1800.0
+AUTH_SESSION_HARD_CAP = 3600.0
+AUTH_SESSION_MAX = 8
 
 
 def _ledger_limit(raw: str | None, default: int, name: str) -> int:
@@ -189,6 +198,25 @@ def _ledger_cache_max(raw: str | None) -> int:
         log.warning("HERMCP_LEDGER_CACHE_MAX: %d is outside 1..%d; using the default %d",
                     value, LEDGER_CACHE_LIMIT_MAX, LEDGER_CACHE_DEFAULT)
         return LEDGER_CACHE_DEFAULT
+    return value
+
+
+def _positive(raw: str | None, default, name: str, cast=float):
+    """A number >= 1 from the environment, else the default — and say so.
+
+    A limit of 0 or a typo must not silently mean "no limit" (that is the bug this setting exists
+    to fix) and must not take `serve` down either: the default stays and the log names the value.
+    """
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        value = cast(str(raw).strip())
+    except ValueError:
+        log.warning("%s: %r is not a number; using the default %s", name, raw, default)
+        return default
+    if value < 1:
+        log.warning("%s: %s is below 1; using the default %s", name, value, default)
+        return default
     return value
 
 
@@ -297,6 +325,12 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         inbox_watch_interval=max(0.5, float(g("HERMCP_INBOX_WATCH_INTERVAL", "2"))),
         inbox_watch_max_per_key=int(g("HERMCP_INBOX_WATCH_MAX_PER_KEY", "50")),
         session_max_runs=int(g("HERMCP_SESSION_MAX_RUNS", "8")),
+        auth_session_max_age=_positive(g("HERMCP_AUTH_SESSION_MAX_AGE"), AUTH_SESSION_MAX_AGE,
+                                       "HERMCP_AUTH_SESSION_MAX_AGE"),
+        auth_session_hard_cap=_positive(g("HERMCP_AUTH_SESSION_HARD_CAP"), AUTH_SESSION_HARD_CAP,
+                                        "HERMCP_AUTH_SESSION_HARD_CAP"),
+        auth_session_max=_positive(g("HERMCP_AUTH_SESSION_MAX"), AUTH_SESSION_MAX,
+                                   "HERMCP_AUTH_SESSION_MAX", int),
         inbox_run_max_events=int(g("HERMCP_INBOX_RUN_MAX_EVENTS", "20")),
         inbox_watch_ttl_hours=float(g("HERMCP_INBOX_WATCH_TTL_HOURS", "24")),
         inbox_approvals=g("HERMCP_INBOX_APPROVALS", "1").lower() not in ("0", "false", "no", "off"),
