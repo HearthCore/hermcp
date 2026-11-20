@@ -596,7 +596,8 @@ class SupersededRegistry(FakeRegistry):
         return super().invoke(name, args, principal, settings, audit, via)
 
 
-def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all():
+def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all(server_zone):
+    server_zone("UTC")       # the logic, not the host's zone: the zone bug is pinned below (#90)
     payload = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)
     att = payload["attention"]
     assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
@@ -607,12 +608,14 @@ def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all():
 
 
 @pytest.fixture()
-def far_from_utc():
-    """The server's local zone 14 h away from UTC; restored (and re-read) afterwards."""
+def server_zone():
+    """Set the server's local zone for one test (`server_zone("UTC")`); restored and re-read after."""
     old = os.environ.get("TZ")
-    os.environ["TZ"] = "Pacific/Kiritimati"
-    time.tzset()
-    yield
+
+    def set_zone(name):
+        os.environ["TZ"] = name
+        time.tzset()
+    yield set_zone
     if old is None:
         os.environ.pop("TZ", None)
     else:
@@ -621,7 +624,8 @@ def far_from_utc():
 
 
 @pytest.mark.xfail(strict=True, reason="#90: the superseded check compares a local and a UTC timestamp as strings")
-def test_a_recovered_failure_is_superseded_whatever_the_server_zone(far_from_utc):
+def test_a_recovered_failure_is_superseded_whatever_the_server_zone(server_zone):
+    server_zone("Pacific/Kiritimati")                  # UTC+14
     att = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
     assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
 
