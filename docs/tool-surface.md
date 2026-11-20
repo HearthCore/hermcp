@@ -242,7 +242,10 @@ path per run and remove the heuristic. This plugin deliberately does not patch H
   three limits next to the sessions, and a closed session answers `not_found` on `_continue`.
 - `secret_set` / `secret_list` / `secret_delete` — write-only credential handling: store a
   provider API key from chat without the value ever coming back, being logged, or landing in
-  the audit log.
+  the audit log. `secret_set` takes a single-line `value`: a newline, carriage return or NUL is
+  refused with `invalid_arguments` (it would write extra `.env` assignments), also under
+  `dry_run`. The `.env` is replaced atomically through a temp file created `0600`, so it is never
+  readable by other users, not even briefly.
 - `skills_edit` — edit a skill's `SKILL.md` (full replace or targeted old→new) with a
   `dry_run` unified diff.
 - `secret_list` / `vault_list` — **existence and description only, never values**: which .env

@@ -623,11 +623,110 @@ def server_zone():
     time.tzset()
 
 
-@pytest.mark.xfail(strict=True, reason="#90: the superseded check compares a local and a UTC timestamp as strings")
-def test_a_recovered_failure_is_superseded_whatever_the_server_zone(server_zone):
-    server_zone("Pacific/Kiritimati")                  # UTC+14
+@pytest.mark.parametrize("zone", ["Pacific/Kiritimati", "Pacific/Midway", "Asia/Kolkata", "UTC"])
+def test_a_recovered_failure_is_superseded_whatever_the_server_zone(server_zone, zone):
+    """#90: the failure row is localised by ``iso()``, the later runs are raw UTC — the two must be
+    compared as instants. Kiritimati is UTC+14, Midway UTC-11, Kolkata UTC+5:30."""
+    server_zone(zone)
     att = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
     assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
+
+
+def test_a_success_before_the_failure_does_not_supersede_it(server_zone):
+    """The instant comparison must not turn into "any success counts": an earlier run is not a fix."""
+    server_zone("Pacific/Kiritimati")
+
+    class EarlierOk(SupersededRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "cron_runs" and args.get("job_id") == "j2":
+                return {"ok": True, "result": {"count": 1, "runs": [
+                    {"run_id": "r0", "job_id": "j2", "job_name": "relay", "status": "completed",
+                     "started_at": ago(6)}]}}          # 2 h *before* the failure at ago(4)
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    att = LB.build_overview(EarlierOk(), make_principal(), make_settings(), CONFIG)["attention"]
+    assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r2", "r8"]
+
+
+def test_the_earliest_later_success_is_the_one_reported(server_zone):
+    """``ok_after`` names the first run that recovered the job, not the newest one."""
+    server_zone("Pacific/Kiritimati")
+
+    class TwoOks(SupersededRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "cron_runs" and args.get("job_id") == "j2":
+                return {"ok": True, "result": {"count": 2, "runs": [
+                    {"run_id": "r5", "job_id": "j2", "job_name": "relay", "status": "completed",
+                     "started_at": ago(0.5)},
+                    {"run_id": "r3", "job_id": "j2", "job_name": "relay", "status": "completed",
+                     "started_at": ago(1.5)}]}}
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    active, superseded = LB._split_superseded(
+        TwoOks(), make_principal(), make_settings(),
+        [LB.cron_run_view({"run_id": "r2", "job_id": "j2", "status": "error",
+                           "started_at": ago(4)}, {})],
+        ago(24), {})
+    assert active == []
+    assert [r["run_id"] for r in superseded] == ["r2"]
+    assert superseded[0]["ok_after"] == LB.iso(ago(1.5))
+
+
+def test_an_unreadable_timestamp_never_hides_a_failure(server_zone):
+    """A row whose start cannot be parsed stays in the attention view, on both sides of the check."""
+    server_zone("Pacific/Kiritimati")
+
+    class Garbled(SupersededRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "cron_runs" and args.get("job_id") == "j2":
+                return {"ok": True, "result": {"count": 2, "runs": [
+                    {"run_id": "r3", "job_id": "j2", "status": "completed", "started_at": "not a time"},
+                    {"run_id": "r4", "job_id": "j2", "status": "completed", "started_at": ago(1.5)}]}}
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    errors = {}
+    active, superseded = LB._split_superseded(
+        Garbled(), make_principal(), make_settings(),
+        [LB.cron_run_view({"run_id": "r2", "job_id": "j2", "status": "error",
+                           "started_at": "not a time"}, {}),
+         LB.cron_run_view({"run_id": "r7", "job_id": "j2", "status": "error",
+                           "started_at": ago(4)}, {})],
+        ago(24), errors)
+    assert [r["run_id"] for r in active] == ["r2"]        # unparseable start: never superseded
+    assert [r["run_id"] for r in superseded] == ["r7"]    # the readable one still is
+    assert errors == {}
+
+
+def test_a_naive_timestamp_is_read_as_utc_on_both_sides(server_zone):
+    """``iso()`` treats a naive value as UTC; the comparison has to agree with it."""
+    server_zone("Pacific/Kiritimati")
+
+    class Naive(SupersededRegistry):
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            if name == "cron_runs" and args.get("job_id") == "j2":
+                return {"ok": True, "result": {"count": 1, "runs": [
+                    {"run_id": "r3", "job_id": "j2", "status": "completed",
+                     "started_at": ago(1.5).replace("+00:00", "")}]}}
+            return super().invoke(name, args, principal, settings, audit, via)
+
+    active, superseded = LB._split_superseded(
+        Naive(), make_principal(), make_settings(),
+        [LB.cron_run_view({"run_id": "r2", "job_id": "j2", "status": "error",
+                           "started_at": ago(4).replace("+00:00", "")}, {})],
+        ago(24), {})
+    assert active == [] and [r["run_id"] for r in superseded] == ["r2"]
+
+
+def test_instant_reads_every_shape_the_ledger_meets():
+    """The parser behind the comparison: offsets, ``Z``, naive, epoch seconds, and junk."""
+    utc = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
+    assert LB.instant("2026-11-10T10:00:00+00:00") == utc
+    assert LB.instant("2026-11-10T10:00:00Z") == utc
+    assert LB.instant("2026-11-10T10:00:00") == utc            # naive is UTC, like iso()
+    assert LB.instant("2026-11-10T11:00:00+01:00") == utc      # same instant, other offset
+    assert LB.instant(utc.timestamp()) == utc                  # epoch seconds
+    for junk in (None, "", "not a time", True, [], {}):
+        assert LB.instant(junk) is None, junk
 
 
 def test_a_broken_superseded_lookup_never_hides_a_failure():
