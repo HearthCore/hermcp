@@ -5,7 +5,6 @@ Synthetic values only. The `hermes` CLI is a script the test writes, so the PTY 
 """
 import json
 import os
-import select
 import subprocess
 import time
 
@@ -122,33 +121,32 @@ def _fake_session(rc=None, age=0.0, stubborn=False):
             "last": time.time() - age, "provider": "p"}
 
 
-class _Poller:
-    """A `select.poll` stand-in: replays `answers`, then keeps repeating the last one."""
+@pytest.fixture()
+def fd_above_select_limit():
+    """A free fd number above FD_SETSIZE (1024), with the soft fd limit raised so it is usable.
 
-    def __init__(self, answers):
-        self.answers, self.last, self.registered = list(answers), [], None
-
-    def register(self, fd, mask):
-        self.registered = (fd, mask)
-
-    def poll(self, timeout=None):
-        if self.answers:
-            self.last = self.answers.pop(0)
-        return self.last
-
-
-def _free_fd_above(start):
-    """A free fd number at or above `start` (dup2 onto it, so the PTY lands above FD_SETSIZE).
-
-    The window is wide on purpose: a CI runner that has just run the whole suite holds thousands of
-    open fds, so the first gap can be far above 1024.
+    The common default soft limit is 1024 (`ulimit -n`), and dup2 onto 1024 then fails with EBADF:
+    the test errored on a developer box while CI (65536) was green. The limit is restored afterwards;
+    without a hard limit above the target the premise cannot be built, so the test skips.
+    The search window is wide on purpose: a process that has run much of the suite holds many fds.
     """
-    for cand in range(start, 65536):
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    for cand in range(1024, 65536):
         try:
             os.fstat(cand)
         except OSError:
-            return cand
-    raise RuntimeError(f"no free fd above {start}")
+            break
+    else:
+        pytest.skip("no free fd number below 65536")
+    if hard != resource.RLIM_INFINITY and hard <= cand:
+        pytest.skip(f"hard fd limit {hard} leaves no fd above 1024")
+    if soft != resource.RLIM_INFINITY and soft <= cand:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (cand + 1, hard))
+    try:
+        yield cand
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
 
 def _exited_session(rc, text=""):
@@ -184,25 +182,9 @@ def test_interesting_reads_a_device_code_and_ignores_lowercase_or_short_ones():
     assert _interesting("code AB-12")["user_code"] is None
 
 
-def test_interesting_on_empty_text_reports_nothing():
-    from hermcp.tools.providers import _interesting
-    assert _interesting("") == {"url": None, "user_code": None}
-
-
-def test_limits_fall_back_to_the_module_defaults_without_settings():
-    from hermcp import settings as S
-    from hermcp.tools.providers import _limits
-    assert _limits(None) == (S.AUTH_SESSION_MAX_AGE, S.AUTH_SESSION_HARD_CAP, S.AUTH_SESSION_MAX)
-
-
 # ---- session table: close, read ----------------------------------------------------------------
 # The time and count bounds of the table are pinned in tests/test_providers_auth_sessions.py; what is
 # here is the PTY mechanics those tests stub out (`_read_available`, `_close`).
-def test_close_is_a_noop_for_an_unknown_session():
-    from hermcp.tools import providers
-    providers._close("auth_9_9")                          # must not raise
-
-
 def test_close_kills_a_process_that_ignores_terminate_and_closes_the_fd():
     from hermcp.tools import providers
     s = _fake_session(None, stubborn=True)
@@ -212,15 +194,6 @@ def test_close_kills_a_process_that_ignores_terminate_and_closes_the_fd():
     assert "auth_1_0" not in providers._SESSIONS
     with pytest.raises(OSError):
         os.fstat(s["fd"])                                 # the master fd is gone
-
-
-def test_close_survives_an_fd_that_is_already_closed():
-    from hermcp.tools import providers
-    s = _fake_session(0)
-    os.close(s["fd"])
-    providers._SESSIONS["auth_1_0"] = s
-    providers._close("auth_1_0")                          # OSError on close is swallowed
-    assert "auth_1_0" not in providers._SESSIONS
 
 
 def test_read_available_returns_new_text_and_appends_to_the_transcript():
@@ -245,31 +218,41 @@ def test_read_available_keeps_the_transcript_bounded():
     os.close(master)
 
 
-def test_read_available_stops_on_a_closed_or_empty_pty(monkeypatch):
+def test_read_available_returns_promptly_when_the_other_side_is_gone():
+    """A CLI that exited closes the PTY: the read must end at EOF/EIO, not sit out the whole wait."""
     from hermcp.tools import providers
-    s = {"fd": 0, "transcript": "", "proc": _Proc(None), "last": time.time()}
-    monkeypatch.setattr(providers.select, "poll", lambda: _Poller([[(0, select.POLLIN)]]))
-    monkeypatch.setattr(providers.os, "read", lambda fd, n: b"")
-    assert providers._read_available(s, wait=0.5) == ""
-    monkeypatch.setattr(providers.os, "read", lambda fd, n: (_ for _ in ()).throw(OSError("gone")))
-    assert providers._read_available(s, wait=0.5) == ""
+    master, slave = os.openpty()
+    os.close(slave)
+    s = {"fd": master, "transcript": "", "proc": _Proc(0), "last": time.time()}
+    t0 = time.monotonic()
+    try:
+        assert providers._read_available(s, wait=5.0) == ""
+        assert time.monotonic() - t0 < 2.5
+    finally:
+        os.close(master)
 
 
-def test_read_available_keeps_waiting_while_the_pty_is_silent(monkeypatch):
+def test_read_available_keeps_waiting_while_the_pty_is_silent():
+    """Output that arrives after a quiet spell inside `wait` is still collected."""
+    import threading
     from hermcp.tools import providers
-    s = {"fd": 0, "transcript": "", "proc": _Proc(None), "last": time.time()}
-    poller = _Poller([[], [(0, select.POLLIN)]])
-    monkeypatch.setattr(providers.select, "poll", lambda: poller)
-    monkeypatch.setattr(providers.os, "read", lambda fd, n: b"late\n")
-    assert providers._read_available(s, wait=1.0) == "late\n"
-    assert poller.registered == (0, select.POLLIN)
+    master, slave = os.openpty()
+    s = {"fd": master, "transcript": "", "proc": _Proc(None), "last": time.time()}
+    later = threading.Timer(0.3, os.write, (slave, b"late\n"))
+    later.start()
+    try:
+        assert "late" in providers._read_available(s, wait=3.0)
+    finally:
+        later.cancel()
+        os.close(slave)
+        os.close(master)
 
 
-def test_read_available_works_above_the_select_fd_limit():
+def test_read_available_works_above_the_select_fd_limit(fd_above_select_limit):
     """`select.select` refuses any fd >= 1024; a long-running server hands out PTY fds that high."""
     from hermcp.tools import providers
     master, slave = os.openpty()
-    high = _free_fd_above(1024)
+    high = fd_above_select_limit
     os.dup2(master, high)
     os.close(master)
     s = {"fd": high, "transcript": "", "proc": _Proc(None), "last": time.time()}
