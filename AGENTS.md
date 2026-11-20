@@ -149,7 +149,7 @@ Run these, then summarise to the human and ask which deployment they want.
    HERMCP_ALLOWED_HOSTS=hermes.example.com,127.0.0.1,localhost
    HERMCP_HOST=127.0.0.1
    HERMCP_PORT=9230
-   HERMCP_TRUST_PROXY=1
+   HERMCP_TRUSTED_PROXIES=10.1.0.9
    HERMES_API_URL=http://127.0.0.1:8642
    ```
 
@@ -157,6 +157,11 @@ Run these, then summarise to the human and ask which deployment they want.
    or `*` in `HERMCP_ALLOWED_HOSTS` (`doctor` warns on both). The allowlist must contain the **public**
    hostname the proxy forwards in `Host`; the check runs before auth, so a wrong list shows up as
    `403 host not allowed` even with a valid key.
+
+   `HERMCP_TRUSTED_PROXIES` is the proxy's **exact address** (or CIDR), not a subnet: only from that
+   peer are `X-Forwarded-For` / `Forwarded` / `X-Real-IP` believed, read right to left, so the
+   failed-auth limiter and the rate limits see the real client. `HERMCP_TRUST_PROXY` is deprecated and
+   widens nothing — setting it changes no behaviour.
 4. **Proxy (remote only, human's side).** Terminate TLS at the proxy and forward to
    `127.0.0.1:9230` without rewriting paths or the `Host` header, with proxy-level SSO/password/basic
    auth **off** (it would swallow the `Authorization` header). Route `/mcp` for all clients; add
@@ -414,7 +419,7 @@ non-secret result). A `read` key is enough for steps 1, 2, 3 and 5; step 4 needs
 | Tool missing in `tools/list` | The key's `access`, `toolsets`, `profiles` or `deny_tools` hide it; check `keys list`. |
 | `serve` exits 75 | Another instance holds the lock or the port; `... -m hermcp status`. |
 | `ModuleNotFoundError` / `mcp` import errors | Use the Hermes venv's Python and run with `env -u PYTHONPATH`. |
-| `429 too many failed attempts` | Per-IP failed-auth limiter (`server.py`); behind a proxy it needs `HERMCP_TRUST_PROXY=1` to see the real client IP. |
+| `429 too many failed attempts` | Per-IP failed-auth limiter (`server.py`); behind a proxy it needs `HERMCP_TRUSTED_PROXIES=<proxy address>` to see the real client IP (`HERMCP_TRUST_PROXY` is deprecated and does nothing). |
 | Hermcp older than the Hermes build (`_meta.hermcp_older_than_hermes_build`) | Restart hermcp; see `docs/stale-hermcp-after-hermes-update.md`. |
 | `api_auth` / HTTP 401 from a chat tool on a non-default profile | that profile has no key or shares one with another profile (`profile-keys status`); fix with `profile-keys setup` (section 5). Needs no restart. |
 | Anything else | `... -m hermcp doctor`. |
