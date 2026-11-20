@@ -79,6 +79,15 @@ Every mutating tool accepts `dry_run: true` and returns what it *would* do witho
 Read tools accept `dry_run` as well and ignore it: they apply nothing either way, so the flag is a
 no-op there, is not part of their schema and never reaches the handler.
 
+### Argument validation
+
+Arguments are checked against the tool's own schema before the handler runs, by a stdlib subset of
+JSON Schema (`validation.py`; `jsonschema` is not usable in the Hermes venv). A rejected argument is
+`invalid_arguments` with the offending `path`. `additionalProperties: false` rejects unknown keys, and
+`pattern` follows **ECMA-262**, not Python's `re`: `$` is end-of-input, so an anchored pattern such as
+`^[A-Z][A-Z0-9_]{2,64}$` rejects `"ACME_TOKEN\n"` instead of accepting the value plus a newline. A
+pattern that does not compile never blocks input.
+
 ### Server instructions
 
 What a client receives as `instructions` on `initialize` (single source: `INSTRUCTIONS` in `server.py`, rendered in

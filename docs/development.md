@@ -83,7 +83,7 @@ scopes.py        # access level + toolset/profile/flag model
 keys.py          # HMAC-hashed key store
 lock.py          # single-instance flock + role detection + busy reports
 audit.py         # append-only JSONL with secret redaction
-validation.py    # stdlib JSON-Schema subset (jsonschema is not usable in the Hermes venv)
+validation.py    # stdlib JSON-Schema subset (jsonschema is not usable in the Hermes venv); `pattern` is ECMA-262, so `$` is end-of-input
 tools/           # one module per toolset
 adapters/        # Hermes internals + CLI bridges
 deploy/          # systemd unit template

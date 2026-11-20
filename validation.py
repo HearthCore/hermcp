@@ -9,10 +9,13 @@ dependencies. MCP tool schemas only use a small, well-defined subset:
 Semantics are intentionally strict on the things that matter for security
 (``additionalProperties: False`` rejects unknown keys, required keys must be
 present, types must match) and permissive on the rest.
+
+``pattern`` follows ECMA-262, not Python: see :func:`_compiled_pattern`.
 """
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
 _TYPES = {
@@ -48,6 +51,54 @@ def _type_ok(value: Any, expected: str) -> bool:
     return py is None or isinstance(value, py)
 
 
+def _end_anchored(pattern: str) -> str:
+    """Rewrite ECMA-262 ``$`` into Python's ``\\Z``.
+
+    JSON Schema patterns are ECMA-262, where ``$`` (without the ``m`` flag) matches only at the
+    very end of the input. Python's ``$`` also matches just before a trailing newline, so
+    ``^[A-Z]+$`` accepted ``"ABC\\n"`` — a value that then lands in a ``.env`` line or a shell
+    argument with the newline intact. ``\\Z`` is Python's end-of-input anchor.
+
+    Only an unescaped ``$`` outside a character class is rewritten: ``\\$`` and ``[$]`` are a
+    literal dollar sign in both dialects.
+    """
+    out: list[str] = []
+    in_class = escaped = False
+    for char in pattern:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif in_class:
+            in_class = char != "]"
+        elif char == "[":
+            in_class = True
+        elif char == "$":
+            out.append(r"\Z")
+            continue
+        out.append(char)
+    return "".join(out)
+
+
+@lru_cache(maxsize=256)
+def _compiled_pattern(pattern: str) -> re.Pattern[str] | None:
+    """Compile *pattern* with JSON-Schema semantics, or ``None`` when it does not compile.
+
+    A pattern that sets the multiline flag keeps Python's ``$``: there it already means "end of
+    line", which is what ECMA-262's ``m`` flag means too.
+    """
+    try:
+        original = re.compile(pattern)
+    except re.error:
+        return None
+    if original.flags & re.MULTILINE:
+        return original
+    try:
+        return re.compile(_end_anchored(pattern))
+    except re.error:   # pragma: no cover - the rewrite only ever adds a valid escape
+        return original
+
+
 def validate(instance: Any, schema: dict[str, Any], path: list[str] | None = None) -> None:
     """Raise :class:`ValidationError` when *instance* does not satisfy *schema*."""
     path = list(path or [])
@@ -65,11 +116,8 @@ def validate(instance: Any, schema: dict[str, Any], path: list[str] | None = Non
     pattern = schema.get("pattern")
     if isinstance(pattern, str) and isinstance(instance, str):
         # Security-relevant: tool schemas use `pattern` to reject shell-ish ids.
-        try:
-            matched = re.search(pattern, instance) is not None
-        except re.error:
-            matched = True  # a broken pattern must never block all input
-        if not matched:
+        compiled = _compiled_pattern(pattern)
+        if compiled is not None and compiled.search(instance) is None:
             raise ValidationError(
                 f"{_join(path) or 'value'} does not match the required pattern {pattern!r}", path)
 
