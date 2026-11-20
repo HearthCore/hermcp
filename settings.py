@@ -1,6 +1,7 @@
 """Settings: process env > .env next to the package > defaults. Paths resolve via HERMES_HOME."""
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from dataclasses import dataclass, field
@@ -205,6 +206,31 @@ def ledger_errors(s: "Settings") -> list[str]:
     if s.ledger_auth not in LEDGER_AUTH_MODES:
         return [f"HERMCP_LEDGER_AUTH must be one of {list(LEDGER_AUTH_MODES)}, got {s.ledger_auth!r}"]
     return []
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Whether a bind address reaches loopback only (`127.0.0.1`, `127.0.0.2`, `::1`, `localhost`)."""
+    text = (host or "").strip().strip("[]").lower()
+    if text == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(text).is_loopback
+    except ValueError:
+        return False
+
+
+def ledger_warnings(s: "Settings") -> list[str]:
+    """One readable line per valid-but-exposed Ledger setting (empty list = fine).
+
+    Not an error, so it never stops `serve`: `HERMCP_LEDGER_AUTH=none` on a LAN address is a
+    documented setup, safe only while the port is reachable from a trusted network. The page has
+    no key of its own in that mode, so `doctor` says the combination out loud instead of ending
+    with ALL OK on a page every host on the network can read.
+    """
+    if not s.ledger or s.ledger_auth != "none" or _is_loopback_host(s.host):
+        return []
+    return [f"HERMCP_LEDGER_AUTH=none on a non-loopback bind ({s.host}): every host that can reach "
+            f"port {s.port} reads /ledger without a key; fix: HERMCP_LEDGER_AUTH=key (or bind 127.0.0.1)"]
 
 
 def scope_errors(s: "Settings") -> list[str]:

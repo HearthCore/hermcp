@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import _yaml
 from .keys import KeyStore
-from .settings import hermes_home, load_settings, scope_errors
+from .settings import hermes_home, ledger_warnings, load_settings, scope_errors
 
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 
@@ -99,6 +99,15 @@ def run() -> int:
              "behind a proxy the failed-auth limiter will see only the proxy's IP")
     if s.trust_proxy:
         warn("HERMCP_TRUST_PROXY is deprecated", "it widens nothing; set HERMCP_TRUSTED_PROXIES=<proxy address>")
+    # -- Ledger exposure -------------------------------------------------------------------
+    # `HERMCP_LEDGER_AUTH=none` has no key: its only guard is the network rule, so a non-loopback
+    # bind serves the page to every host that can reach the port. Valid config, worth saying.
+    if s.ledger:
+        exposure = ledger_warnings(s)
+        for msg in exposure:
+            warn("Ledger exposure", msg)
+        if not exposure:
+            print(f"[info] Ledger: /ledger served, auth={s.ledger_auth}")
     try:
         with socket.create_connection((s.host if s.host != "0.0.0.0" else "127.0.0.1", s.port), timeout=1):
             print(f"[info] something is listening on {s.host}:{s.port}")
