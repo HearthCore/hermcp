@@ -205,7 +205,7 @@ not by polling a file/table.
    and answers via `POST /v1/runs/{id}/approval`. Clean, supported, profile-scoped via
    `/p/<profile>/` + that profile's `API_SERVER_KEY`.
 2. **Answer in the chat itself.** The Telegram adapter already exposes `/approve` / `/deny`
-   (slash commands) that call the same `resolve_gateway_approval`. Sebi steering "his own
+   (slash commands) that call the same `resolve_gateway_approval`. A user steering "their own
    profile's agent" from a phone can approve/deny directly in the chat — no hermcp, no patch.
 3. **In-process bridge (an extension, not core).** To let a separate process answer an
    *existing* non-run session, the gateway would need an in-process surface that wraps
