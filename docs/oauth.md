@@ -366,7 +366,10 @@ hashes (access 1 h, refresh 30 d and rotating, code 60 s) so a restart does not 
 4. Claude opens `/authorize`: a small page asks for an **`hmcp_` key**. Paste the key whose
    permissions the connector should have (e.g. `alice-researcher`). The connector inherits that
    key's scopes on every call — rotate, revoke or expire the key and its tokens stop working
-   immediately. Wrong keys count against the failed-auth limiter.
+   immediately. Wrong keys count against the failed-auth limiter, keyed on the client address resolved
+   exactly as for `/mcp` (`HERMCP_TRUSTED_PROXIES`, `X-Forwarded-For` read right to left; see
+   [deployment](deployment.md#trusted-proxies--the-only-place-forwarding-headers-are-believed)). Behind a
+   proxy that is not listed, every attempt shares the proxy's bucket.
 
 `hermes hermcp oauth init --rotate` replaces the client secret and invalidates every issued
 token; `oauth revoke-all` only drops the tokens.
