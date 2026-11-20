@@ -51,6 +51,20 @@ def test_authenticate_roundtrip_and_reject(happ):
     assert ks.authenticate("garbage") is None
 
 
+@pytest.mark.parametrize("damage", [b"", b'{"version": 1, "keys": [', b"\xff\xfe not utf-8"])
+def test_an_unreadable_key_store_fails_closed_and_is_left_for_the_owner(happ, damage):
+    """A truncated or overwritten keys.json (disk full, a hand edit) must never authorize a call,
+    and the server must not "repair" it by saving its cached keys over the evidence."""
+    token = mk(happ, "a", access="admin")
+    c = TestClient(happ.app, raise_server_exceptions=False)
+    assert rpc(c, token, "ping").status_code == 200
+    happ.keystore.path.write_bytes(damage)
+    os.utime(happ.keystore.path, (1, 1))                 # a new mtime: the store must re-read it
+    r = rpc(c, token, "tools/list")
+    assert r.status_code in (401, 500, 503) and "tools" not in r.text
+    assert happ.keystore.path.read_bytes() == damage
+
+
 def test_revoke_rotate_expiry(happ):
     ks = happ.keystore
     token = mk(happ, "a")

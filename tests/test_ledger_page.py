@@ -7,9 +7,11 @@ conversation-shaped ever leaves the process.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 
+import pytest
 from starlette.testclient import TestClient
 
 from hermcp import ledger_page as LB
@@ -602,6 +604,26 @@ def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all():
     assert "superseded_cron_runs" not in att and "superseded_count" not in att
     # superseded runs do not count as attention; the still-failing one does
     assert att["total"] == 1 + 2              # failing cron + (waiting approval + open failure)
+
+
+@pytest.fixture()
+def far_from_utc():
+    """The server's local zone 14 h away from UTC; restored (and re-read) afterwards."""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "Pacific/Kiritimati"
+    time.tzset()
+    yield
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
+
+
+@pytest.mark.xfail(strict=True, reason="#90: the superseded check compares a local and a UTC timestamp as strings")
+def test_a_recovered_failure_is_superseded_whatever_the_server_zone(far_from_utc):
+    att = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
+    assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
 
 
 def test_a_broken_superseded_lookup_never_hides_a_failure():
