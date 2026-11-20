@@ -247,15 +247,13 @@ def test_config_set_unset_dry_run_do_not_echo_secrets(call):
     assert S + "2" in (call.home / "config.yaml").read_text()               # ...and the DATA is untouched by redaction
 
 
-def test_text_channels_are_redacted_centrally(happ, call, monkeypatch):
+def test_text_channels_are_redacted_centrally(happ, call, scratch_tools):
     from hermcp.registry import Tool
-    from hermcp.tools import reg
     text = f"line1 password={S} Authorization: Bearer {S} https://u:{S}@h/x ok-id=run_123"
     for name, toolset in (("zz_sessions", "sessions"), ("zz_ops", "ops"), ("zz_cron", "cron"),
                           ("zz_kanban", "kanban"), ("zz_skills", "skills"), ("zz_chat", "chat"), ("zz_status", "status")):
-        if name not in reg.tools:
-            reg.add(Tool(name=name, toolset=toolset, access="read", description="t",
-                         handler=lambda ctx, **kw: {"content": text, "rows": [{"preview": text, "id": "s_1"}]}))
+        scratch_tools(Tool(name=name, toolset=toolset, access="read", description="t",
+                           handler=lambda ctx, **kw: {"content": text, "rows": [{"preview": text, "id": "s_1"}]}))
         ok, r, raw = call(name)
         assert ok and S not in raw, name
         assert "run_123" in raw and r["rows"][0]["id"] == "s_1"

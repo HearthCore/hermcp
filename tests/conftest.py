@@ -109,6 +109,26 @@ def home(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def scratch_tools():
+    """Register throw-away tools in the shared registry for one test, and take them out again.
+
+    `hermcp.tools.reg` is a process-wide singleton. A tool a test adds and leaves behind shows up
+    in every later test that walks the registry (doc counts, tools.html, descriptions, the bound-key
+    classification), so the suite only passed in file order (#87).
+    """
+    from hermcp.tools import reg
+    added = []
+
+    def add(tool):
+        reg.add(tool)
+        added.append(tool.name)
+        return tool
+    yield add
+    for name in added:
+        reg.tools.pop(name, None)
+
+
+@pytest.fixture()
 def happ(home):
     from hermcp.app import create_app
     from hermcp.settings import load_settings

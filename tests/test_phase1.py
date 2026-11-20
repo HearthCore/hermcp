@@ -11,12 +11,10 @@ from hermcp.scopes import ScopeError, Scopes
 
 
 def _synthetic(name, toolset, access, secrets=False):
+    """A tool object for scope checks; register it with the `scratch_tools` fixture if a call needs it."""
     from hermcp.registry import Tool
-    from hermcp.tools import reg
-    if name not in reg.tools:
-        reg.add(Tool(name=name, toolset=toolset, access=access, description="test", secrets=secrets,
-                     handler=lambda ctx, **kw: {"ok": True}, properties={"name": {"type": "string"}, "value": {"type": "string"}}))
-    return reg.tools[name]
+    return Tool(name=name, toolset=toolset, access=access, description="test", secrets=secrets,
+                handler=lambda ctx, **kw: {"ok": True}, properties={"name": {"type": "string"}, "value": {"type": "string"}})
 
 
 def rpc(client, token, method, params=None, id_=1, headers=None):
@@ -127,8 +125,8 @@ def test_redaction():
     assert redact({"key": "display.skin", "value": "mono"})["value"] == "mono"
 
 
-def test_audit_never_contains_secret(happ):
-    _synthetic("zz_sec", "providers", "admin", secrets=True)
+def test_audit_never_contains_secret(happ, scratch_tools):
+    scratch_tools(_synthetic("zz_sec", "providers", "admin", secrets=True))
     token = mk(happ, "w", access="admin", secrets_write=True)
     c = TestClient(happ.app)
     rpc(c, token, "tools/call", {"name": "zz_sec", "arguments": {"name": "FOO_API_KEY", "value": "TOPSECRET123", "dry_run": True}})

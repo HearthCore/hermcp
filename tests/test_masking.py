@@ -368,16 +368,14 @@ def test_audit_and_inbox_paths_use_the_same_masker(call):
     assert ok and PASS not in raw and LONG not in raw
 
 
-def test_free_text_fields_in_tool_results(call):
+def test_free_text_fields_in_tool_results(call, scratch_tools):
     from hermcp.registry import Tool
-    from hermcp.tools import reg
     text = f"line1 password={PASS} Authorization: Bearer {LONG} https://u:{PASS}@h.example/x?api_key={LONG}"
     for style, access in (("read", "read"), ("write", "write")):
         name = f"zz_text_{style}"
-        if name not in reg.tools:
-            reg.add(Tool(name=name, toolset="sessions", access=access, description="t",
-                         handler=lambda ctx, **kw: {"output": text, "error": text, "warnings": [text],
-                                                    "logs": [{"line": text}]}))
+        scratch_tools(Tool(name=name, toolset="sessions", access=access, description="t",
+                           handler=lambda ctx, **kw: {"output": text, "error": text, "warnings": [text],
+                                                      "logs": [{"line": text}]}))
         ok, r, raw = call(name)
         assert ok and PASS not in raw and LONG not in raw, name
         if style == "write":
