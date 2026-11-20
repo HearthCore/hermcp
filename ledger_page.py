@@ -121,6 +121,33 @@ def iso(value: Any) -> Optional[str]:
     return parsed.astimezone().isoformat(timespec="seconds")
 
 
+def instant(value: Any) -> Optional[datetime]:
+    """Parse a timestamp into an aware datetime, or None when it cannot be read.
+
+    The ledger mixes two sources: rows that already went through :func:`iso` (server-local offset)
+    and raw ``cron_runs`` rows (UTC). Ordering those by their string form is wrong whenever the
+    offsets differ, so every "is this later than that" question goes through here. A naive value is
+    read as UTC, exactly as :func:`iso` does.
+    """
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def redacted(value: Any) -> str:
     """hermcp's own secret scrubbing, or nothing at all if it is unavailable."""
     if not isinstance(value, str) or not value:
@@ -527,14 +554,19 @@ def _split_superseded(registry, principal, settings, rows, since, errors) -> tup
     ``job_id`` in the failure list (capped, and a failing lookup just leaves the entry
     in the active list). Superseded runs are not shown on the page at all any more — they
     neither count as attention nor appear in a history group (the ledger row keeps them).
+
+    "Afterwards" is decided on instants, never on the timestamp strings: the failure rows have
+    already been through :func:`iso` (server-local offset) while the later runs come straight from
+    ``cron_runs`` (UTC), so a string comparison is wrong for any pair closer together than the
+    server's UTC offset. A timestamp that cannot be parsed leaves the failure in the active list.
     """
-    seen: Dict[str, bool] = {}
+    seen: Dict[str, str] = {}
     active, superseded = [], []
     lookups = 0
     for row in rows:
         job_id = row.get("job_id")
-        started = row.get("started_at")
-        if not job_id or not started:
+        started = instant(row.get("started_at"))
+        if not job_id or started is None:
             active.append(row)
             continue
         if job_id not in seen and lookups < MAX_SUPERSEDED_LOOKUPS:
@@ -543,11 +575,12 @@ def _split_superseded(registry, principal, settings, rows, since, errors) -> tup
                 later = call(registry, principal, settings, "cron_runs",
                              job_id=job_id, since=since, limit=100) or {}
                 ok_times = [
-                    r.get("started_at") for r in later.get("runs") or []
+                    (instant(r.get("started_at")), r.get("started_at"))
+                    for r in later.get("runs") or []
                     if str(r.get("status") or "").lower() in _TERMINAL_OK and r.get("started_at")
-                    and str(r.get("started_at")) > str(started)
                 ]
-                seen[job_id] = min(ok_times) if ok_times else ""
+                ok_times = [pair for pair in ok_times if pair[0] is not None and pair[0] > started]
+                seen[job_id] = min(ok_times)[1] if ok_times else ""
             except Exception as exc:  # noqa: BLE001 - never hide a failure on a broken lookup
                 errors.setdefault("cron_superseded", str(exc))
                 seen[job_id] = ""

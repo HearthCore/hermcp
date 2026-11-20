@@ -357,6 +357,14 @@ Seite und Digest dieselben Zahlen liefern.
 Die Seite zeigt nur, was noch Arbeit ist: ein erledigter Fehler verlässt Attention-Bereich und Zähler;
 auf der Seite erscheint er nicht mehr, in den Tools bleibt er mit dem Vermerk lesbar, was ihn erledigt hat.
 
+Eine Sache leitet der Attention-Bereich selbst ab, rein lesend: ein **Cron-Fehler** gilt als überholt,
+sobald derselbe Job (`job_id`) danach erfolgreich gelaufen ist — dafür kommt ein zusätzlicher
+`cron_runs`-Aufruf je Job (gedeckelt, ein fehlschlagender Aufruf lässt den Fehler stehen). „Danach“
+wird auf **Zeitpunkten** entschieden, nie auf Zeitstempel-Texten: die Fehlerzeile ist bereits durch
+`iso()` gegangen (Zone des Servers), die späteren Läufe kommen roh aus `cron_runs` (UTC), und ein
+String-Vergleich wäre für jedes Paar falsch, das enger zusammenliegt als der UTC-Versatz des Servers.
+Ein Zeitstempel, der sich nicht lesen lässt, hält den Fehler in der aktiven Liste — nie umgekehrt.
+
 ## Die Sicht eines Keys (`HERMCP_LEDGER_VIEW_KEY`)
 
 Im Single-User-Betrieb soll die Seite dasselbe zeigen wie der Agent, der sie liest. Dafür gibt es
