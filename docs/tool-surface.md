@@ -75,6 +75,8 @@ from the live registry (`hermes hermcp docs`) and refreshed automatically on eve
 start, so it cannot drift from the code.
 
 Every mutating tool accepts `dry_run: true` and returns what it *would* do without doing it.
+Read tools accept `dry_run` as well and ignore it: they apply nothing either way, so the flag is a
+no-op there, is not part of their schema and never reaches the handler.
 
 ### Server instructions
 

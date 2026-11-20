@@ -95,7 +95,7 @@ Keep the advertised tool count small (models and voice degrade with huge tool li
   `hermes_search_tools(query)` → `hermes_describe_tool(name)` → `hermes_call(name, args)`
   meta tools (same scope checks apply inside `hermes_call`).
 - Every write/admin tool supports `dry_run: bool` returning the planned change (diff for
-  config) without applying it.
+  config) without applying it. Read tools accept the flag and ignore it (they apply nothing).
 - Profile-aware tools take optional `profile` (default `default`); validate against key
   scope.
 
