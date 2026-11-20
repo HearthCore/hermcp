@@ -224,7 +224,13 @@ path per run and remove the heuristic. This plugin deliberately does not patch H
 - `provider_auth_start` / `_continue` / `_status` / `_cancel` — **remote OAuth for
   providers**. Starts `hermes auth add <provider> --type oauth --no-browser` on a PTY,
   returns the verification URL (plus user code for device flow) so the user finishes the
-  login on any device; pasted codes go back into the same live process.
+  login on any device; pasted codes go back into the same live process. A session holds a PTY
+  fd and a child process, so it is bounded: a finished session is dropped after
+  `HERMCP_AUTH_SESSION_MAX_AGE` idle seconds (default 1800), **any** session is closed after
+  `HERMCP_AUTH_SESSION_HARD_CAP` seconds (default 3600) even while its process is still running
+  — a login that waits on stdin forever never exits on its own — and starting one more than
+  `HERMCP_AUTH_SESSION_MAX` (default 8) closes the oldest. `provider_auth_status` reports the
+  three limits next to the sessions, and a closed session answers `not_found` on `_continue`.
 - `secret_set` / `secret_list` / `secret_delete` — write-only credential handling: store a
   provider API key from chat without the value ever coming back, being logged, or landing in
   the audit log.
