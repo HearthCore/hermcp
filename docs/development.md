@@ -23,15 +23,52 @@ scripts/run_tests.sh -q --cov=hermcp --cov-report=term-missing
 # if the shell exports PYTHONPATH (some agent shells point it at a foreign python3.14 env),
 # unset it first: `env -u PYTHONPATH …` -- the Hermes venv's `mcp` import breaks otherwise
 
-# the suite never reads the install's own .env or the shell's HERMCP_* settings: an autouse fixture
-# in tests/conftest.py blanks every variable load_settings reads and points HERMCP_ENV_FILE at an
-# empty temp dir, so a host that serves the Ledger (HERMCP_LEDGER=1, HERMCP_LEDGER_AUTH=none,
-# HERMCP_HOST=0.0.0.0) runs the same tests as CI. tests/test_settings_isolation.py holds the list
-# against settings.py.
+# the suite never reads the install's own .env, the shell's settings or the live ~/.hermes: see
+# "Testing principles" below. A hostile-host check before a test-infrastructure change:
+HERMCP_LEDGER=1 HERMCP_LEDGER_AUTH=none HERMCP_HOST=0.0.0.0 HERMES_PROFILE=researcher \
+  TZ=Pacific/Kiritimati scripts/run_tests.sh -q              # expected: the same result as without
 
 # regenerate the tool catalog after changing tools
 /usr/local/lib/hermes-agent/venv/bin/python -m hermcp docs
 ```
+
+## Testing principles
+
+The suite is a contract, not a coverage number. CI reports coverage so a drop is visible; nobody
+writes a test to move it. The audit in [#87](https://github.com/HearthCore/hermcp/issues/87)
+applied these rules to every test, and new tests follow them:
+
+- **A test earns its place by a risk it pins**: a behaviour a user or client relies on, a security
+  boundary (scopes, masking, auth, file modes), or a regression that happened. A one-line check of
+  a private helper with no failure mode, or a second copy of an assertion that another test already
+  makes, is removed, not kept "for coverage".
+- **Test behaviour, not mechanics.** Drive the real thing where it is cheap (a real PTY, a real
+  temp `keys.json`, a fake api_server on an ephemeral port) instead of replacing the stdlib call the
+  code happens to use today. A test that breaks when `select.poll` becomes `selectors` without any
+  change in behaviour is a maintenance cost, not a guard.
+- **No host state.** `tests/conftest.py` blanks every `HERMCP_*` and the host variables hermcp
+  reads (`HERMES_API_URL`, `HERMES_PROFILE`, `HERMES_PLATFORM*`, `HERMES_SESSION*`,
+  `INVOCATION_ID`), points the plugin `.env` at a file that does not exist, gives every test an
+  empty `HERMES_HOME`, an api_server URL that refuses at once and an hermcp port nothing serves.
+  `tests/test_settings_isolation.py` scans the product code so a new variable cannot slip past.
+  A test that needs a value sets it itself; a test that needs a server starts a fake one.
+- **Only committed files.** A test that checks the repository's own files lists them with
+  `conftest.tracked_files()` (`git ls-files`), never a glob over the working tree: a live install
+  keeps git-excluded notes under `docs/prep/`, a developer has `node_modules/` or a scratch script.
+- **No order, no shared state.** The tool registry, module-level session tables and class-level
+  request logs are process-wide. Register throw-away tools with the `scratch_tools` fixture, clear
+  a shared log at the start of the test that reads it. The suite must pass in any order: it runs
+  in file order, so after touching fixtures check a shuffled run once (e.g. `pytest-randomly`
+  installed into the throw-away venv kept with `HERMCP_TEST_VENV`).
+- **No wall-clock or zone assumptions.** Timestamps in fixtures age with `time.time()`; a test of
+  time logic sets `TZ` itself (`server_zone` in `test_ledger_page.py`). Timing tests assert an upper
+  bound with generous headroom, never an exact duration.
+- **No environment limits taken for granted.** The fd limit, a free port, the presence of
+  `systemctl` or `git` differ between hosts: raise the limit inside the test and restore it, bind
+  port 0, fake the binary — or skip with the reason when the premise cannot be built.
+- **A product bug found by a test becomes an issue**, not a silent fix inside a test PR. If the
+  test is worth keeping until the fix lands, mark it `xfail(strict=True, reason="#<issue>")`: it
+  turns red the day the fix makes it pass, so the marker cannot be forgotten.
 
 Layout:
 
