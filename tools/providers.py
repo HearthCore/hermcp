@@ -23,6 +23,7 @@ import pty
 import re
 import select
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -313,6 +314,23 @@ def _read_env(path: Path) -> list[str]:
         return []
 
 
+def _write_env(path: Path, lines: list[str]) -> None:
+    """Replace `path` atomically; the temp file is 0600 from creation (mkstemp), never umask-readable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 @reg.tool("secret_set", toolset="providers", access="write", profile_aware=True, secrets=True,
           description=(("Store an API key / token in the profile's .env (NAME=value, NAME in UPPER_SNAKE). WRITE-ONLY: "
                         "the value is never returned, never logged and is redacted in the audit log. Use it to hand a "
@@ -322,16 +340,15 @@ def _read_env(path: Path) -> list[str]:
                       "value": {"type": "string", "minLength": 1, "maxLength": 8000}},
           required=["name", "value"])
 def secret_set(ctx, name, value):
+    if any(c in value for c in "\n\r\0"):
+        raise ToolError("invalid_arguments", "value must be a single line: newline, carriage return and NUL are not allowed")
     path = _env_path(ctx)
     if ctx.dry_run:
         return ctx.plan(f"would set {name} in {path}", path=str(path), bytes=len(value))
     lines = _read_env(path)
     new = [ln for ln in lines if not re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*=", ln)]
     new.append(f"{name}={value}")
-    tmp = path.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(new) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    _write_env(path, new)
     return {"applied": True, "name": name, "path": str(path), "length": len(value),
             "note": "stored write-only; restart the gateway for the value to reach every process"}
 
@@ -427,8 +444,5 @@ def secret_delete(ctx, name):
         raise ToolError("not_found", f"{name} not present in {path}")
     if ctx.dry_run:
         return ctx.plan(f"would remove {name} from {path}", path=str(path))
-    tmp = path.with_suffix(".env.tmp")
-    tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    _write_env(path, kept)
     return {"applied": True, "removed": name, "path": str(path)}

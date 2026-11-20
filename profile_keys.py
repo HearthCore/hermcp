@@ -309,7 +309,9 @@ def write_api_key(path: Path, key: str, *, backup_dir: Path | None = None, dry_r
         root = backup_dir or backup_root()
         root.mkdir(parents=True, exist_ok=True)
         backup = root / _backup_name(path)
-        shutil.copyfile(path, backup)
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as out, open(path, "rb") as src:
+            shutil.copyfileobj(src, out)
         os.chmod(backup, 0o600)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
