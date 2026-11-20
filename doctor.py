@@ -94,8 +94,11 @@ def run() -> int:
         warn(f"bound to {s.host}", "expose only behind the TLS proxy; loopback (127.0.0.1) is the safe default")
     if "*" in s.allowed_hosts:
         warn("HERMCP_ALLOWED_HOSTS contains *", "disables the Host (DNS-rebinding) check")
-    if s.public_url and not s.trust_proxy:
-        warn("HERMCP_TRUST_PROXY is off", "the failed-auth limiter will see only the proxy's IP")
+    if s.public_url and not s.trusted_proxies:
+        warn("HERMCP_TRUSTED_PROXIES is empty",
+             "behind a proxy the failed-auth limiter will see only the proxy's IP")
+    if s.trust_proxy:
+        warn("HERMCP_TRUST_PROXY is deprecated", "it widens nothing; set HERMCP_TRUSTED_PROXIES=<proxy address>")
     try:
         with socket.create_connection((s.host if s.host != "0.0.0.0" else "127.0.0.1", s.port), timeout=1):
             print(f"[info] something is listening on {s.host}:{s.port}")
