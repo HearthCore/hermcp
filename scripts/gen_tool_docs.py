@@ -5,12 +5,16 @@ Everything here is derived from the live registry, so the page cannot drift from
 server: run `python -m hermcp docs` (or `hermes hermcp docs`) after changing tools, or
 let `serve` regenerate it at startup.
 
+The same run also rewrites the marked catalog-count regions in README.md and
+docs/tool-surface.md, which would otherwise drift the moment a tool is added.
+
 Usage: python scripts/gen_tool_docs.py [--out PATH]
 """
 from __future__ import annotations
 
 import html
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -29,19 +33,100 @@ BADGE = {
 }
 
 
+# ---- catalog counts in prose -----------------------------------------------------------------
+# README.md and docs/tool-surface.md state the catalog numbers. Those are the one thing in the docs
+# that drifts on its own: adding a tool changes them without anybody touching the docs. The marked
+# regions here are therefore generated from the live registry, and `tests/test_doc_counts.py` fails
+# when a file is stale. `python -m hermcp docs` rewrites both the page and the prose.
+MARK_START = "<!-- tool-counts:%s -->"
+MARK_END = "<!-- /tool-counts:%s -->"
+
+
+def catalog_stats(reg=None) -> dict[str, int]:
+    """The numbers the docs state, derived from `app.build_registry()`."""
+    reg = reg if reg is not None else build_registry()
+    tools = list(reg.tools.values())
+    meta = [t for t in tools if t.meta]
+    body = [t for t in tools if not t.meta]
+    return {
+        "total": len(tools),
+        "catalog": len(body),
+        "meta": len(meta),
+        "toolsets": len({t.toolset for t in body}),
+        "core": sum(1 for t in tools if t.core),
+        "advertised": sum(1 for t in tools if t.core or t.meta),
+    }
+
+
+def _regions(s: dict[str, int]) -> dict[str, tuple[str, str, bool, list[str]]]:
+    """region name -> (file, line prefix, inline, generated lines)."""
+    return {
+        "readme-status": (
+            "README.md", "> ", False, [
+                f"Today's catalog is **{s['total']} tools** — {s['catalog']} in {s['toolsets']} toolsets plus"
+                f" {s['meta']} meta tools — of which",
+                f"**{s['advertised']} are advertised in `tools/list`** (a key sees only what its scopes and"
+                " opt-in flags allow);",
+                "the rest is reachable through `hermes_search_tools` → `hermes_describe_tool` →"
+                " `hermes_call`.",
+            ]),
+        "readme-features-tools": ("README.md", "", True, [f"{s['total']} tools, {s['toolsets']} toolsets"]),
+        "readme-features-advertised": ("README.md", "", True, [f"{s['advertised']} advertised"]),
+        "readme-surface": (
+            "README.md", "", False, [
+                f"**{s['total']} tools — {s['catalog']} in {s['toolsets']} toolsets plus {s['meta']} meta"
+                f" tools — of which {s['advertised']} are advertised directly.**",
+            ]),
+        "readme-roadmap": ("README.md", "", True, [f"{s['catalog']} tools across {s['toolsets']} toolsets"]),
+        "tool-surface": (
+            "docs/tool-surface.md", "", False, [
+                f"**{s['total']} tools in the catalog — {s['catalog']} in {s['toolsets']} toolsets plus"
+                f" {s['meta']} meta tools — of which {s['advertised']} are advertised directly**"
+                f" ({s['core']} core tools plus {s['meta']} meta tools; a key sees only what its scopes and"
+                " opt-in flags allow).",
+            ]),
+    }
+
+
+def sync_counts(root: Path = ROOT) -> list[Path]:
+    """Rewrite every generated count region; return the files that actually changed."""
+    regions = _regions(catalog_stats())
+    by_file: dict[str, list[tuple[str, str, bool, list[str]]]] = {}
+    for name, (rel, prefix, inline, lines) in regions.items():
+        by_file.setdefault(rel, []).append((name, prefix, inline, lines))
+
+    changed: list[Path] = []
+    for rel, items in by_file.items():
+        path = root / rel
+        text = path.read_text(encoding="utf-8")
+        new = text
+        for name, prefix, inline, lines in items:
+            start, end = MARK_START % name, MARK_END % name
+            body = lines[0] if inline else "\n".join(prefix + ln for ln in lines)
+            repl = f"{start}{body}{end}" if inline else f"{start}\n{body}\n{prefix}{end}"
+            pattern = re.compile(re.escape(start) + r".*?" + re.escape(end), re.S)
+            new, n = pattern.subn(lambda _m, r=repl: r, new)
+            if n != 1:
+                raise ValueError(f"{rel}: expected exactly one {start} … {end} region, found {n}")
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            changed.append(path)
+    return changed
+
+
 def _esc(v: object) -> str:
     return html.escape(str(v), quote=True)
 
 
 def render(out: Path) -> Path:
     reg = build_registry()
+    stats = catalog_stats(reg)
     tools = sorted(reg.tools.values(), key=lambda t: (t.toolset, t.name))
     by_ts: dict[str, list] = {}
     for t in tools:
         by_ts.setdefault(t.toolset, []).append(t)
 
     counts = {lv: sum(1 for t in tools if t.access == lv) for lv in ACCESS_LEVELS}
-    core = sum(1 for t in tools if t.core)
 
     parts: list[str] = []
     A = parts.append
@@ -91,11 +176,12 @@ footer{color:var(--dim);font-size:11px;padding:0 26px 40px;max-width:1180px}
       "Regenerate: <code>python -m hermcp docs</code></div></header>")
     A("<div class='wrap'>")
     A("<div class='grid'>")
-    A(f"<div class='stat'><b>{len(tools)}</b>tools total</div>")
-    A(f"<div class='stat'><b>{core}</b>advertised directly</div>")
+    A(f"<div class='stat'><b>{stats['total']}</b>tools total</div>")
+    A(f"<div class='stat'><b>{stats['advertised']}</b>advertised directly</div>")
     for lv in ("read", "write", "admin"):
         A(f"<div class='stat'><b>{counts[lv]}</b>{lv}</div>")
-    A(f"<div class='stat'><b>{len(by_ts)}</b>toolsets</div>")
+    A(f"<div class='stat'><b>{stats['toolsets']}</b>toolsets</div>")
+    A(f"<div class='stat'><b>{stats['meta']}</b>meta tools</div>")
     A("</div>")
     A("<h2>Server guidance (the <code>instructions</code> string sent on initialize)</h2>")
     A(f"<div class='guidance'>{_esc(INSTRUCTIONS)}</div>")
@@ -158,3 +244,5 @@ if __name__ == "__main__":
         target = Path(sys.argv[sys.argv.index("--out") + 1])
     path = render(target)
     print(f"wrote {path} ({path.stat().st_size} bytes)")
+    for changed_path in sync_counts():
+        print(f"updated catalog counts in {changed_path.relative_to(ROOT.parent)}")

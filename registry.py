@@ -190,8 +190,8 @@ class Registry:
                 if isinstance(result, dict):
                     result = {**result, "_meta": out_meta}
                     out_meta = None
-            # a list result keeps its shape (old clients); its provenance travels beside it as `meta` and the
-            # MCP server sends it as a second content block
+            # a list result keeps its shape (old clients); its provenance travels beside it as `meta` in the
+            # same rendered JSON — the server sends one content block per call (`server.call_tool`)
             return {"ok": True, "result": result, **({"meta": out_meta} if out_meta else {})}
         except ToolError as exc:
             status, detail = exc.code, exc.message
