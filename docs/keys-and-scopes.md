@@ -9,6 +9,14 @@ What a key may do, how a scope is spelled, and what an admin key can unlock.
 Keys are `hmcp_<id>_<secret>`, shown **once**; only an HMAC-SHA256 hash with a per-key salt
 is stored (`~/.hermes/plugin-data/hermcp/keys.json`, mode 0600).
 
+The server and `hermes hermcp keys ...` are two processes on that one file. Every write
+(create, revoke, rotate, scopes, rename and the server's `last_used` flush) takes an `flock` on
+`keys.json.lock` next to it, re-reads the file under the lock and changes only its own part. The
+`last_used` flush touches that one field of that one key, so it can never undo a CLI revoke,
+rotate or scope change, nor bring back a deleted key. Changes are picked up by mtime (ns), size
+and inode, not mtime alone. A revoke takes effect on the server's next read of the file; at
+worst one request already in flight is served from the old view.
+
 | Scope | Values | Meaning |
 |---|---|---|
 | `access` | `read` / `write` / `admin` | Coarse capability. Every tool carries one level. |

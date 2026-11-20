@@ -1,6 +1,8 @@
 """Key store: hashed API keys (`hmcp_<id>_<secret>`), 0600 JSON file, shown once at creation."""
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import hmac
 import json
@@ -82,26 +84,47 @@ class KeyStore:
         self.path = Path(path)
         self._lock = threading.RLock()
         self._keys: dict[str, KeyRecord] = {}
-        self._mtime = -1.0
+        self._sig: tuple | None = None
         self._last_flush = 0.0
         self._load()
 
     # -- persistence --------------------------------------------------------------------
-    def _load(self) -> None:
+    @staticmethod
+    def _signature(st: os.stat_result) -> tuple:
+        # mtime alone misses a write that lands in the same timestamp tick; _save always replaces
+        # the file (new inode), and size/ns-mtime catch in-place edits.
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+    @contextlib.contextmanager
+    def _write_lock(self):
+        """Serialise writers across processes (server vs. `hermes hermcp keys ...`): an flock on a
+        sidecar file, plus the in-process lock. Inside it, `_load(force=True)` sees every earlier
+        write, so a read-modify-write can never apply a stale cached view over a newer file."""
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(str(self.path) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                self._load(force=True)
+                yield
+            finally:
+                os.close(fd)                       # closing the descriptor releases the flock
+
+    def _load(self, force: bool = False) -> None:
         with self._lock:
             try:
                 st = self.path.stat()
             except OSError:
-                self._keys, self._mtime = {}, -1.0
+                self._keys, self._sig = {}, None
                 return
-            if st.st_mtime == self._mtime:
+            if not force and self._signature(st) == self._sig:
                 return
             try:
                 raw = json.loads(self.path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
                 raise KeyError_(f"key store unreadable: {exc}") from exc
             self._keys = {r["id"]: KeyRecord.from_json(r) for r in raw.get("keys", [])}
-            self._mtime = st.st_mtime
+            self._sig = self._signature(st)
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,14 +140,13 @@ class KeyStore:
             except OSError:
                 pass
             raise
-        self._mtime = self.path.stat().st_mtime
+        self._sig = self._signature(self.path.stat())
 
     # -- operations ---------------------------------------------------------------------
     def create(self, name: str, scopes: Scopes, owner: str = "", expires: float | None = None) -> tuple[KeyRecord, str]:
         if not name.strip():
             raise KeyError_("name required")
-        with self._lock:
-            self._load()
+        with self._write_lock():
             if any(k.name == name for k in self._keys.values()):
                 raise KeyError_(f"a key named {name!r} already exists")
             rec, token = self._new(name, scopes, owner, expires)
@@ -161,11 +183,22 @@ class KeyStore:
             rec.last_used = now
             if now - self._last_flush >= LAST_USED_WRITE_INTERVAL:
                 self._last_flush = now
-                try:
-                    self._save()
-                except OSError:
-                    pass
+                self._flush_last_used(kid, now)
             return rec
+
+    def _flush_last_used(self, kid: str, when: float) -> None:
+        """Persist `last_used` as a merge: re-read the file under the write lock and touch only that
+        field of that key. Everything else (a revoke, rotate, scope change or new key made by the
+        CLI) is taken from disk, never from this process's cache."""
+        try:
+            with self._write_lock():
+                fresh = self._keys.get(kid)
+                if fresh is None:                      # deleted meanwhile: nothing to record
+                    return
+                fresh.last_used = max(when, fresh.last_used or 0.0)
+                self._save()
+        except (OSError, KeyError_):
+            pass                                       # best effort, never fail an authenticate
 
     def get(self, ref: str) -> KeyRecord:
         """Look up by id or name."""
@@ -184,7 +217,7 @@ class KeyStore:
             return sorted(self._keys.values(), key=lambda k: k.created)
 
     def revoke(self, ref: str, delete: bool = False) -> KeyRecord:
-        with self._lock:
+        with self._write_lock():
             rec = self.get(ref)
             if delete:
                 del self._keys[rec.id]
@@ -194,7 +227,7 @@ class KeyStore:
             return rec
 
     def rotate(self, ref: str) -> tuple[KeyRecord, str]:
-        with self._lock:
+        with self._write_lock():
             old = self.get(ref)
             rec, token = self._new(old.name, old.scopes, old.owner, old.expires, kid=old.id)
             rec.created, rec.disabled = old.created, old.disabled
@@ -203,7 +236,7 @@ class KeyStore:
             return rec, token
 
     def update_scopes(self, ref: str, scopes: Scopes) -> KeyRecord:
-        with self._lock:
+        with self._write_lock():
             rec = self.get(ref)
             rec.scopes = scopes
             self._save()
@@ -214,7 +247,7 @@ class KeyStore:
         new = (name or "").strip()
         if not new:
             raise KeyError_("name required")
-        with self._lock:
+        with self._write_lock():
             rec = self.get(ref)
             for k in self._keys.values():
                 if k.id != rec.id and k.name == new:
