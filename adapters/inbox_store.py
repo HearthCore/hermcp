@@ -11,6 +11,7 @@ External pushers can never set these origins or kinds (is_reserved_kind).
 from __future__ import annotations
 
 import collections
+import contextlib
 import hashlib
 import re
 import sqlite3
@@ -18,7 +19,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..redact import redact_text
 from ..registry import ToolError
@@ -171,7 +172,7 @@ class Inbox:
         self.max_events, self.retention_days, self.rate_per_min = max_events, retention_days, rate_per_min
         self.run_max_events, self.watch_max_per_key, self.watch_ttl_s = run_max_events, watch_max_per_key, watch_ttl_s
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._db() as db:
+        with self._session() as db:
             db.execute("""CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, source TEXT NOT NULL,
                 kind TEXT NOT NULL, summary TEXT NOT NULL, ref TEXT, severity TEXT NOT NULL DEFAULT 'info',
@@ -298,7 +299,7 @@ class Inbox:
         every tick and once by the migration, so no read path has to write.
         """
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._db() as db:
+        with self._session() as db:
             return self._settle_pass(db, ts)
 
     @staticmethod
@@ -368,11 +369,24 @@ class Inbox:
         except sqlite3.Error:      # a migration must never stop the service from starting
             pass
 
-    def _db(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self.path, timeout=10, isolation_level=None)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA journal_mode=WAL")
-        return c
+    @contextlib.contextmanager
+    def _session(self) -> Iterator[sqlite3.Connection]:
+        """One connection per operation, closed when the block ends.
+
+        `sqlite3.Connection`'s own context manager only commits or rolls back -- it never closes, so
+        `with self._db() as db:` left every connection to the garbage collector (#93). That makes the
+        process's fd count depend on GC timing: a `serve` that does inbox work on every poll drifts
+        towards `RLIMIT_NOFILE`, where `accept()`, `openpty()` (provider auth) and the inbox itself
+        fail with EMFILE. Closing here keeps the count flat, whatever the GC does.
+        """
+        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
 
     # -- rate limit (per key, in memory) -------------------------------------------------
     def check_rate(self, key_id: str) -> None:
@@ -422,7 +436,7 @@ class Inbox:
         if not summary:
             raise ToolError("invalid_arguments", "summary is empty after cleaning")
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._db() as db:
+        with self._session() as db:
             cur = db.execute("INSERT INTO events(ts,source,kind,summary,ref,severity,pushed_by) VALUES(?,?,?,?,?,?,?)",
                              (ts, clean_text(source), clean_text(kind), summary,
                               clean_text(ref) if ref else None, severity, pushed_by))
@@ -448,7 +462,7 @@ class Inbox:
         the session that lost something finds out on its next inbox_poll. Best effort: returns None on failure."""
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
-            with self._db() as db:
+            with self._session() as db:
                 cur = db.execute(
                     "INSERT INTO events(ts,source,kind,summary,ref,severity,pushed_by,profile,origin,dedupe_key) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -467,7 +481,7 @@ class Inbox:
         """Watcher-only insert (no token, no HTTP). Returns None for a duplicate or when the per-run
         cap suppresses a non-terminal event."""
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._db() as db:
+        with self._session() as db:
             n = db.execute("SELECT COUNT(*) FROM events WHERE run_id=? AND origin='watcher' "
                            "AND approval_key IS NULL", (run_id,)).fetchone()[0]
             # one slot of the per-run cap is reserved for the terminal event
@@ -497,7 +511,7 @@ class Inbox:
         """
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         sk = clean_text(session_key)[:MAX_REF] if session_key else None
-        with self._db() as db:
+        with self._session() as db:
             try:
                 cur = db.execute(
                     "INSERT INTO events(ts,source,kind,summary,ref,severity,pushed_by,profile,session_key,"
@@ -528,7 +542,7 @@ class Inbox:
         payload happens to carry one and is never invented.
         """
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._db() as db:
+        with self._session() as db:
             cur = db.execute("SELECT * FROM events WHERE approval_key=?", (approval_key,)).fetchone()
             if cur is not None:
                 if cur["approval_state"] != "waiting":
@@ -570,7 +584,7 @@ class Inbox:
         """
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         state = outcome_state or state_for_decision(decision)
-        with self._db() as db:
+        with self._session() as db:
             row = db.execute("SELECT * FROM events WHERE approval_key=?", (approval_key,)).fetchone()
             if row is None:
                 self._log_decision(db, approval_key, surface, decision, "not_pending", actor, note, run_id)
@@ -603,17 +617,17 @@ class Inbox:
                         decision: str | None = None, actor: str | None = None, note: str | None = None,
                         run_id: str | None = None) -> None:
         """Record an attempt that did NOT go through (refused, error, already pending elsewhere)."""
-        with self._db() as db:
+        with self._session() as db:
             self._log_decision(db, approval_key, surface, decision, outcome, actor, note, run_id)
 
     def approval_decisions(self, approval_key: str) -> list[dict[str, Any]]:
-        with self._db() as db:
+        with self._session() as db:
             return [dict(r) for r in db.execute(
                 "SELECT id,ts,surface,decision,outcome,actor,note,run_id FROM approval_decisions "
                 "WHERE approval_key=? ORDER BY id", (approval_key,)).fetchall()]
 
     def get_approval(self, approval_key: str) -> dict[str, Any] | None:
-        with self._db() as db:
+        with self._session() as db:
             r = db.execute("SELECT * FROM events WHERE approval_key=?", (approval_key,)).fetchone()
         return self._row(r) if r else None
 
@@ -626,7 +640,7 @@ class Inbox:
         resolves the row from those instead, most specific match first. `waiting_only=False` also finds
         an already settled row, so a late second attempt can be recorded against it.
         """
-        with self._db() as db:
+        with self._session() as db:
             candidates: list[tuple[str, tuple]] = []
             if run_id and approval_id:
                 candidates.append(("run_id=? AND approval_id=?", (run_id, approval_id)))
@@ -658,7 +672,7 @@ class Inbox:
         """
         if not session_key and not action:
             return None
-        with self._db() as db:
+        with self._session() as db:
             q = "SELECT * FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL"
             a: list[Any] = []
             if session_key:
@@ -679,7 +693,7 @@ class Inbox:
         """
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         closed: list[str] = []
-        with self._db() as db:
+        with self._session() as db:
             rows = db.execute("SELECT * FROM events WHERE run_id=? AND approval_state='waiting'", (run_id,)).fetchall()
             for row in rows:
                 db.execute("UPDATE events SET approval_state=?, approval_decision=?, approval_closed_at=?, "
@@ -694,7 +708,7 @@ class Inbox:
     def open_approvals(self, profiles: list[str] | None = None) -> list[dict[str, Any]]:
         """Approvals still waiting for a human, newest first -- the only approval rows the default view shows."""
         sc, sa = self._scope_sql(profiles)
-        with self._db() as db:
+        with self._session() as db:
             rows = db.execute("SELECT * FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL"
                               + sc + " ORDER BY id DESC LIMIT 200", sa).fetchall()
         return [self._row(r) for r in rows]
@@ -704,7 +718,7 @@ class Inbox:
     def add_watch(self, *, run_id: str, profile: str, session_id: str | None, key_id: str, key_name: str,
                   client: str | None = None, client_session: str | None = None) -> None:
         now = time.time()
-        with self._db() as db:
+        with self._session() as db:
             active = db.execute("SELECT COUNT(*) FROM watches WHERE done=0 AND expires_at>? AND key_id=?",
                                 (now, key_id)).fetchone()[0]
             if active >= self.watch_max_per_key:
@@ -717,7 +731,7 @@ class Inbox:
     def active_watches(self, now: float | None = None) -> list[dict[str, Any]]:
         """Open watches; watches past their TTL are closed silently (no terminal evidence, no event)."""
         now = now or time.time()
-        with self._db() as db:
+        with self._session() as db:
             db.execute("UPDATE watches SET done=1, done_at=?, last_status='expired' WHERE done=0 AND expires_at<=?",
                        (now, now))
             db.execute("DELETE FROM watches WHERE done=1 AND done_at<?", (now - 7 * 86400,))
@@ -725,7 +739,7 @@ class Inbox:
 
     def update_watch(self, run_id: str, *, last_status: str | None = None, session_id: str | None = None,
                      done: bool = False) -> None:
-        with self._db() as db:
+        with self._session() as db:
             if last_status is not None:
                 db.execute("UPDATE watches SET last_status=? WHERE run_id=?", (last_status, run_id))
             if session_id:
@@ -734,12 +748,12 @@ class Inbox:
                 db.execute("UPDATE watches SET done=1, done_at=? WHERE run_id=?", (time.time(), run_id))
 
     def set_activity(self, run_id: str, activity: str, at: float | None) -> None:
-        with self._db() as db:
+        with self._session() as db:
             db.execute("UPDATE watches SET activity=?, activity_at=? WHERE run_id=?", (activity, at, run_id))
 
     def note_control(self, run_id: str, control: str | None = None, *, steered: bool = False) -> None:
         """Record a control action on a watched run (no-op for runs hermcp does not watch)."""
-        with self._db() as db:
+        with self._session() as db:
             if control is not None:
                 db.execute("UPDATE watches SET control=? WHERE run_id=?", (control[:200] or None, run_id))
             if steered:
@@ -747,12 +761,12 @@ class Inbox:
 
     def clear_control(self, run_id: str) -> None:
         """Drop the control note again (a stop that did not go through must not label the run)."""
-        with self._db() as db:
+        with self._session() as db:
             db.execute("UPDATE watches SET control=NULL WHERE run_id=?", (run_id,))
 
     def session_watches(self, profile: str, session_id: str) -> list[dict[str, Any]]:
         """Open watches of one session, oldest first (fallback when the gateway queue is not readable)."""
-        with self._db() as db:
+        with self._session() as db:
             return [dict(r) for r in db.execute("SELECT * FROM watches WHERE done=0 AND profile=? AND session_id=? "
                                                 "ORDER BY started_at", (profile, session_id))]
 
@@ -767,7 +781,7 @@ class Inbox:
         """Create a card, or return the key's existing card for the same native_id (resume / re-registration).
         Returns (card, created)."""
         now = time.time()
-        with self._db() as db:
+        with self._session() as db:
             db.execute("DELETE FROM sessions WHERE last_seen<?", (now - SESSION_TTL_DAYS * 86400,))
             if native_id:
                 r = db.execute("SELECT * FROM sessions WHERE key_id=? AND native_id=?", (key_id, native_id)).fetchone()
@@ -797,7 +811,7 @@ class Inbox:
         the old card marked as handed over (successor), and the old session's OPEN runs move to the new handle.
         Finished runs keep their old handle, so history stays attributable. Returns (new card, runs moved)."""
         now = time.time()
-        with self._db() as db:
+        with self._session() as db:
             prev = db.execute("SELECT * FROM sessions WHERE handle=? AND key_id=?", (old, key_id)).fetchone()
             if not prev:
                 raise ToolError("unknown_client_session", f"no session {old!r} of this key to recover")
@@ -823,17 +837,17 @@ class Inbox:
             return dict(db.execute("SELECT * FROM sessions WHERE handle=?", (handle,)).fetchone()), moved
 
     def session_get(self, handle: str) -> dict[str, Any] | None:
-        with self._db() as db:
+        with self._session() as db:
             r = db.execute("SELECT * FROM sessions WHERE handle=?", (handle,)).fetchone()
         return dict(r) if r else None
 
     def session_touch(self, handle: str) -> None:
-        with self._db() as db:
+        with self._session() as db:
             db.execute("UPDATE sessions SET last_seen=? WHERE handle=?", (time.time(), handle))
 
     def session_update(self, handle: str, **fields: str | None) -> dict[str, Any] | None:
         cols = [k for k in ("kind", "purpose", "role", "native_id") if k in fields]
-        with self._db() as db:
+        with self._session() as db:
             if cols:
                 db.execute(f"UPDATE sessions SET {', '.join(c + '=?' for c in cols)}, last_seen=? WHERE handle=?",
                            (*[fields[c] for c in cols], time.time(), handle))
@@ -841,7 +855,7 @@ class Inbox:
         return dict(r) if r else None
 
     def sessions_list(self, *, key_id: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        with self._db() as db:
+        with self._session() as db:
             q, args = "SELECT * FROM sessions", []
             if key_id:
                 q += " WHERE key_id=?"
@@ -855,7 +869,7 @@ class Inbox:
     def unclaimed_runs(self, key_id: str) -> list[dict[str, Any]]:
         """Open runs of this key that no session claims (started without a client_session)."""
         now = time.time()
-        with self._db() as db:
+        with self._session() as db:
             return [dict(r) for r in db.execute(
                 "SELECT run_id,profile,started_at,client FROM watches WHERE done=0 AND expires_at>? AND key_id=? "
                 "AND (client_session IS NULL OR client_session='') ORDER BY started_at", (now, key_id))]
@@ -866,7 +880,7 @@ class Inbox:
             return 0
         now = time.time()
         marks = ",".join("?" * len(run_ids))
-        with self._db() as db:
+        with self._session() as db:
             cur = db.execute(
                 f"UPDATE watches SET client_session=?, client=COALESCE(client,?) WHERE done=0 AND expires_at>? "
                 f"AND key_id=? AND (client_session IS NULL OR client_session='') AND run_id IN ({marks})",
@@ -875,7 +889,7 @@ class Inbox:
 
     def session_open_runs(self, handle: str) -> int:
         now = time.time()
-        with self._db() as db:
+        with self._session() as db:
             return db.execute("SELECT COUNT(*) FROM watches WHERE done=0 AND expires_at>? AND client_session=?",
                               (now, handle)).fetchone()[0]
 
@@ -886,7 +900,7 @@ class Inbox:
         if not ids:
             return {}
         marks = ",".join("?" * len(ids))
-        with self._db() as db:
+        with self._session() as db:
             rows = db.execute(
                 f"SELECT w.run_id AS run_id, s.* FROM watches w JOIN sessions s ON s.handle=w.client_session "
                 f"WHERE w.run_id IN ({marks})" + (" AND s.key_id=?" if key_id else ""),
@@ -894,7 +908,7 @@ class Inbox:
         return {r["run_id"]: session_brief(dict(r)) for r in rows}
 
     def get_watch(self, run_id: str) -> dict[str, Any] | None:
-        with self._db() as db:
+        with self._session() as db:
             r = db.execute("SELECT * FROM watches WHERE run_id=?", (run_id,)).fetchone()
         return dict(r) if r else None
 
@@ -936,7 +950,7 @@ class Inbox:
              approval_key: str | None = None, run_id: str | None = None,
              session_key: str | None = None) -> dict[str, Any]:
         sc, sa = self._scope_sql(profiles)
-        with self._db() as db:
+        with self._session() as db:
             floor = self._floor(db, consumer)
             lo = after_id if include_older else max(after_id, floor)
             q, a = f"SELECT events.*, {self._MY_ACK} FROM events WHERE {self._UNREAD} AND id>?" + sc, \
@@ -978,7 +992,7 @@ class Inbox:
         so a page badge and this digest cannot disagree about the same data.
         """
         sc, sa = self._scope_sql(profiles)
-        with self._db() as db:
+        with self._session() as db:
             floor = self._floor(db, consumer)
             kinds = {r[0]: r[1] for r in db.execute(
                 f"SELECT kind, COUNT(*) FROM events WHERE {self._UNREAD} AND id>? AND {self._attention_sql(attention_only)}"
@@ -1018,7 +1032,7 @@ class Inbox:
 
         sc, sa = self._scope_sql(profiles)
         since = datetime.fromtimestamp(_now().timestamp() - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with self._db() as db:
+        with self._session() as db:
             waiting = db.execute(
                 "SELECT * FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL" + sc +
                 " ORDER BY id DESC LIMIT 200", sa).fetchall()
@@ -1098,7 +1112,7 @@ class Inbox:
         now = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         sc, sa = self._scope_sql(profiles)
         asked = list(ids or [])
-        with self._db() as db:
+        with self._session() as db:
             floor = self._floor(db, consumer)
             if all_unread:                      # everything this consumer has not read, older backlog included
                 ids = [r[0] for r in db.execute(
@@ -1138,7 +1152,7 @@ class Inbox:
             if val:
                 q += f" AND {col}=?"
                 a.append(val)
-        with self._db() as db:
+        with self._session() as db:
             rows = db.execute(q + " ORDER BY id DESC LIMIT ?", (*a, limit)).fetchall()
             total = db.execute("SELECT COUNT(*) FROM events WHERE 1=1" + sc, sa).fetchone()[0]
         return {"events": [self._row(r) for r in rows], "stored_total": total, "consumer": consumer}

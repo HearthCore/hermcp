@@ -82,3 +82,8 @@ Storage and limits (env, defaults): SQLite `inbox.db` (0600) in the hermcp data 
 the oldest), `HERMCP_INBOX_RETENTION_DAYS=14` (events older than that are dropped, read or not),
 `HERMCP_INBOX_RATE_PER_MIN=60` pushes per key. Rotation runs on every push.
 
+Every operation opens its own connection and closes it before it returns, so the fd table does not grow with
+the number of inbox calls: a `serve` that polls the inbox all day keeps a flat fd count instead of drifting
+towards `RLIMIT_NOFILE`, where `accept()`, `openpty()` (provider auth) and the inbox itself would fail with
+`EMFILE` ([#93](https://github.com/HearthCore/hermcp/issues/93)).
+

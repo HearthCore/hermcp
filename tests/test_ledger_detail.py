@@ -188,7 +188,7 @@ def inbox_seeded(monkeypatch, tmp_path):
     inbox_store._STORES.clear()          # a fresh store per test: the module caches per path
     box = inbox_store.get_inbox(settings)
 
-    with box._db() as db:
+    with box._session() as db:
         cols = ("id", "ts", "source", "kind", "summary", "profile", "run_id", "session_id", "severity",
                 "approval_key", "approval_state", "approval_decision", "approval_surface",
                 "approval_closed_at", "settled_reason", "settled_at", "action", "rationale", "origin")

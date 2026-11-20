@@ -29,7 +29,7 @@ def _seed(happ):
     _card(box, "k1", "cw-2", "Cowork", purpose="alte Session")
     _card(box, "k1", "ai-1", "ClaudeAI", kind="voice", purpose="Voice")
     _card(box, "k2", "other-1", "Codex")
-    with box._db() as db:
+    with box._session() as db:
         db.execute("UPDATE sessions SET last_seen=? WHERE handle='cw-2'", (time.time() - 3 * 3600,))
     box.add_watch(run_id="run_a", profile="developer", session_id=None, key_id="k1", key_name="k1",
                   client="Cowork", client_session="cw-1")
