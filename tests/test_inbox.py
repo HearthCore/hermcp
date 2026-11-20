@@ -299,3 +299,59 @@ def test_gateway_health_digest_counts_idle_and_wedged():
     assert d == {"available": True, "agents": 4, "by_kind": {"chat": 2, "cron": 1, "api": 1},
                  "no_detail": 1, "idle_5m": 1, "wedged": 1}
     assert health_digest({"available": False}) == {"available": False}
+
+
+def _chunks(*parts):
+    """A generator body: no Content-Length header, so only the capped stream read can stop it."""
+    sent = []
+
+    def gen():
+        for p in parts:
+            sent.append(len(p))
+            yield p
+    return gen(), sent
+
+
+def test_inbox_body_cap_declared_length(box):
+    h = {"Authorization": f"Bearer {box.tok['producer']}"}
+    r = box.client.post("/inbox", headers=h, content=b"x" * 9000)
+    assert r.status_code == 413 and r.json()["error"]["code"] == "too_large"
+
+
+def test_inbox_body_cap_streamed_stops_early(box):
+    h = {"Authorization": f"Bearer {box.tok['producer']}"}
+    body, sent = _chunks(*[b"x" * 4096] * 200)                   # 800 KB offered, no Content-Length
+    r = box.client.post("/inbox", headers=h, content=body)
+    assert r.status_code == 413
+    assert box.client.post("/inbox", headers=h, content=json.dumps(
+        {"source": "a", "kind": "b", "summary": "c"})).status_code == 201   # still usable afterwards
+
+
+def test_mcp_body_cap(box):
+    from hermcp import server
+    h = {"Authorization": f"Bearer {box.tok['voice']}"}
+    big = b" " * (server.MAX_BODY + 1)
+    r = box.client.post("/mcp", headers=h, content=big)                       # declared Content-Length
+    assert r.status_code == 413 and r.json()["error"]["message"] == "request too large"
+    body, _ = _chunks(*[b" " * 65536] * 20)                                   # ~1.3 MB, streamed
+    assert box.client.post("/mcp", headers=h, content=body).status_code == 413
+    ok = box.client.post("/mcp", headers=h, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert ok.status_code == 200
+
+
+def test_read_capped_stops_reading_at_the_cap():
+    import asyncio
+    from hermcp.server import _read_capped
+
+    class Req:
+        headers = {}
+        pulled = 0
+
+        async def stream(self):
+            for _ in range(1000):
+                self.pulled += 1
+                yield b"x" * 1000
+
+    r = Req()
+    assert asyncio.run(_read_capped(r, 5000)) is None
+    assert r.pulled == 6                                                      # cut right after the cap, not 1000 chunks

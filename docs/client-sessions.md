@@ -62,7 +62,7 @@ curl -fsS -X POST http://127.0.0.1:9230/inbox -H "Authorization: Bearer $HERMCP_
   -H 'Content-Type: application/json' \
   -d '{"source":"cron","kind":"info","summary":"nightly backup finished","ref":"job-42"}'
 # 201 {"ok":true,"result":{"stored":true,"event":{...}}}   401 no/bad key   403 missing scope
-# 400 invalid fields   413 body > 8 KB   429 rate limit (Retry-After)
+# 400 invalid fields   413 body > 8 KB (refused from Content-Length, or cut off while streaming — never buffered whole)   429 rate limit (Retry-After)
 ```
 
 Expose `/inbox` through the reverse proxy only if outside sources need it; a script on the same host uses
