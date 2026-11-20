@@ -7,13 +7,18 @@ Running the tests, the repository layout and the local environment traps.
 ---
 
 ```bash
-# tests: use the wrapper. It builds a throw-away uv venv (pytest only) that sees the Hermes venv's
+# tests: use the wrapper. It builds a throw-away uv venv (pytest + pytest-cov) that sees the Hermes venv's
 # site-packages through a .pth file. That matters: the skills/profiles tests start a probe interpreter
 # with `sys.executable -I`, which ignores PYTHONPATH, so a plain pytest venv fails ~16 tests with
 # "No module named 'ruamel'". The wrapper also unsets PYTHONPATH and uses an empty HERMES_HOME.
 scripts/run_tests.sh -q                      # whole suite, ~2.5 min (expected: all passed)
 scripts/run_tests.sh -q -k served            # any pytest args are passed through
 # HERMCP_HERMES_AGENT_DIR=<checkout> overrides ~/.hermes/hermes-agent; HERMCP_TEST_VENV=<dir> keeps the venv
+
+# coverage: the CI test job reports it on every run (no threshold, nothing fails on the number).
+# Locally the same command works through the wrapper:
+scripts/run_tests.sh -q --cov=hermcp --cov-report=term-missing
+# `--cov=hermcp.tools.providers` narrows it to one module while you work on that module.
 
 # if the shell exports PYTHONPATH (some agent shells point it at a foreign python3.14 env),
 # unset it first: `env -u PYTHONPATH …` -- the Hermes venv's `mcp` import breaks otherwise

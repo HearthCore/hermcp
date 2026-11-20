@@ -96,11 +96,17 @@ def _close(auth_id: str) -> None:
 
 
 def _read_available(s: dict, wait: float = 1.0) -> str:
-    """Drain the PTY for up to `wait` seconds, returning newly read text."""
+    """Drain the PTY for up to `wait` seconds, returning newly read text.
+
+    `select.poll`, not `select.select`: select() refuses any fd >= FD_SETSIZE (1024) with
+    "filedescriptor out of range", and a server that has been up for a while hands out PTY fds well
+    above that. poll() has no such limit.
+    """
     out, deadline = [], time.time() + wait
+    poller = select.poll()
+    poller.register(s["fd"], select.POLLIN)
     while time.time() < deadline:
-        r, _, _ = select.select([s["fd"]], [], [], 0.2)
-        if not r:
+        if not poller.poll(200):
             continue
         try:
             chunk = os.read(s["fd"], 65536)
