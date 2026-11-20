@@ -128,15 +128,20 @@ def test_profile_pinning(happ):
     assert not s.tool_allowed(happ.registry.tools["config_set"])[0] or happ.registry.tools["config_set"].profile_aware
 
 
-# ---- redaction ------------------------------------------------------------------------
-def test_redaction():
-    out = redact({"api_key": "sk-abcdefgh12345", "name": "x", "note": "use Bearer abc.def.ghi now",
-                  "nested": {"password": "p", "ok": 1}, "hm": "hmcp_aabbccdd_" + "z" * 40})
-    assert out["api_key"] == REDACTED and out["nested"]["password"] == REDACTED
-    assert "abc.def" not in out["note"] and "hmcp_" not in out["hm"] and out["name"] == "x"
-    pair = redact({"key": "providers.x.api_key", "value": "supersecret"})
-    assert pair["value"] == REDACTED
-    assert redact({"key": "display.skin", "value": "mono"})["value"] == "mono"
+# ---- audit redaction: what the audit wrapper adds to the central masker -------------------
+def test_audit_redaction_masks_and_bounds_every_record():
+    """One audit line per call: a 5 MB argument or a deeply nested one must not become a 5 MB line.
+    The masking itself is pinned in test_redact/test_masking; here: strict masking plus the caps."""
+    deep = cur = {}
+    for _ in range(20):
+        cur["n"] = {}
+        cur = cur["n"]
+    out = redact({"api_key": "sk-abcdefgh12345", "text": "x" * 5000, "rows": list(range(500)), "deep": deep,
+                  "note": "use Bearer abc.def.ghi now"})
+    assert out["api_key"] == REDACTED and "abc.def" not in out["note"]
+    assert out["text"] == "x" * 500 + "...[+4500]"
+    assert out["rows"] == list(range(50))
+    assert "[DEPTH]" in json.dumps(out["deep"]) and len(json.dumps(out)) < 2000
 
 
 def test_audit_never_contains_secret(happ, scratch_tools):

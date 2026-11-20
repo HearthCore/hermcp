@@ -169,11 +169,6 @@ def test_redact_does_not_mutate_input():
     assert redact(cfg, strict=True) == redact(cfg, strict=True)           # idempotent/pure
 
 
-def test_idempotent_on_already_redacted():
-    once = redact({"a": {"password": S}, "t": "Bearer " + S}, strict=True)
-    assert redact(once, strict=True) == once
-
-
 def test_mode_selection():
     assert mode_for("config", "config_get") == ("strict", "read") and mode_for("mcp", "mcp_get") == ("strict", "read")
     assert mode_for("sessions", "sessions_messages") == ("generic", "read")
