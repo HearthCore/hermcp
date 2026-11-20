@@ -443,7 +443,8 @@ Why those shapes:
 | `HERMCP_LEDGER_KANBAN_URL` | empty | where the "Kanban-Board" link in the Clients block points. Empty = derived from the session-link target: in desktop mode `{base}/#/kanban`; in dashboard mode `{base}/kanban?profile=default`. Only `http(s)` addresses are used; it is a board link, not a per-task link |
 | `HERMCP_LEDGER_POLL_SECONDS` | 15 | page polling interval (min 5) |
 | `HERMCP_LEDGER_WINDOW_HOURS` | 24 | cron ledger / failed-run window |
-| `HERMCP_LEDGER_CACHE_TTL` | 8 | server-side cache per payload, so several open tabs cost one read |
+| `HERMCP_LEDGER_CACHE_TTL` | 8 | server-side cache per payload, so several open tabs cost one read; `0` turns the cache off (nothing is stored) |
+| `HERMCP_LEDGER_CACHE_MAX` | 64 | how many payloads the cache may hold. The keys embed query strings, ids and profiles, so the cache is bounded: on every write, entries older than the TTL are dropped and then the least recently used ones above this bound are evicted. 1..10000, an invalid value falls back to the default and is logged |
 | `HERMCP_LEDGER_LIST_LIMIT` | 10 | window of every growing list (cron runs, sessions, run lists) before “Mehr anzeigen”; 3..100, an invalid value falls back to the default and is logged |
 | `HERMCP_LEDGER_CRON_LIMIT` | value of `HERMCP_LEDGER_LIST_LIMIT` | window of the cron-runs table |
 | `HERMCP_LEDGER_SESSIONS_LIMIT` | value of `HERMCP_LEDGER_LIST_LIMIT` | window of the sessions table |

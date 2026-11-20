@@ -97,6 +97,7 @@ class Settings:
     ledger_poll_seconds: int = 15    # page polling interval
     ledger_window_hours: int = 24    # cron ledger / failed-run window
     ledger_cache_ttl: float = 8.0    # server-side cache per payload
+    ledger_cache_max: int = 64       # hard bound on cached payloads; the least recently used go first
     ledger_view_key: str = ""        # key ID (never a token) whose view the page renders; empty = read-only page principal
     ledger_list_limit: int = 10      # how many rows a growing list shows before "show more"
     ledger_cron_limit: int = 10      # per-list override for the cron runs
@@ -143,6 +144,10 @@ LEDGER_AUTH_MODES = ("key", "none")
 # not a preference (a limit of 1 hides rows, 1000 defeats the purpose of the window).
 LEDGER_LIST_MIN = 3
 LEDGER_LIST_MAX = 100
+# How many payloads the server-side Ledger cache may hold. The keys embed caller-controlled values
+# (query strings, ids, profiles), so the cache needs a hard bound, not just a TTL (issue #65).
+LEDGER_CACHE_DEFAULT = 64
+LEDGER_CACHE_LIMIT_MAX = 10000
 
 
 def _ledger_limit(raw: str | None, default: int, name: str) -> int:
@@ -162,6 +167,27 @@ def _ledger_limit(raw: str | None, default: int, name: str) -> int:
         log.warning("%s: %d is outside %d..%d; using the default %d",
                     name, value, LEDGER_LIST_MIN, LEDGER_LIST_MAX, default)
         return default
+    return value
+
+
+def _ledger_cache_max(raw: str | None) -> int:
+    """How many payloads the Ledger cache may hold: a positive int, else the default — and say so.
+
+    A bad value must not take the page down, and it must never mean "unbounded": the cache is what
+    keeps several open tabs cheap, not a place to keep every query string a caller ever sent.
+    """
+    if raw is None or str(raw).strip() == "":
+        return LEDGER_CACHE_DEFAULT
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        log.warning("HERMCP_LEDGER_CACHE_MAX: %r is not a number; using the default %d",
+                    raw, LEDGER_CACHE_DEFAULT)
+        return LEDGER_CACHE_DEFAULT
+    if not 1 <= value <= LEDGER_CACHE_LIMIT_MAX:
+        log.warning("HERMCP_LEDGER_CACHE_MAX: %d is outside 1..%d; using the default %d",
+                    value, LEDGER_CACHE_LIMIT_MAX, LEDGER_CACHE_DEFAULT)
+        return LEDGER_CACHE_DEFAULT
     return value
 
 
@@ -260,6 +286,7 @@ def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Set
         ledger_poll_seconds=max(5, int(g("HERMCP_LEDGER_POLL_SECONDS", "15"))),
         ledger_window_hours=max(1, int(g("HERMCP_LEDGER_WINDOW_HOURS", "24"))),
         ledger_cache_ttl=max(0.0, float(g("HERMCP_LEDGER_CACHE_TTL", "8"))),
+        ledger_cache_max=_ledger_cache_max(g("HERMCP_LEDGER_CACHE_MAX")),
         ledger_view_key=g("HERMCP_LEDGER_VIEW_KEY", "").strip(),
         ledger_list_limit=default_limit,
         ledger_cron_limit=_ledger_limit(g("HERMCP_LEDGER_CRON_LIMIT"), default_limit,

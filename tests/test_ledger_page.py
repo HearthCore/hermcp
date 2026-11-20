@@ -362,6 +362,68 @@ def test_bearer_header_works_for_the_json_endpoints(home):
 
 
 # ---------------------------------------------------------------------------
+# the payload cache: bounded, LRU, and off at TTL 0 (issue #65)
+# ---------------------------------------------------------------------------
+
+def test_the_payload_cache_stays_bounded_under_distinct_queries(home):
+    """Every distinct query string is a new cache key; the cache must not grow with them."""
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="key", HERMCP_LEDGER_CACHE_MAX="4")
+    c = TestClient(app.app)
+    token = app.keystore.create("ledger", Scopes(access="read", profiles=["*"]))[1]
+    for i in range(12):
+        r = c.get("/ledger/api/list", params={"kind": "sessions", "q": f"random-{i}"},
+                  headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+    assert len(app._ledger_cache) <= 4
+
+
+def test_the_cache_evicts_the_least_recently_used_entry(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_CACHE_MAX="3")
+    built = []
+
+    def build(name):
+        built.append(name)
+        return {"name": name}
+
+    for name in ("a", "b", "c"):
+        app._ledger_cached((name,), lambda name=name: build(name))
+    app._ledger_cached(("a",), lambda: build("a"))      # a hit: "a" is the freshest entry now
+    app._ledger_cached(("d",), lambda: build("d"))      # so "b" goes, not "a"
+    assert set(app._ledger_cache) == {("a",), ("c",), ("d",)}
+    assert built == ["a", "b", "c", "d"]                # the hit did not rebuild
+
+
+def test_expired_entries_are_dropped_on_the_next_write(home):
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_CACHE_TTL="0.05")
+    app._ledger_cached(("a",), lambda: {"n": 1})
+    app._ledger_cached(("b",), lambda: {"n": 2})
+    assert len(app._ledger_cache) == 2
+    time.sleep(0.06)
+    app._ledger_cached(("c",), lambda: {"n": 3})
+    assert set(app._ledger_cache) == {("c",)}
+
+
+def test_a_zero_ttl_keeps_nothing(home):
+    """TTL 0 means "no cache", not "cache forever": nothing may be stored."""
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_CACHE_TTL="0")
+    for name in ("a", "b", "c"):
+        payload, age = app._ledger_cached((name,), lambda name=name: {"name": name})
+        assert payload == {"name": name} and age == 0.0
+    assert app._ledger_cache == {}
+
+
+def test_cache_bound_setting_defaults_and_falls_back(tmp_path, monkeypatch):
+    import hermcp.settings as st
+    monkeypatch.setattr(st, "PKG_DIR", tmp_path)          # no .env in sight
+    assert st.load_settings({"HERMES_HOME": "/tmp/x"}).ledger_cache_max == 64
+    assert st.load_settings({"HERMES_HOME": "/tmp/x",
+                             "HERMCP_LEDGER_CACHE_MAX": "5"}).ledger_cache_max == 5
+    for bad in ("0", "-3", "viele", "100000"):            # never "unbounded", never a crash
+        assert st.load_settings({"HERMES_HOME": "/tmp/x",
+                                 "HERMCP_LEDGER_CACHE_MAX": bad}).ledger_cache_max == 64
+
+
+# ---------------------------------------------------------------------------
 # HERMCP_LEDGER_AUTH=none: no key, but only from private addresses
 # ---------------------------------------------------------------------------
 

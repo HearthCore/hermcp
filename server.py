@@ -152,7 +152,7 @@ class HermcpApp:
               if settings.ledger else []),
             *(extra_routes or []),
         ]
-        self._ledger_cache: dict[tuple, tuple] = {}
+        self._ledger_cache: collections.OrderedDict[tuple, tuple] = collections.OrderedDict()
         self._ledger_lock = threading.Lock()
         self.watcher = None
         if settings.inbox_watcher:
@@ -274,16 +274,37 @@ class HermcpApp:
         return Principal(rec.id, rec.name, rec.scopes)
 
     def _ledger_cached(self, key: tuple, build):
+        """The payload for ``key``, at most ``ledger_cache_ttl`` seconds old.
+
+        The cache is bounded. Its keys embed caller-controlled values (query strings, ids,
+        profiles), so an unbounded dict grew for the lifetime of the process (issue #65): a hit
+        refreshes the entry's position, an insert drops everything older than the TTL and then
+        evicts the least recently used entries above ``ledger_cache_max``. With a TTL of 0 the
+        cache is off and nothing is stored at all.
+        """
         now = time.monotonic()
         ttl = float(self.settings.ledger_cache_ttl or 0)
         with self._ledger_lock:
             hit = self._ledger_cache.get(key)
             if hit and now - hit[0] < ttl:
+                self._ledger_cache.move_to_end(key)
                 return hit[1], round(now - hit[0], 1)
         payload = build()
+        if ttl <= 0:
+            return payload, 0.0
         with self._ledger_lock:
             self._ledger_cache[key] = (time.monotonic(), payload)
+            self._ledger_cache.move_to_end(key)
+            self._ledger_trim(time.monotonic(), ttl)
         return payload, 0.0
+
+    def _ledger_trim(self, now: float, ttl: float) -> None:
+        """Drop expired entries, then the least recently used ones above the bound. Lock held."""
+        for key in [k for k, (stamp, _) in self._ledger_cache.items() if now - stamp >= ttl]:
+            del self._ledger_cache[key]
+        limit = max(1, int(self.settings.ledger_cache_max or 1))
+        while len(self._ledger_cache) > limit:
+            self._ledger_cache.popitem(last=False)
 
     def _ledger_denied(self, req: Request) -> Response | None:
         """None when the request may be served, else the 403 to send (auth=none only)."""
