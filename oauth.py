@@ -39,6 +39,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from . import client_ip
 from .keys import KeyStore
 from .registry import Principal
 from .settings import Settings
@@ -382,10 +383,11 @@ def build_oauth(s: Settings, keystore: KeyStore, limiter=None):
         return _json(pr_doc)
 
     async def consent_post(req: Request) -> Response:
-        ip = req.client.host if req.client else "?"
-        if s.trust_proxy and req.headers.get("x-forwarded-for"):
-            ip = req.headers["x-forwarded-for"].split(",")[0].strip()
-        return await p.consent_post(req, limiter, ip)
+        # Same resolution as the /mcp routes: forwarding headers are believed only from a
+        # configured trusted proxy, read right to left. Never the leftmost (client-set) entry.
+        info = client_ip.resolve(req.client.host if req.client else None, req.headers,
+                                 client_ip.parse_networks(s.trusted_proxies), req.url.scheme)
+        return await p.consent_post(req, limiter, info.ip or "?")
 
     async def register(_req: Request) -> Response:
         return JSONResponse({"error": "unsupported", "error_description": "dynamic client registration is "

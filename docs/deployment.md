@@ -88,6 +88,8 @@ Rules, in code and not by convention:
   `X-Forwarded-Host` shape the cookie's `Secure` flag and the base URL of generated links.
 * Unparsable entries (`unknown`, `_hidden`, junk) are skipped, never turned into an address.
   A chain of only trusted proxies falls back to its leftmost address.
+* The same resolution keys the failed-auth limiter on `/mcp` **and** on the OAuth consent form
+  (`POST /authorize/consent`); the leftmost `X-Forwarded-For` entry is never used on its own.
 
 `HERMCP_TRUST_PROXY` (the old boolean) is **deprecated**: it no longer widens anything.
 Rate limiting and the failed-auth limiter use the resolved client address, so per-IP
