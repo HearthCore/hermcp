@@ -72,10 +72,12 @@ def test_the_readme_maps_every_draft():
 
 def test_no_shipped_doc_links_into_the_drafts():
     """The shipped docs are the reference; pointing at a superseded draft would undo the banner."""
+    # a link target (inline `](…)` or reference `[x]: …`) into the folder; naming it in prose is fine
+    link = re.compile(r"\]\([^)]*prep/|^\s*\[[^\]]+\]:\s*\S*prep/")
     offenders = []
     for doc in SHIPPED:
         for line in doc.read_text(encoding="utf-8").splitlines():
-            if "prep/" in line:
+            if link.search(line):
                 offenders.append(f"{doc.relative_to(PLUGIN)}: {line.strip()[:80]}")
     assert not offenders, "shipped docs must not link docs/prep/: " + "; ".join(offenders)
 
