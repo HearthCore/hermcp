@@ -65,6 +65,25 @@ def test_an_unreadable_key_store_fails_closed_and_is_left_for_the_owner(happ, da
     assert happ.keystore.path.read_bytes() == damage
 
 
+def test_the_servers_last_used_flush_keeps_what_the_cli_changed(tmp_path, monkeypatch):
+    """Server and `hermes hermcp keys ...` are two processes on one keys.json. The server's
+    `last_used` flush writes the whole store; it must not undo a revoke or drop a key the CLI made
+    meanwhile. (The variant where the server misses the change is open: #91.)"""
+    from hermcp import keys as K
+    monkeypatch.setattr(K, "LAST_USED_WRITE_INTERVAL", 0)          # flush on every authenticate
+    path = tmp_path / "keys.json"
+    server = K.KeyStore(path)
+    _, used = server.create("used", Scopes())
+    _, doomed = server.create("doomed", Scopes())
+    cli = K.KeyStore(path)
+    cli.revoke("doomed")
+    _, fresh = cli.create("fresh", Scopes())
+    assert server.authenticate(used)                               # reloads, then flushes last_used
+    after = K.KeyStore(path)
+    assert after.authenticate(doomed) is None and server.authenticate(doomed) is None
+    assert after.authenticate(fresh) is not None
+
+
 def test_revoke_rotate_expiry(happ):
     ks = happ.keystore
     token = mk(happ, "a")
