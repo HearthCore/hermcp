@@ -18,6 +18,12 @@ scripts/run_tests.sh -q -k served            # any pytest args are passed throug
 # if the shell exports PYTHONPATH (some agent shells point it at a foreign python3.14 env),
 # unset it first: `env -u PYTHONPATH …` -- the Hermes venv's `mcp` import breaks otherwise
 
+# the suite never reads the install's own .env or the shell's HERMCP_* settings: an autouse fixture
+# in tests/conftest.py blanks every variable load_settings reads and points HERMCP_ENV_FILE at an
+# empty temp dir, so a host that serves the Ledger (HERMCP_LEDGER=1, HERMCP_LEDGER_AUTH=none,
+# HERMCP_HOST=0.0.0.0) runs the same tests as CI. tests/test_settings_isolation.py holds the list
+# against settings.py.
+
 # regenerate the tool catalog after changing tools
 /usr/local/lib/hermes-agent/venv/bin/python -m hermcp docs
 ```

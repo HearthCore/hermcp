@@ -14,6 +14,62 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != PLUGIN_DIR]
 
 
+# ---------------------------------------------------------------------------
+# isolation: no test may read the developer's real plugin .env or shell settings
+# ---------------------------------------------------------------------------
+# Why: `load_settings` merges the plugin's `.env` and the process environment, so a host that
+# serves the Ledger (`HERMCP_LEDGER=1`, `HERMCP_LEDGER_AUTH=none`, `HERMCP_HOST=0.0.0.0`) or
+# exports a proxy setting failed the default-behaviour tests while CI stayed green. Every variable
+# `load_settings` reads is blanked below, and the `.env` it reads is pointed at an empty temp dir,
+# so a test sees the documented defaults unless it sets a value itself.
+# `tests/test_settings_isolation.py` holds this list against settings.py, so a new setting cannot
+# be forgotten here.
+SETTINGS_ENV_VARS = (
+    "HERMCP_HOST", "HERMCP_PORT", "HERMCP_PUBLIC_URL", "HERMCP_ALLOWED_HOSTS",
+    "HERMCP_HERMES_BIN", "HERMCP_TRUST_PROXY", "HERMCP_TRUSTED_PROXIES", "HERMCP_CALL_TIMEOUT",
+    "HERMCP_OAUTH_DCR", "HERMCP_OAUTH_REDIRECT_URIS",
+    "HERMCP_INBOX_MAX_EVENTS", "HERMCP_INBOX_RETENTION_DAYS", "HERMCP_INBOX_RATE_PER_MIN",
+    "HERMCP_INBOX_JOIN_WINDOW_MIN", "HERMCP_INBOX_WATCHER", "HERMCP_INBOX_WATCH_INTERVAL",
+    "HERMCP_INBOX_WATCH_MAX_PER_KEY", "HERMCP_INBOX_RUN_MAX_EVENTS", "HERMCP_INBOX_WATCH_TTL_HOURS",
+    "HERMCP_INBOX_APPROVALS", "HERMCP_SESSION_MAX_RUNS",
+    "HERMCP_DEBUG_CAPTURE", "HERMCP_DEBUG_CAPTURE_MAX", "HERMCP_DEBUG_CAPTURE_HOURS",
+    "HERMCP_SYSTEMD_SCOPE", "HERMCP_SELF_SYSTEMD_SCOPE",
+    "HERMCP_LEDGER", "HERMCP_LEDGER_AUTH", "HERMCP_LEDGER_BASE_URL", "HERMCP_LEDGER_KANBAN_URL",
+    "HERMCP_LEDGER_POLL_SECONDS", "HERMCP_LEDGER_WINDOW_HOURS", "HERMCP_LEDGER_CACHE_TTL",
+    "HERMCP_LEDGER_CACHE_MAX", "HERMCP_LEDGER_VIEW_KEY", "HERMCP_LEDGER_LIST_LIMIT",
+    "HERMCP_LEDGER_CRON_LIMIT", "HERMCP_LEDGER_SESSIONS_LIMIT", "HERMCP_LEDGER_RUNS_LIMIT",
+    "HERMCP_LEDGER_DESKTOP_URL", "HERMCP_LEDGER_WEB_URL", "HERMCP_LEDGER_ASK_CLAUDE_URL",
+    "HERMCP_LEDGER_ASK_CLAUDE_DESKTOP_URL",
+    "HERMCP_PROFILES_IGNORE",
+    # deprecated names load_settings still maps onto the Ledger settings
+    "HERMCP_LAGEBILD", "HERMCP_LAGEBILD_AUTH", "HERMCP_LAGEBILD_BASE_URL",
+    "HERMCP_LAGEBILD_POLL_SECONDS", "HERMCP_LAGEBILD_WINDOW_HOURS", "HERMCP_LAGEBILD_CACHE_TTL",
+    # not HERMCP_*, but read by load_settings and a secret: never from the developer's shell
+    "HERMES_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings_env(tmp_path_factory):
+    """Blank every setting `load_settings` reads and point its `.env` at an empty temp dir.
+
+    Autouse, so it runs before the fixtures that set a value on purpose (`home` sets
+    `HERMCP_HERMES_BIN`, a test sets `HERMCP_LEDGER`). `HERMES_HOME` is left alone: `home` owns it,
+    and the runner (`scripts/run_tests.sh`) already points it at a throw-away directory.
+
+    Its own `MonkeyPatch` instance, not the `monkeypatch` fixture: requesting that fixture here
+    would make this autouse fixture tear down *after* the test's patches are undone, and a test
+    that replaces a module attribute (e.g. `restart_units.detect_agent_dir`) would then see its
+    own teardown run against the replacement.
+    """
+    mp = pytest.MonkeyPatch()
+    for name in SETTINGS_ENV_VARS:
+        mp.delenv(name, raising=False)
+    mp.setenv("HERMCP_ENV_FILE", str(tmp_path_factory.mktemp("no-plugin-env") / ".env"))
+    yield
+    mp.undo()
+
+
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     """Temporary HERMES_HOME — tests never touch the real one."""
@@ -36,8 +92,8 @@ def home(tmp_path, monkeypatch):
 def happ(home):
     from hermcp.app import create_app
     from hermcp.settings import load_settings
-    # load_settings also reads the plugin's own .env; blank the opt-in switches so a developer
-    # machine that has one enabled does not leak it into the default-behaviour tests.
+    # The plugin's .env and the shell's settings are already blanked (isolated_settings_env);
+    # these two are the values this app needs.
     return create_app(load_settings({"HERMES_HOME": str(home), "HERMCP_ALLOWED_HOSTS": "testserver,127.0.0.1",
                                      "HERMCP_DEBUG_CAPTURE": ""}))
 

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .settings import PKG_DIR, Settings, _read_dotenv, hermes_home, ignored_profiles
+from .settings import Settings, _read_dotenv, env_file, hermes_home, ignored_profiles
 
 ENV_VAR = "API_SERVER_KEY"
 GLOBAL_VAR = "HERMES_API_KEY"
@@ -136,7 +136,7 @@ class Resolution:
 
 def _override(profile: str) -> str:
     var = override_var(profile)
-    return os.environ.get(var) or read_env(PKG_DIR / ".env").get(var, "")
+    return os.environ.get(var) or read_env(env_file()).get(var, "")
 
 
 def _global(settings: Settings) -> str:

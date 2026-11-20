@@ -53,6 +53,11 @@ HERMES_API_URL=http://127.0.0.1:8642
 Local-only installs need none of the proxy lines: with no `.env` at all the defaults are
 `HERMCP_HOST=127.0.0.1`, `HERMCP_PORT=9230` and `HERMES_API_URL=http://127.0.0.1:8642`.
 
+`HERMCP_ENV_FILE` (process environment only, never read from the file itself) points hermcp at a
+different `.env` than the one next to the package — for a second instance with its own settings, or
+for a run that must not see the install's file. The test suite uses it to point at an empty temp
+directory, so a host that serves the Ledger cannot change what the default-behaviour tests see.
+
 #### systemd managers of `gateway_restart`, `ops_gateway_logs` and `hermcp_restart`
 
 Two independent settings (env or `.env`, both default to `system`, so existing installs behave exactly as before):
