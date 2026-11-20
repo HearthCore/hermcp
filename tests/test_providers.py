@@ -532,6 +532,50 @@ def test_secret_list_survives_a_missing_hermes_catalogue(rig, monkeypatch):
     assert rig.ok("secret_list")["secrets"][0]["secret"] is True       # name-based detection still works
 
 
+@pytest.mark.parametrize("bad", ["x\nHERMES_INJECTED=1", "x\r\nINJ=1", "x\rINJ=1", "x\0y"])
+def test_secret_set_rejects_line_breaks_and_nul_in_the_value(rig, bad):
+    (rig.home / ".env").write_text("OTHER=1\n")
+    err = rig.err("secret_set", name="ACME_API_KEY", value=bad)
+    assert err["code"] == "invalid_arguments"
+    assert (rig.home / ".env").read_text() == "OTHER=1\n"
+
+
+def test_secret_set_rejects_the_injection_even_as_dry_run(rig):
+    assert rig.err("secret_set", name="ACME_API_KEY", value="x\nINJ=1", dry_run=True)["code"] == "invalid_arguments"
+
+
+def test_secret_set_and_delete_create_the_temp_file_0600_under_a_loose_umask(rig, monkeypatch):
+    modes = []
+    real = os.replace
+
+    def spy(src, dst):
+        modes.append(os.stat(src).st_mode & 0o777)
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", spy)
+    old = os.umask(0o000)
+    try:
+        rig.ok("secret_set", name="ACME_API_KEY", value=SECRET)
+        rig.ok("secret_delete", name="ACME_API_KEY")
+    finally:
+        os.umask(old)
+    assert modes == [0o600, 0o600]
+    assert [p.name for p in rig.home.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_secret_set_leaves_no_temp_file_and_keeps_the_env_when_the_replace_fails(rig, monkeypatch):
+    (rig.home / ".env").write_text("OTHER=1\n")
+
+    def boom(*a):
+        raise OSError("disk")
+
+    monkeypatch.setattr(os, "replace", boom)
+    r = rig.call("secret_set", name="ACME_API_KEY", value=SECRET)
+    assert "error" in r
+    assert (rig.home / ".env").read_text() == "OTHER=1\n"
+    assert [p.name for p in rig.home.iterdir() if p.name.endswith(".tmp")] == []
+
+
 # ---- secret_delete -----------------------------------------------------------------------------
 def test_secret_delete_reports_a_name_that_is_not_there(rig):
     (rig.home / ".env").write_text("OTHER=1\n")
