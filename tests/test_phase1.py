@@ -68,7 +68,7 @@ def test_an_unreadable_key_store_fails_closed_and_is_left_for_the_owner(happ, da
 def test_the_servers_last_used_flush_keeps_what_the_cli_changed(tmp_path, monkeypatch):
     """Server and `hermes hermcp keys ...` are two processes on one keys.json. The server's
     `last_used` flush writes the whole store; it must not undo a revoke or drop a key the CLI made
-    meanwhile. (The variant where the server misses the change is open: #91.)"""
+    meanwhile."""
     from hermcp import keys as K
     monkeypatch.setattr(K, "LAST_USED_WRITE_INTERVAL", 0)          # flush on every authenticate
     path = tmp_path / "keys.json"
@@ -82,6 +82,88 @@ def test_the_servers_last_used_flush_keeps_what_the_cli_changed(tmp_path, monkey
     after = K.KeyStore(path)
     assert after.authenticate(doomed) is None and server.authenticate(doomed) is None
     assert after.authenticate(fresh) is not None
+
+
+def _stale_server(tmp_path, monkeypatch):
+    """A server whose cache is stale but whose change detection believes it is current: the CLI's
+    write landed in the same timestamp tick as the server's last load (#91)."""
+    from hermcp import keys as K
+    monkeypatch.setattr(K, "LAST_USED_WRITE_INTERVAL", 0)
+    path = tmp_path / "keys.json"
+    server = K.KeyStore(path)
+    _, tok = server.create("a", Scopes())
+    return K, path, server, tok
+
+
+def _pretend_unchanged(server):
+    server._sig = server._signature(server.path.stat())
+
+
+def test_last_used_flush_cannot_undo_a_revoke_the_server_missed(tmp_path, monkeypatch):
+    K, path, server, tok = _stale_server(tmp_path, monkeypatch)
+    K.KeyStore(path).revoke("a")
+    _pretend_unchanged(server)
+    assert server.authenticate(tok)                    # served from the stale cache, then flushes
+    assert K.KeyStore(path).authenticate(tok) is None  # the revoke is still on disk
+    assert K.KeyStore(path).get("a").disabled is True
+
+
+def test_last_used_flush_keeps_a_rotate_scope_change_and_new_key_the_server_missed(tmp_path, monkeypatch):
+    K, path, server, tok = _stale_server(tmp_path, monkeypatch)
+    cli = K.KeyStore(path)
+    new_tok = cli.rotate("a")[1]
+    cli.update_scopes("a", Scopes(access="read"))
+    cli.create("fresh", Scopes())
+    _pretend_unchanged(server)
+    assert server.authenticate(tok)                    # old secret, stale cache
+    after = K.KeyStore(path)
+    assert after.authenticate(tok) is None and after.authenticate(new_tok)
+    assert after.get("a").scopes.access == "read"
+    assert {k.name for k in after.list()} == {"a", "fresh"}
+
+
+def test_last_used_flush_does_not_resurrect_a_deleted_key(tmp_path, monkeypatch):
+    K, path, server, tok = _stale_server(tmp_path, monkeypatch)
+    K.KeyStore(path).revoke("a", delete=True)
+    _pretend_unchanged(server)
+    server.authenticate(tok)
+    assert K.KeyStore(path).list() == []
+
+
+def test_the_flush_still_records_last_used(tmp_path, monkeypatch):
+    K, path, server, tok = _stale_server(tmp_path, monkeypatch)
+    assert K.KeyStore(path).get("a").last_used is None
+    server.authenticate(tok)
+    assert K.KeyStore(path).get("a").last_used is not None
+
+
+def test_a_cli_write_in_the_same_mtime_tick_is_still_detected(tmp_path, monkeypatch):
+    """Change detection is mtime_ns + size + inode, not st_mtime alone."""
+    K, path, server, tok = _stale_server(tmp_path, monkeypatch)
+    st = path.stat()
+    K.KeyStore(path).revoke("a")
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))   # same mtime as the server's last load
+    assert server.authenticate(tok) is None
+
+
+def test_concurrent_writers_lose_no_update(tmp_path):
+    """Two threads, each with its own KeyStore (as server and CLI are): every create survives."""
+    import threading
+    from hermcp import keys as K
+    path = tmp_path / "keys.json"
+    errors = []
+
+    def work(prefix):
+        ks = K.KeyStore(path)
+        try:
+            for i in range(15):
+                ks.create(f"{prefix}{i}", Scopes())
+        except Exception as exc:                        # pragma: no cover
+            errors.append(exc)
+    ts = [threading.Thread(target=work, args=(c,)) for c in "xy"]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert not errors and len(K.KeyStore(path).list()) == 30
 
 
 def test_revoke_rotate_expiry(happ):
