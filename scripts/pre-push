@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""pre-push: block pushes that carry personal data or real secrets.
+
+Patterns come from ~/hermcp-scan.py (override: HERMCP_SCAN_FILE; single source, read via ast,
+never executed). Checks, per pushed ref: (a) every text blob in the tip tree, (b) added lines of
+every commit not reachable from any remote-tracking ref, (c) their commit metadata. Commits
+already public on a remote (e.g. after a rebase or merge of main) cannot be changed and add no
+exposure, so they are not scanned; the tip tree is always scanned in full.
+Fail-closed: a missing scan file aborts.
+Install: cp scripts/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push" (keep it executable).
+Allowed on purpose: LICENSE copyright line, 10.0.0.10 as example IP, example.com mails,
+the GitHub noreply identity, and test fixtures (sk-... placeholders, fake JWT, PEM dummy,
+dummy secrets, home paths) under tests/ only.
+Bypass only with `git push --no-verify` (deliberate, visible).
+"""
+import ast, os, re, subprocess, sys
+
+SCAN = os.environ.get("HERMCP_SCAN_FILE") or os.path.join(os.path.expanduser("~"), "hermcp-scan.py")
+ZERO = "0" * 40
+FIXTURE_OK = {"private_key", "jwt", "openai_like", "generic_secret", "root_home"}  # tests/ only
+ALLOW_MATCH = {"private_ip": {"10.0.0.10"}}
+ALLOW_PATH = {"personal": ("LICENSE",)}
+# assembled from parts so this file does not trip its own scan
+EXTRA = {"personal_mail": r"(?i)ti" + r"mo[._-]?g(oe|ö|o)tz" + r"ken|@outl" + r"ook\.com|@goetz" + r"ken\.dev"}
+
+
+def load_patterns():
+    try:
+        tree = ast.parse(open(SCAN).read())
+        for n in tree.body:
+            if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PATS":
+                pats = ast.literal_eval(n.value)
+                pats.update(EXTRA)
+                return {k: re.compile(v, re.I if k == "personal" else 0) for k, v in pats.items()}
+    except Exception as e:
+        sys.exit(f"pre-push: cannot load patterns from {SCAN}: {e} (fail-closed)")
+    sys.exit(f"pre-push: PATS not found in {SCAN} (fail-closed)")
+
+
+def git(*a, inp=None):
+    return subprocess.run(["git", *a], capture_output=True, input=inp).stdout
+
+
+RX = load_patterns()
+findings = set()
+
+
+def check(path, text, origin):
+    for k, rx in RX.items():
+        for m in rx.finditer(text):
+            s = m.group(0)
+            if k in FIXTURE_OK and path.startswith("tests/"):
+                continue
+            if s in ALLOW_MATCH.get(k, ()):
+                continue
+            if path in ALLOW_PATH.get(k, ()):
+                continue
+            if k == "email" and path.startswith("tests/") and re.search(r"@(example|test|localhost)", s):
+                continue
+            findings.add((origin, path, k, s[:60]))
+
+
+for line in sys.stdin.read().splitlines():
+    try:
+        lref, lsha, rref, rsha = line.split()
+    except ValueError:
+        continue
+    if lsha == ZERO:  # deleting a remote ref
+        continue
+    # (a) tip tree
+    for ent in git("ls-tree", "-r", "-z", lsha).decode("utf-8", "replace").split("\0"):
+        if not ent:
+            continue
+        meta, path = ent.split("\t", 1)
+        blob = meta.split()[2]
+        data = git("cat-file", "blob", blob)
+        if b"\0" in data[:4096]:
+            continue
+        check(path, data.decode("utf-8", "replace"), f"tree:{lref}")
+    # (b)+(c) commits not reachable from any remote-tracking ref
+    # never rsha..lsha: after a rebase/merge of main it contains commits already public on the remote
+    for c in git("rev-list", lsha, "--not", "--remotes").decode().split():
+        ident = git("log", "-1", "--format=%an <%ae>%n%cn <%ce>%n%B", c).decode("utf-8", "replace")
+        check("(commit metadata)", ident, f"commit:{c[:8]}")
+        cur = None
+        for l in git("show", "--format=", "-p", "--no-color", c).decode("utf-8", "replace").splitlines():
+            if l.startswith("+++ b/"):
+                cur = l[6:]
+            elif l.startswith("+") and not l.startswith("+++") and cur:
+                check(cur, l[1:], f"commit:{c[:8]}")
+
+if findings:
+    print("pre-push: BLOCKED - personal data / secrets in the push:", file=sys.stderr)
+    for o, p, k, s in sorted(findings)[:40]:
+        print(f"  [{k}] {p} ({o}): {s}", file=sys.stderr)
+    if len(findings) > 40:
+        print(f"  ... {len(findings) - 40} more", file=sys.stderr)
+    print("Fix it, or push deliberately with --no-verify.", file=sys.stderr)
+    sys.exit(1)
+print("pre-push: scan clean")
