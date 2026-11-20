@@ -30,7 +30,7 @@ cleanup() { rm -rf "$HOME_TMP"; [ -n "$KEEP" ] || rm -rf "$VENV"; }
 trap cleanup EXIT INT TERM
 
 [ -x "$VENV/bin/python" ] || uv venv -q --python "$HERMES_PY" "$VENV"
-"$VENV/bin/python" -c 'import pytest' 2>/dev/null || uv pip install -q --python "$VENV/bin/python" pytest httpx
+"$VENV/bin/python" -c 'import pytest, pytest_cov' 2>/dev/null || uv pip install -q --python "$VENV/bin/python" pytest httpx pytest-cov
 SITE=$("$VENV/bin/python" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
 printf '%s\n%s\n' "$HERMES_SITE" "$AGENT_DIR" > "$SITE/zz_hermes.pth"
 
