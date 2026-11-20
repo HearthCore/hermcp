@@ -228,8 +228,8 @@ def load_config(profile: str = "default", env: dict[str, str] | None = None, pat
       HERMCP_DASHBOARD_CONFIG (path) or plugin-data/hermcp/dashboard.json  {"default": {...}, "profiles": {"x": {...}}}
     Returns (config, error); a broken override gives error text and an auto config, so the status tool still works.
     """
-    from ..settings import PKG_DIR, _read_dotenv, hermes_home
-    merged = _read_dotenv(PKG_DIR / ".env")
+    from ..settings import _read_dotenv, env_file, hermes_home
+    merged = _read_dotenv(env_file())
     merged.update(os.environ if env is None else env)
     g = merged.get
     base: dict[str, Any] = {}

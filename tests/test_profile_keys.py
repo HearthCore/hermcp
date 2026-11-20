@@ -137,7 +137,7 @@ def test_global_key_is_also_read_from_the_root_env(home):
 
 def test_override_is_read_from_the_plugin_dotenv_too(home, monkeypatch):
     var = pk.override_var("researcher")
-    monkeypatch.setattr(pk, "read_env", lambda path: {var: KEY_A} if path == pk.PKG_DIR / ".env" else {})
+    monkeypatch.setattr(pk, "read_env", lambda path: {var: KEY_A} if path == pk.env_file() else {})
     monkeypatch.delenv(var, raising=False)
     assert pk.resolve(cfg(home), "researcher").key == KEY_A
 

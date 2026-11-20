@@ -10,6 +10,10 @@ from pathlib import Path
 PKG_DIR = Path(__file__).resolve().parent
 log = logging.getLogger("hermcp.settings")
 
+# Which `.env` is "the plugin's .env". The tests point it at an empty temp dir, so a developer's
+# real install (Ledger on, a LAN bind, a public URL) cannot leak into them.
+ENV_FILE_VAR = "HERMCP_ENV_FILE"
+
 
 class ConfigError(ValueError):
     """A hermcp setting has an invalid value. Readable message, no traceback needed (ValueError for compatibility)."""
@@ -57,6 +61,17 @@ def _read_dotenv(path: Path) -> dict[str, str]:
 
 def _csv(v: str) -> list[str]:
     return [p.strip() for p in v.split(",") if p.strip()]
+
+
+def env_file() -> Path:
+    """The `.env` that is read as the plugin's own: `HERMCP_ENV_FILE` when set, else the one next to the package.
+
+    The override exists so a caller can run against a different file without editing the install —
+    the test suite uses it to point at an empty temp dir, because a developer machine that serves
+    the Ledger (or binds a LAN address) must not change what the default-behaviour tests see.
+    """
+    override = os.environ.get(ENV_FILE_VAR, "").strip()
+    return Path(override).expanduser() if override else PKG_DIR / ".env"
 
 
 @dataclass
@@ -287,7 +302,7 @@ DEFAULT_REDIRECTS = [
 def load_settings(env: dict[str, str] | None = None, strict: bool = True) -> Settings:
     """strict=False (doctor, hooks inside the gateway) never raises for a bad scope: it falls back to `system`
     and `scope_errors(settings)` tells what was wrong."""
-    merged = _read_dotenv(PKG_DIR / ".env")
+    merged = _read_dotenv(env_file())
     # Precedence as documented: process env beats the .env file, an explicit dict beats both
     # (that is how tests and embedded callers pin an instance). Dropping the process env whenever
     # a dict was passed made `load_settings({"X": ...})` silently fall back to the live
