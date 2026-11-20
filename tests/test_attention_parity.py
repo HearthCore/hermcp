@@ -34,7 +34,7 @@ def box(tmp_path):
 
 def _event(box, *, kind, run_id, session_id=None, profile="default", hours_ago=1.0, summary="x"):
     """Insert a watcher event the way the run watcher does (no HTTP, no token)."""
-    with box._db() as db:
+    with box._session() as db:
         cur = db.execute(
             "INSERT INTO events(ts,source,kind,summary,ref,severity,pushed_by,run_id,session_id,profile,origin,"
             "dedupe_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -44,13 +44,13 @@ def _event(box, *, kind, run_id, session_id=None, profile="default", hours_ago=1
 
 
 def _settle(box, run_id, reason="superseded_by_completed", superseded_by="run_after"):
-    with box._db() as db:
+    with box._session() as db:
         db.execute("UPDATE events SET settled_reason=?, settled_at=?, superseded_by=? WHERE run_id=?",
                    (reason, iso(0.5), superseded_by, run_id))
 
 
 def _approval(box, key, state, *, profile="default", hours_ago=1.0):
-    with box._db() as db:
+    with box._session() as db:
         db.execute(
             "INSERT INTO events(ts,source,kind,summary,ref,severity,pushed_by,profile,origin,dedupe_key,"
             "approval_key,approval_state,approval_decision,approval_surface,approval_closed_at,run_id) "
@@ -167,7 +167,7 @@ def test_attention_view_is_read_only(box):
     before = box.attention_view(consumer="k1")
     after = box.attention_view(consumer="k1")
     assert before["counts"] == after["counts"]
-    with box._db() as db:
+    with box._session() as db:
         assert db.execute("SELECT COUNT(*) FROM reads").fetchone()[0] == 0
 
 

@@ -150,7 +150,7 @@ def test_backfill_settles_old_failures_once(home):
     """Idempotent, and it uses the same rule plus the documented operator rows."""
     settings = load_settings({"HERMES_HOME": str(home)})
     box = get_inbox(settings)
-    with box._db() as db:
+    with box._session() as db:
         # a session where the follow-up run failed (older failure is superseded by the newer one)
         for run, sid, ts in (("run_old", "sess_x", "2026-11-11T10:00:00Z"),):
             db.execute("INSERT INTO events(ts,source,kind,summary,severity,origin,run_id,session_id,profile,"

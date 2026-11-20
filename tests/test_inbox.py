@@ -1,6 +1,10 @@
 """Event inbox: tools, scopes, HTTP endpoint, rotation, limits."""
+import gc
 import json
+import os
 import sqlite3
+import warnings
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
@@ -355,3 +359,157 @@ def test_read_capped_stops_reading_at_the_cap():
     r = Req()
     assert asyncio.run(_read_capped(r, 5000)) is None
     assert r.pulled == 6                                                      # cut right after the cap, not 1000 chunks
+
+
+# ---------------------------------------------------------------------------
+# connection lifecycle (#93): every operation closes the connection it opened
+# ---------------------------------------------------------------------------
+# `sqlite3.Connection`'s context manager only commits or rolls back, so `with self._db() as db:`
+# left every connection to the garbage collector: 38 call sites, thousands of open fds on a
+# long-running `serve`, and `ResourceWarning: unclosed database` on Python 3.14. These tests pin
+# the fix from three sides: the connection is closed when the call returns (behaviour), the fd
+# table does not grow with the work done (the operator-visible symptom), and nothing is left for
+# the GC to warn about (the CI symptom).
+
+def _store(home, **kw):
+    from hermcp.adapters.inbox_store import Inbox
+    return Inbox(home / "inbox.db", **kw)
+
+
+def _is_closed(conn) -> bool:
+    try:
+        conn.execute("SELECT 1")
+    except sqlite3.ProgrammingError:
+        return True
+    return False
+
+
+@pytest.fixture()
+def opened(monkeypatch):
+    """Every sqlite connection opened while the test runs, in order.
+
+    Patches `sqlite3.connect` itself, not the store's own helper: the test then pins the behaviour
+    (a connection is closed when the call returns) instead of the name of the method that opens it.
+    """
+    seen = []
+    real = sqlite3.connect
+
+    def record(*a, **kw):
+        conn = real(*a, **kw)
+        seen.append(conn)
+        return conn
+    monkeypatch.setattr(sqlite3, "connect", record)
+    return seen
+
+
+def test_every_inbox_operation_closes_its_connection(home, opened):
+    """One connection per operation, closed before the call returns -- including early returns."""
+    import itertools
+    import time as _time
+
+    box = _store(home)
+    handles = itertools.count(1)
+
+    def check(fn, *a, **kw):
+        opened.clear()
+        fn(*a, **kw)
+        assert opened, f"{getattr(fn, '__name__', fn)} opened no connection"
+        assert all(_is_closed(c) for c in opened), f"{getattr(fn, '__name__', fn)} left a connection open"
+
+    check(box.push, source="s", kind="k", summary="e1", ref=None, severity="info", pushed_by="t")
+    check(box.push_system, kind="run_finished", summary="done", run_id="run_a", profile="default",
+          requester="k", dedupe_key="run_a:run_finished")
+    check(box.push_system, kind="run_finished", summary="done", run_id="run_a", profile="default",
+          requester="k", dedupe_key="run_a:run_finished")          # duplicate: returns None inside the block
+    check(box.push_hook, kind="approval_pending", summary="waiting", profile="default",
+          session_key="agent:default:cli:dm:1", dedupe_key="hook:1")
+    check(box.push_ledger, kind="session_taken_over", summary="taken over", ref="run_a")
+    check(box.open_approval, approval_key="run:run_a:req1", summary="needs approval", profile="default",
+          origin="hook", run_id="run_a", session_key="agent:default:cli:dm:1")
+    check(box.open_approval, approval_key="run:run_a:req1", summary="needs approval again", profile="default",
+          origin="hook", run_id="run_a")                            # refresh path
+    check(box.get_approval, "run:run_a:req1")
+    check(box.find_approval, run_id="run_a")
+    check(box.find_waiting_approval_for_hook, session_key="agent:default:cli:dm:1")
+    check(box.settle_approval, approval_key="run:run_a:req1", decision="once", surface="cli")
+    check(box.settle_approval, approval_key="run:run_a:req1", decision="once")   # already decided
+    check(box.settle_approval, approval_key="run:missing", decision="once")      # not_pending
+    check(box.approval_decisions, "run:run_a:req1")
+    check(box.record_decision, approval_key="run:run_a:req1", outcome="refused", note="nope")
+    check(box.close_run_approvals, "run_a")
+    check(box.open_approvals)
+    check(box.add_watch, run_id="run_a", profile="default", session_id="sess", key_id="k1", key_name="k1")
+    check(box.active_watches)
+    check(box.update_watch, "run_a", last_status="running")
+    check(box.set_activity, "run_a", "thinking", _time.time())
+    check(box.note_control, "run_a", "cancelled via chat_run_cancel")
+    check(box.note_control, "run_a", steered=True)
+    check(box.clear_control, "run_a")
+    check(box.session_watches, "default", "sess")
+    check(box.running)
+    check(box.get_watch, "run_a")
+    card, _ = box.session_register(key_id="k1", key_name="k1", client="Cowork", kind="voice", purpose="p",
+                                  role=None, native_id="native-1", handle_factory=lambda: f"h{next(handles)}")
+    check(box.session_register, key_id="k1", key_name="k1", client="Cowork", kind="voice", purpose="p",
+          role=None, native_id="native-1", handle_factory=lambda: f"h{next(handles)}")   # resume path
+    check(box.session_get, card["handle"])
+    check(box.session_touch, card["handle"])
+    check(box.session_update, card["handle"], purpose="renamed")
+    check(box.sessions_list)
+    check(box.unclaimed_runs, "k1")
+    check(box.claim_runs, key_id="k1", handle=card["handle"], client="Cowork", run_ids=["run_a"])
+    check(box.session_open_runs, card["handle"])
+    check(box.run_sessions, ["run_a"])
+    check(box.session_recover, old=card["handle"], key_id="k1", key_name="k1", client="Cowork", kind="voice",
+          purpose="p", role=None, native_id=None, handle_factory=lambda: f"h{next(handles)}")
+    check(box.poll, consumer="c")
+    check(box.digest, consumer="c")
+    check(box.attention_view, consumer="c")
+    check(box.ack, [1], consumer="c")
+    check(box.list)
+    check(box.settle_failures)
+
+
+def test_inbox_closes_the_connection_when_an_operation_raises(home, opened):
+    """A refused write raises inside the block: the connection must still be closed."""
+    from hermcp.registry import ToolError
+
+    box = _store(home, watch_max_per_key=1)
+    box.add_watch(run_id="run_a", profile="default", session_id=None, key_id="k1", key_name="k1")
+    opened.clear()
+    with pytest.raises(ToolError) as err:
+        box.add_watch(run_id="run_b", profile="default", session_id=None, key_id="k1", key_name="k1")
+    assert err.value.code == "watch_limit" and opened and all(_is_closed(c) for c in opened)
+
+    opened.clear()
+    with pytest.raises(ToolError) as err:
+        box.session_recover(old="no-such-handle", key_id="k1", key_name="k1", client="Cowork", kind=None,
+                            purpose=None, role=None, native_id=None, handle_factory=lambda: "h1")
+    assert err.value.code == "unknown_client_session" and opened and all(_is_closed(c) for c in opened)
+
+
+def test_inbox_operations_do_not_grow_the_fd_table(home):
+    """The symptom in #93: fd usage followed GC timing instead of the work done."""
+    fd_dir = Path("/proc/self/fd")
+    if not fd_dir.is_dir():
+        pytest.skip("no /proc/self/fd on this host")
+    box = _store(home)
+    box.push(source="s", kind="k", summary="warm-up", ref=None, severity="info", pushed_by="t")
+    before = len(os.listdir(fd_dir))
+    for i in range(200):
+        box.push(source="s", kind="k", summary=f"e{i}", ref=None, severity="info", pushed_by="t")
+        box.poll(consumer="c")
+    assert len(os.listdir(fd_dir)) - before <= 2
+
+
+def test_inbox_connections_leave_no_resource_warning(home):
+    """Python 3.14 (CI) warns at GC for an unclosed connection; 3.11 stays silent, so this is the
+    guard that only bites where the leak was visible."""
+    box = _store(home)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for i in range(20):
+            box.push(source="s", kind="k", summary=f"e{i}", ref=None, severity="info", pushed_by="t")
+            box.poll(consumer="c")
+        gc.collect()
+    assert [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)] == []
