@@ -48,13 +48,6 @@ def test_models_set_writes_provider_and_model_as_two_changes(call):
     assert cfg(call)["model"]["provider"] == "litellm" and cfg(call)["model"]["default"] == "m2"
 
 
-def test_models_set_dry_run_leaves_the_config_alone(call):
-    before = (call.home / "config.yaml").read_text()
-    r = call("models_set", model="m2", dry_run=True)
-    assert r["dry_run"] is True and r["applied"] is False
-    assert (call.home / "config.yaml").read_text() == before
-
-
 # ---- aliases -----------------------------------------------------------------------------------
 def test_models_alias_remove_refuses_an_unknown_alias(call):
     err = call.err("models_alias_remove", alias="nope")

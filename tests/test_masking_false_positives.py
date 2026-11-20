@@ -186,13 +186,11 @@ def test_write_tools_keep_the_key_label_in_dry_run_and_real(call, home):
     assert ok and (r.get("result") or r)["key"] == "mcp_servers", raw
 
 
-def test_chat_text_and_secrets_status_through_the_server(call, home):
+def test_chat_text_and_secrets_status_through_the_server(call, home, scratch_tools):
     from hermcp.registry import Tool
-    from hermcp.tools import reg
     text = COMMANDS[0] + " — Die Klartext-Secrets in den Profil-Configs bleiben."
-    if "zz_fp_text" not in reg.tools:
-        reg.add(Tool(name="zz_fp_text", toolset="chat", access="read", description="t",
-                     handler=lambda ctx, **kw: {"output": text, "rows": [{"referenced_by": PATHS}]}))
+    scratch_tools(Tool(name="zz_fp_text", toolset="chat", access="read", description="t",
+                       handler=lambda ctx, **kw: {"output": text, "rows": [{"referenced_by": PATHS}]}))
     ok, r, raw = call("zz_fp_text")
     assert ok and r["output"] == text and r["rows"][0]["referenced_by"] == PATHS
     (home / ".env").write_text("CONTEXT7_API_KEY=" + TOKEN + "\n")

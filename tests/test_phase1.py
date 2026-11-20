@@ -11,12 +11,10 @@ from hermcp.scopes import ScopeError, Scopes
 
 
 def _synthetic(name, toolset, access, secrets=False):
+    """A tool object for scope checks; register it with the `scratch_tools` fixture if a call needs it."""
     from hermcp.registry import Tool
-    from hermcp.tools import reg
-    if name not in reg.tools:
-        reg.add(Tool(name=name, toolset=toolset, access=access, description="test", secrets=secrets,
-                     handler=lambda ctx, **kw: {"ok": True}, properties={"name": {"type": "string"}, "value": {"type": "string"}}))
-    return reg.tools[name]
+    return Tool(name=name, toolset=toolset, access=access, description="test", secrets=secrets,
+                handler=lambda ctx, **kw: {"ok": True}, properties={"name": {"type": "string"}, "value": {"type": "string"}})
 
 
 def rpc(client, token, method, params=None, id_=1, headers=None):
@@ -51,6 +49,39 @@ def test_authenticate_roundtrip_and_reject(happ):
     assert ks.authenticate(token[:-1] + "x") is None
     assert ks.authenticate("hmcp_nope_" + "x" * 30) is None
     assert ks.authenticate("garbage") is None
+
+
+@pytest.mark.parametrize("damage", [b"", b'{"version": 1, "keys": [', b"\xff\xfe not utf-8"])
+def test_an_unreadable_key_store_fails_closed_and_is_left_for_the_owner(happ, damage):
+    """A truncated or overwritten keys.json (disk full, a hand edit) must never authorize a call,
+    and the server must not "repair" it by saving its cached keys over the evidence."""
+    token = mk(happ, "a", access="admin")
+    c = TestClient(happ.app, raise_server_exceptions=False)
+    assert rpc(c, token, "ping").status_code == 200
+    happ.keystore.path.write_bytes(damage)
+    os.utime(happ.keystore.path, (1, 1))                 # a new mtime: the store must re-read it
+    r = rpc(c, token, "tools/list")
+    assert r.status_code in (401, 500, 503) and "tools" not in r.text
+    assert happ.keystore.path.read_bytes() == damage
+
+
+def test_the_servers_last_used_flush_keeps_what_the_cli_changed(tmp_path, monkeypatch):
+    """Server and `hermes hermcp keys ...` are two processes on one keys.json. The server's
+    `last_used` flush writes the whole store; it must not undo a revoke or drop a key the CLI made
+    meanwhile. (The variant where the server misses the change is open: #91.)"""
+    from hermcp import keys as K
+    monkeypatch.setattr(K, "LAST_USED_WRITE_INTERVAL", 0)          # flush on every authenticate
+    path = tmp_path / "keys.json"
+    server = K.KeyStore(path)
+    _, used = server.create("used", Scopes())
+    _, doomed = server.create("doomed", Scopes())
+    cli = K.KeyStore(path)
+    cli.revoke("doomed")
+    _, fresh = cli.create("fresh", Scopes())
+    assert server.authenticate(used)                               # reloads, then flushes last_used
+    after = K.KeyStore(path)
+    assert after.authenticate(doomed) is None and server.authenticate(doomed) is None
+    assert after.authenticate(fresh) is not None
 
 
 def test_revoke_rotate_expiry(happ):
@@ -116,19 +147,24 @@ def test_profile_pinning(happ):
     assert not s.tool_allowed(happ.registry.tools["config_set"])[0] or happ.registry.tools["config_set"].profile_aware
 
 
-# ---- redaction ------------------------------------------------------------------------
-def test_redaction():
-    out = redact({"api_key": "sk-abcdefgh12345", "name": "x", "note": "use Bearer abc.def.ghi now",
-                  "nested": {"password": "p", "ok": 1}, "hm": "hmcp_aabbccdd_" + "z" * 40})
-    assert out["api_key"] == REDACTED and out["nested"]["password"] == REDACTED
-    assert "abc.def" not in out["note"] and "hmcp_" not in out["hm"] and out["name"] == "x"
-    pair = redact({"key": "providers.x.api_key", "value": "supersecret"})
-    assert pair["value"] == REDACTED
-    assert redact({"key": "display.skin", "value": "mono"})["value"] == "mono"
+# ---- audit redaction: what the audit wrapper adds to the central masker -------------------
+def test_audit_redaction_masks_and_bounds_every_record():
+    """One audit line per call: a 5 MB argument or a deeply nested one must not become a 5 MB line.
+    The masking itself is pinned in test_redact/test_masking; here: strict masking plus the caps."""
+    deep = cur = {}
+    for _ in range(20):
+        cur["n"] = {}
+        cur = cur["n"]
+    out = redact({"api_key": "sk-abcdefgh12345", "text": "x" * 5000, "rows": list(range(500)), "deep": deep,
+                  "note": "use Bearer abc.def.ghi now"})
+    assert out["api_key"] == REDACTED and "abc.def" not in out["note"]
+    assert out["text"] == "x" * 500 + "...[+4500]"
+    assert out["rows"] == list(range(50))
+    assert "[DEPTH]" in json.dumps(out["deep"]) and len(json.dumps(out)) < 2000
 
 
-def test_audit_never_contains_secret(happ):
-    _synthetic("zz_sec", "providers", "admin", secrets=True)
+def test_audit_never_contains_secret(happ, scratch_tools):
+    scratch_tools(_synthetic("zz_sec", "providers", "admin", secrets=True))
     token = mk(happ, "w", access="admin", secrets_write=True)
     c = TestClient(happ.app)
     rpc(c, token, "tools/call", {"name": "zz_sec", "arguments": {"name": "FOO_API_KEY", "value": "TOPSECRET123", "dry_run": True}})

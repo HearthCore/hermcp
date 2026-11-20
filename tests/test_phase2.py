@@ -332,6 +332,7 @@ class _Fake(BaseHTTPRequestHandler):
 
 
 def test_chat_send_against_fake_api(call, monkeypatch, happ):
+    _Fake.seen.clear()                    # class-level log, shared with the approval test below
     srv = HTTPServer(("127.0.0.1", 0), _Fake)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     happ.settings.hermes_api_url = f"http://127.0.0.1:{srv.server_port}"

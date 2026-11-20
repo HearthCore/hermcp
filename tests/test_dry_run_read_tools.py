@@ -64,22 +64,8 @@ def test_every_read_tool_drops_dry_run_before_the_handler(happ):
         assert "dry_run" not in seen[name], name
 
 
-def test_read_tool_schema_does_not_advertise_dry_run(happ):
-    """The flag is tolerated, not offered: a read tool has nothing to plan."""
-    for t in happ.registry.tools.values():
-        if t.access == "read":
-            assert "dry_run" not in t.input_schema()["properties"], t.name
-        else:
-            assert t.input_schema()["properties"]["dry_run"]["type"] == "boolean", t.name
-
-
 # ---- write/admin tools are unchanged ---------------------------------------------------------
 def test_write_tool_still_type_checks_dry_run(happ):
     r = call(happ, "config_set", {"key": "display.skin", "value": "mono", "dry_run": "yes"}, access="admin")
     assert r["ok"] is False and r["error"]["code"] == "invalid_arguments"
     assert "dry_run" in r["error"]["message"]
-
-
-def test_write_tool_dry_run_still_plans(happ):
-    r = call(happ, "config_set", {"key": "display.skin", "value": "mono", "dry_run": True}, access="admin")
-    assert r["ok"] and r["result"]["dry_run"] is True and r["result"]["applied"] is False

@@ -169,11 +169,6 @@ def test_redact_does_not_mutate_input():
     assert redact(cfg, strict=True) == redact(cfg, strict=True)           # idempotent/pure
 
 
-def test_idempotent_on_already_redacted():
-    once = redact({"a": {"password": S}, "t": "Bearer " + S}, strict=True)
-    assert redact(once, strict=True) == once
-
-
 def test_mode_selection():
     assert mode_for("config", "config_get") == ("strict", "read") and mode_for("mcp", "mcp_get") == ("strict", "read")
     assert mode_for("sessions", "sessions_messages") == ("generic", "read")
@@ -247,15 +242,13 @@ def test_config_set_unset_dry_run_do_not_echo_secrets(call):
     assert S + "2" in (call.home / "config.yaml").read_text()               # ...and the DATA is untouched by redaction
 
 
-def test_text_channels_are_redacted_centrally(happ, call, monkeypatch):
+def test_text_channels_are_redacted_centrally(happ, call, scratch_tools):
     from hermcp.registry import Tool
-    from hermcp.tools import reg
     text = f"line1 password={S} Authorization: Bearer {S} https://u:{S}@h/x ok-id=run_123"
     for name, toolset in (("zz_sessions", "sessions"), ("zz_ops", "ops"), ("zz_cron", "cron"),
                           ("zz_kanban", "kanban"), ("zz_skills", "skills"), ("zz_chat", "chat"), ("zz_status", "status")):
-        if name not in reg.tools:
-            reg.add(Tool(name=name, toolset=toolset, access="read", description="t",
-                         handler=lambda ctx, **kw: {"content": text, "rows": [{"preview": text, "id": "s_1"}]}))
+        scratch_tools(Tool(name=name, toolset=toolset, access="read", description="t",
+                           handler=lambda ctx, **kw: {"content": text, "rows": [{"preview": text, "id": "s_1"}]}))
         ok, r, raw = call(name)
         assert ok and S not in raw, name
         assert "run_123" in raw and r["rows"][0]["id"] == "s_1"

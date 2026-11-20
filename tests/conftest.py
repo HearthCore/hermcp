@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,59 +15,77 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != PLUGIN_DIR]
 
 
+def tracked_files(*patterns: str) -> list[Path]:
+    """The committed repository files matching the glob `patterns` (e.g. `docs/*.md`), sorted.
+
+    Tests that check the repository's own files must see what is committed, not what happens to
+    lie in the working tree: a live install keeps git-excluded notes under `docs/prep/`, a
+    developer has `node_modules/` or a scratch script next to the code. Outside a git checkout
+    (an unpacked tarball) every file on disk counts — there is nothing else to go by.
+    """
+    try:
+        out = subprocess.run(["git", "-C", str(PLUGIN_DIR), "ls-files", "-z", "--",
+                              *(f":(glob){p}" for p in patterns)],
+                             capture_output=True, check=True, timeout=30,
+                             # a git hook exports GIT_DIR/GIT_INDEX_FILE for *its* repository
+                             env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")}).stdout
+    except (OSError, subprocess.SubprocessError):
+        return sorted({p for pat in patterns for p in PLUGIN_DIR.glob(pat) if p.is_file()})
+    return sorted(p for p in (PLUGIN_DIR / n for n in out.decode().split("\0") if n) if p.is_file())
+
+
 # ---------------------------------------------------------------------------
-# isolation: no test may read the developer's real plugin .env or shell settings
+# isolation: no test may read the developer's real plugin .env, shell settings or Hermes home
 # ---------------------------------------------------------------------------
 # Why: `load_settings` merges the plugin's `.env` and the process environment, so a host that
 # serves the Ledger (`HERMCP_LEDGER=1`, `HERMCP_LEDGER_AUTH=none`, `HERMCP_HOST=0.0.0.0`) or
-# exports a proxy setting failed the default-behaviour tests while CI stayed green. Every variable
-# `load_settings` reads is blanked below, and the `.env` it reads is pointed at an empty temp dir,
-# so a test sees the documented defaults unless it sets a value itself.
-# `tests/test_settings_isolation.py` holds this list against settings.py, so a new setting cannot
-# be forgotten here.
-SETTINGS_ENV_VARS = (
-    "HERMCP_HOST", "HERMCP_PORT", "HERMCP_PUBLIC_URL", "HERMCP_ALLOWED_HOSTS",
-    "HERMCP_HERMES_BIN", "HERMCP_TRUST_PROXY", "HERMCP_TRUSTED_PROXIES", "HERMCP_CALL_TIMEOUT",
-    "HERMCP_OAUTH_DCR", "HERMCP_OAUTH_REDIRECT_URIS",
-    "HERMCP_INBOX_MAX_EVENTS", "HERMCP_INBOX_RETENTION_DAYS", "HERMCP_INBOX_RATE_PER_MIN",
-    "HERMCP_INBOX_JOIN_WINDOW_MIN", "HERMCP_INBOX_WATCHER", "HERMCP_INBOX_WATCH_INTERVAL",
-    "HERMCP_INBOX_WATCH_MAX_PER_KEY", "HERMCP_INBOX_RUN_MAX_EVENTS", "HERMCP_INBOX_WATCH_TTL_HOURS",
-    "HERMCP_INBOX_APPROVALS", "HERMCP_SESSION_MAX_RUNS",
-    "HERMCP_DEBUG_CAPTURE", "HERMCP_DEBUG_CAPTURE_MAX", "HERMCP_DEBUG_CAPTURE_HOURS",
-    "HERMCP_SYSTEMD_SCOPE", "HERMCP_SELF_SYSTEMD_SCOPE",
-    "HERMCP_LEDGER", "HERMCP_LEDGER_AUTH", "HERMCP_LEDGER_BASE_URL", "HERMCP_LEDGER_KANBAN_URL",
-    "HERMCP_LEDGER_POLL_SECONDS", "HERMCP_LEDGER_WINDOW_HOURS", "HERMCP_LEDGER_CACHE_TTL",
-    "HERMCP_LEDGER_CACHE_MAX", "HERMCP_LEDGER_VIEW_KEY", "HERMCP_LEDGER_LIST_LIMIT",
-    "HERMCP_LEDGER_CRON_LIMIT", "HERMCP_LEDGER_SESSIONS_LIMIT", "HERMCP_LEDGER_RUNS_LIMIT",
-    "HERMCP_LEDGER_DESKTOP_URL", "HERMCP_LEDGER_WEB_URL", "HERMCP_LEDGER_ASK_CLAUDE_URL",
-    "HERMCP_LEDGER_ASK_CLAUDE_DESKTOP_URL",
-    "HERMCP_PROFILES_IGNORE",
-    "HERMCP_AUTH_SESSION_MAX_AGE", "HERMCP_AUTH_SESSION_HARD_CAP", "HERMCP_AUTH_SESSION_MAX",
-    # deprecated names load_settings still maps onto the Ledger settings
-    "HERMCP_LAGEBILD", "HERMCP_LAGEBILD_AUTH", "HERMCP_LAGEBILD_BASE_URL",
-    "HERMCP_LAGEBILD_POLL_SECONDS", "HERMCP_LAGEBILD_WINDOW_HOURS", "HERMCP_LAGEBILD_CACHE_TTL",
-    # not HERMCP_*, but read by load_settings and a secret: never from the developer's shell
-    "HERMES_API_KEY",
+# exports a proxy setting failed the default-behaviour tests while CI stayed green (#81). A fixed
+# list of names missed the readers outside `load_settings` (`HERMCP_API_KEY_<PROFILE>`,
+# `HERMCP_DASHBOARD_*`, #87), so every `HERMCP_*` is blanked by prefix, plus the Hermes variables
+# and host variables hermcp reads. `tests/test_settings_isolation.py` holds this against the source.
+RUNNER_ENV_VARS = ("HERMCP_HERMES_AGENT_DIR",)     # set by scripts/run_tests.sh for the probe interpreter
+HOST_ENV_VARS = (
+    "HERMES_API_URL",     # load_settings: else a test could reach the host's live api_server
+    "HERMES_API_KEY",     # load_settings: a secret, never from the developer's shell
+    "HERMES_PROFILE",     # approvals_hook: set inside a Hermes agent session that runs the suite
+    "INVOCATION_ID",      # lock: set when the suite runs under systemd (a CI runner service, a unit)
 )
+HERMES_ENV_PREFIXES = ("HERMES_PLATFORM", "HERMES_SESSION")   # set inside an agent session
+UNREACHABLE_API = "http://127.0.0.1:1"   # refused at once; a test that wants a gateway starts a fake one
+UNBOUND_PORT = "1"   # doctor/status probe hermcp's own port: never the host's live server on 9230
+
+
+def _host_env_names() -> list[str]:
+    return [n for n in os.environ
+            if (n.startswith("HERMCP_") and n not in RUNNER_ENV_VARS)
+            or n in HOST_ENV_VARS or n.startswith(HERMES_ENV_PREFIXES)]
 
 
 @pytest.fixture(autouse=True)
 def isolated_settings_env(tmp_path_factory):
-    """Blank every setting `load_settings` reads and point its `.env` at an empty temp dir.
+    """Blank the host's hermcp/Hermes settings, and give every test an empty home and `.env`.
+
+    - every `HERMCP_*` (except the runner's agent dir) and the host variables above are removed;
+    - `HERMCP_ENV_FILE` points at a `.env` that does not exist, so the install's own is never read;
+    - `HERMES_API_URL` is an address that refuses at once, so nothing reaches a live api_server, and
+      `HERMCP_PORT` is a port nothing serves, so `doctor`/`status` never probe the live hermcp;
+    - `HERMES_HOME` is a fresh empty directory per test: a plain `pytest` (CI, an IDE) would else
+      fall back to the live `~/.hermes`, and one shared directory would let tests leak state into
+      each other through the inbox database. The `home` fixture replaces it with a populated one.
 
     Autouse, so it runs before the fixtures that set a value on purpose (`home` sets
-    `HERMCP_HERMES_BIN`, a test sets `HERMCP_LEDGER`). `HERMES_HOME` is left alone: `home` owns it,
-    and the runner (`scripts/run_tests.sh`) already points it at a throw-away directory.
-
-    Its own `MonkeyPatch` instance, not the `monkeypatch` fixture: requesting that fixture here
-    would make this autouse fixture tear down *after* the test's patches are undone, and a test
-    that replaces a module attribute (e.g. `restart_units.detect_agent_dir`) would then see its
-    own teardown run against the replacement.
+    `HERMCP_HERMES_BIN`, a test sets `HERMCP_LEDGER`). Its own `MonkeyPatch` instance, not the
+    `monkeypatch` fixture: requesting that fixture here would make this autouse fixture tear down
+    *after* the test's patches are undone, and a test that replaces a module attribute (e.g.
+    `restart_units.detect_agent_dir`) would then see its own teardown run against the replacement.
     """
     mp = pytest.MonkeyPatch()
-    for name in SETTINGS_ENV_VARS:
+    for name in _host_env_names():
         mp.delenv(name, raising=False)
     mp.setenv("HERMCP_ENV_FILE", str(tmp_path_factory.mktemp("no-plugin-env") / ".env"))
+    mp.setenv("HERMES_API_URL", UNREACHABLE_API)
+    mp.setenv("HERMCP_PORT", UNBOUND_PORT)
+    mp.setenv("HERMES_HOME", str(tmp_path_factory.mktemp("empty-hermes-home")))
     yield
     mp.undo()
 
@@ -87,6 +106,26 @@ def home(tmp_path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.delenv("HERMCP_PUBLIC_URL", raising=False)
     return h
+
+
+@pytest.fixture()
+def scratch_tools():
+    """Register throw-away tools in the shared registry for one test, and take them out again.
+
+    `hermcp.tools.reg` is a process-wide singleton. A tool a test adds and leaves behind shows up
+    in every later test that walks the registry (doc counts, tools.html, descriptions, the bound-key
+    classification), so the suite only passed in file order (#87).
+    """
+    from hermcp.tools import reg
+    added = []
+
+    def add(tool):
+        reg.add(tool)
+        added.append(tool.name)
+        return tool
+    yield add
+    for name in added:
+        reg.tools.pop(name, None)
 
 
 @pytest.fixture()

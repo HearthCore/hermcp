@@ -7,9 +7,11 @@ conversation-shaped ever leaves the process.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 
+import pytest
 from starlette.testclient import TestClient
 
 from hermcp import ledger_page as LB
@@ -594,7 +596,8 @@ class SupersededRegistry(FakeRegistry):
         return super().invoke(name, args, principal, settings, audit, via)
 
 
-def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all():
+def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all(server_zone):
+    server_zone("UTC")       # the logic, not the host's zone: the zone bug is pinned below (#90)
     payload = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)
     att = payload["attention"]
     assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
@@ -602,6 +605,29 @@ def test_a_failure_whose_job_ran_ok_afterwards_is_not_shown_at_all():
     assert "superseded_cron_runs" not in att and "superseded_count" not in att
     # superseded runs do not count as attention; the still-failing one does
     assert att["total"] == 1 + 2              # failing cron + (waiting approval + open failure)
+
+
+@pytest.fixture()
+def server_zone():
+    """Set the server's local zone for one test (`server_zone("UTC")`); restored and re-read after."""
+    old = os.environ.get("TZ")
+
+    def set_zone(name):
+        os.environ["TZ"] = name
+        time.tzset()
+    yield set_zone
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
+
+
+@pytest.mark.xfail(strict=True, reason="#90: the superseded check compares a local and a UTC timestamp as strings")
+def test_a_recovered_failure_is_superseded_whatever_the_server_zone(server_zone):
+    server_zone("Pacific/Kiritimati")                  # UTC+14
+    att = LB.build_overview(SupersededRegistry(), make_principal(), make_settings(), CONFIG)["attention"]
+    assert [r["run_id"] for r in att["failed_cron_runs"]] == ["r8"]
 
 
 def test_a_broken_superseded_lookup_never_hides_a_failure():

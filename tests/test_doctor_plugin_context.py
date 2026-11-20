@@ -43,9 +43,11 @@ def plugin_context(monkeypatch):
         created.append(NS_PARENT)
     for name in [n for n in sys.modules if n == "hermcp" or n.startswith("hermcp.")]:
         monkeypatch.delitem(sys.modules, name)
-    # conftest puts the checkout's parent on sys.path so tests can `import hermcp`; a plugin install
-    # does not have that, and the whole point here is the name it lacks.
-    monkeypatch.setattr(sys, "path", [p for p in sys.path if Path(p or ".").resolve() != ROOT.parent])
+    # conftest (and `python -m pytest` run from the parent) put a directory on sys.path from which
+    # `import hermcp` resolves; a plugin install does not have that, and the whole point here is the
+    # name it lacks. Compare where `hermcp` would resolve, not the entry itself: with a symlinked
+    # checkout (`plugins/hermcp -> ~/src/hermcp`) the entry is the symlink's parent, not ROOT.parent.
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if (Path(p or ".") / "hermcp").resolve() != ROOT])
 
     spec = importlib.util.spec_from_file_location(CONTEXT, ROOT / "__init__.py", submodule_search_locations=[str(ROOT)])
     assert spec is not None and spec.loader is not None
