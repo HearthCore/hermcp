@@ -161,6 +161,11 @@ class Registry:
             ok, why = principal.scopes.tool_allowed(tool)
             if not ok:
                 raise ToolError("forbidden", f"{name}: {why}")
+            # `dry_run` is accepted on every tool: models attach it habitually. A read tool applies
+            # nothing either way, so there it is a no-op — dropped before validation (its schema does
+            # not advertise the flag) and never passed to the handler.
+            if tool.access == "read":
+                args.pop("dry_run", None)
             try:
                 validation.validate(args, tool.input_schema())
             except validation.ValidationError as exc:
