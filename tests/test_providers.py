@@ -123,28 +123,32 @@ def _fake_session(rc=None, age=0.0, stubborn=False):
 
 @pytest.fixture()
 def fd_above_select_limit():
-    """A free fd number above FD_SETSIZE (1024), with the soft fd limit raised so it is usable.
+    """Returns a function that picks a free fd number above FD_SETSIZE (1024) and makes it usable.
 
-    The common default soft limit is 1024 (`ulimit -n`), and dup2 onto 1024 then fails with EBADF:
-    the test errored on a developer box while CI (65536) was green. The limit is restored afterwards;
-    without a hard limit above the target the premise cannot be built, so the test skips.
-    The search window is wide on purpose: a process that has run much of the suite holds many fds.
+    Call it only after the fds the test needs are open: a process that has run much of the suite holds
+    thousands of fds, so the lowest free number above 1024 is also the one `openpty()` hands out next
+    (picking it first made dup2 clobber the PTY's own slave on CI). The common default soft limit is
+    1024 (`ulimit -n`), where dup2 onto 1024 fails with EBADF, so the soft limit is raised for the
+    test and restored afterwards; without a hard limit above the target the test skips.
     """
     import resource
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    for cand in range(1024, 65536):
-        try:
-            os.fstat(cand)
-        except OSError:
-            break
-    else:
-        pytest.skip("no free fd number below 65536")
-    if hard != resource.RLIM_INFINITY and hard <= cand:
-        pytest.skip(f"hard fd limit {hard} leaves no fd above 1024")
-    if soft != resource.RLIM_INFINITY and soft <= cand:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (cand + 1, hard))
+
+    def pick():
+        for cand in range(1024, 65536):
+            try:
+                os.fstat(cand)
+            except OSError:
+                break
+        else:
+            pytest.skip("no free fd number below 65536")
+        if hard != resource.RLIM_INFINITY and hard <= cand:
+            pytest.skip(f"hard fd limit {hard} leaves no fd above 1024")
+        if soft != resource.RLIM_INFINITY and soft <= cand:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (cand + 1, hard))
+        return cand
     try:
-        yield cand
+        yield pick
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
@@ -252,7 +256,7 @@ def test_read_available_works_above_the_select_fd_limit(fd_above_select_limit):
     """`select.select` refuses any fd >= 1024; a long-running server hands out PTY fds that high."""
     from hermcp.tools import providers
     master, slave = os.openpty()
-    high = fd_above_select_limit
+    high = fd_above_select_limit()
     os.dup2(master, high)
     os.close(master)
     s = {"fd": high, "transcript": "", "proc": _Proc(None), "last": time.time()}
