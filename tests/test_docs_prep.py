@@ -12,14 +12,18 @@ from pathlib import Path
 
 import pytest
 
+from conftest import tracked_files
+
 PLUGIN = Path(__file__).resolve().parents[1]
 PREP = PLUGIN / "docs" / "prep"
 BANNER = "> **Historical research draft — superseded.**"
-DRAFTS = sorted(p for p in PREP.glob("*.md") if p.name != "README.md")
+# Committed files only: a live install keeps its own git-excluded notes in docs/prep/ (issue #87),
+# and those are neither drafts this repository ships nor docs a reader of it lands on.
+DRAFTS = [p for p in tracked_files("docs/prep/*.md") if p.name != "README.md"]
 # Shipped docs that a reader may land on. CHANGELOG.md is a historical record and keeps its own
 # links to the paths a commit touched, so it is not part of this check.
 SHIPPED = [PLUGIN / "README.md", PLUGIN / "AGENTS.md", PLUGIN / "CONTRIBUTING.md",
-           *sorted((PLUGIN / "docs").glob("*.md"))]
+           *tracked_files("docs/*.md")]
 
 
 def _banner_block(text: str) -> str:
@@ -88,7 +92,7 @@ def test_the_superseded_conclusions_are_marked():
 
 def test_the_retired_planning_files_are_not_referenced_any_more():
     """`SPEC.md` and `PROGRESS.md` are gone; a pointer to them sends a reader to nothing."""
-    docs = [*SHIPPED, *sorted((PLUGIN / ".claude" / "agents").glob("*.md"))]
+    docs = [*SHIPPED, *tracked_files(".claude/agents/*.md")]
     offenders = [f"{doc.relative_to(PLUGIN)}: {name}"
                  for doc in docs
                  for name in ("SPEC.md", "PROGRESS.md")

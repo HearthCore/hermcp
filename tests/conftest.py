@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -12,6 +13,25 @@ sys.path.insert(0, str(PLUGINS))   # `import hermcp` resolves to the plugin dir
 # in-process Hermes imports. Keep only the parent on the path, whatever the invocation.
 PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path[:] = [p for p in sys.path if Path(p or ".").resolve() != PLUGIN_DIR]
+
+
+def tracked_files(*patterns: str) -> list[Path]:
+    """The committed repository files matching the glob `patterns` (e.g. `docs/*.md`), sorted.
+
+    Tests that check the repository's own files must see what is committed, not what happens to
+    lie in the working tree: a live install keeps git-excluded notes under `docs/prep/`, a
+    developer has `node_modules/` or a scratch script next to the code. Outside a git checkout
+    (an unpacked tarball) every file on disk counts — there is nothing else to go by.
+    """
+    try:
+        out = subprocess.run(["git", "-C", str(PLUGIN_DIR), "ls-files", "-z", "--",
+                              *(f":(glob){p}" for p in patterns)],
+                             capture_output=True, check=True, timeout=30,
+                             # a git hook exports GIT_DIR/GIT_INDEX_FILE for *its* repository
+                             env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")}).stdout
+    except (OSError, subprocess.SubprocessError):
+        return sorted({p for pat in patterns for p in PLUGIN_DIR.glob(pat) if p.is_file()})
+    return sorted(p for p in (PLUGIN_DIR / n for n in out.decode().split("\0") if n) if p.is_file())
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import tracked_files
+
 import hermcp._yaml as YAML_SHIM
 
 # PyYAML 6 output for PAYLOAD; the ruamel path has to reproduce it byte for byte.
@@ -101,6 +103,7 @@ def test_no_module_imports_pyyaml_directly():
     """The shim is only worth anything if every production module goes through it."""
     root = Path(__file__).resolve().parents[1]
     direct = re.compile(r"^\s*(?:import yaml|from yaml import)\s*$", re.MULTILINE)
-    offenders = [str(p.relative_to(root)) for p in sorted(root.rglob("*.py"))
+    # committed modules only: a venv, node_modules/ or a scratch script in the checkout is not hermcp
+    offenders = [str(p.relative_to(root)) for p in tracked_files("**/*.py")
                  if "tests" not in p.relative_to(root).parts and direct.search(p.read_text(encoding="utf-8"))]
     assert offenders == []
