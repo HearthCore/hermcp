@@ -56,7 +56,7 @@ selftest` against a live install. Each row links to the section that documents i
 | OAuth 2.1 for Claude.ai | PKCE S256, exact redirect allowlist, hashed opaque tokens, paste-an-`hmcp_`-key consent page | [Claude.ai connector](docs/oauth.md) |
 | Run-scoped approvals | Answer the approval of a run hermcp started (`chat_run_approval`) | [Approvals](docs/approvals.md) |
 | Cross-session approvals | An in-gateway agent half publishes Telegram/CLI approvals on a loopback socket | [Approvals](docs/approvals.md) |
-| Approval hooks | `pre_approval_request` / `post_approval_response` land in the inbox as `approval_pending` / `approval_resolved` | [Approval hooks](docs/inbox-and-runs.md#approval-hooks-telegram-and-cli-approvals-in-the-inbox) |
+| Approval hooks | `pre_approval_request` / `post_approval_response` become **one** inbox row of kind `approval` whose state moves `waiting` → `approved` / `denied` / `expired`, with the decision protocol | [Approval hooks](docs/inbox-and-runs.md#approval-hooks-telegram-and-cli-approvals-in-the-inbox) |
 | Starting and steering runs | `chat_send` (idempotent via `request_key`), `chat_run_steer`, `chat_run_cancel`, `chat_session_queue` | [Starting runs](docs/inbox-and-runs.md#starting-runs-chat_send) |
 | Client sessions | Session cards, `client_session` handles, run attribution, foreign-run guard, `recover_from`, claim of unclaimed runs, situation report | [Client sessions](docs/client-sessions.md) |
 | Cron ledger | `cron_runs` (lean metadata from `executions.db`) and `cron_run_output` (full saved output by run id, paged, redacted); session attribution, scope filtering, untrusted marking | [Cron ledger](docs/tool-surface.md#cron-ledger) |
