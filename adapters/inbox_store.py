@@ -43,6 +43,14 @@ TERMINAL_KINDS = ("run_finished", "run_failed", "run_cancelled", "run_lost", "ru
 # A failed run is worth a human's time only while nothing has settled it: no later run of the same
 # session took it over, and nobody acknowledged it (read state is per consumer, see `reads`).
 FAILURE_KINDS = ("run_failed", "run_lost")
+# A failed run is news for one day, not forever. Every reader of the attention view — the Ledger
+# page, the numbers in `hermes_status.inbox`, the default `inbox_poll` — uses this one window, so a
+# failure can never be "closed" for one of them and "unread" for another. Older failures are still
+# in the history (`detail=true`, `inbox_list`) and are reported as an `older_unread` count.
+ATTENTION_WINDOW_H = 24.0
+# Gateway run status of a successor -> the event kind the watcher would have written for it. Used to
+# settle a failure across a client session, where only the watch row (not an event) knows the run.
+_SUCCESSOR_KIND = {"completed": "run_finished", "failed": "run_failed", "lost": "run_lost"}
 # What the default view is for: things a human has to look at. Everything else (resolved approvals,
 # the decision protocol, the raw hook pairs) is reachable through the detail filters, not the digest.
 ATTENTION_KINDS = ("needs_approval", "run_failed", "run_lost", APPROVAL_KIND)
@@ -267,27 +275,66 @@ class Inbox:
             pass
 
     @staticmethod
+    def _successor(db: sqlite3.Connection, r: sqlite3.Row) -> tuple[str | None, str] | None:
+        """The run that took this failure over: ``(run_id, kind)``, or None while nothing did.
+
+        Two identities of one work stream, in this order:
+
+        1. the gateway session (`session_id`) — authoritative whenever the client named one;
+        2. the client session (`watches.client_session`, same key, same profile) — needed because the
+           gateway mints `session_id = run_id` for a request that carries none, so a stateless client
+           (Claude cloud, a script) gets one gateway session per run and a retry never shares a
+           `session_id` with the run it replaces.
+
+        The client-session route is only taken when the gateway session really was minted from the
+        run id, only for a run started after this one, and only with a terminal status: a running,
+        queued, cancelled or restart-interrupted successor settles nothing. A failure with neither a
+        real session nor a client session is left open on purpose — there is nothing to prove a
+        takeover from.
+        """
+        nxt = db.execute(
+            "SELECT run_id, kind FROM events WHERE origin='watcher' AND session_id=? AND id>? "
+            "AND kind IN ('run_finished','run_failed','run_interrupted','run_cancelled','run_lost') "
+            "AND (run_id IS NULL OR run_id<>?) ORDER BY id DESC LIMIT 1",
+            (r["session_id"], r["id"], r["run_id"])).fetchone()
+        if nxt is not None:
+            return nxt["run_id"], nxt["kind"]
+        if not r["run_id"] or (r["session_id"] and r["session_id"] != r["run_id"]):
+            return None             # the client named a session: only that session can settle it
+        w = db.execute("SELECT profile, key_id, client_session, started_at, rowid AS order_row FROM watches "
+                       "WHERE run_id=?", (r["run_id"],)).fetchone()
+        if w is None or not w["client_session"]:
+            return None
+        later = db.execute(
+            "SELECT run_id, last_status FROM watches WHERE profile=? AND client_session=? AND key_id=? "
+            "AND run_id<>? AND (started_at>? OR (started_at=? AND rowid>?)) "
+            "ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (w["profile"], w["client_session"], w["key_id"], r["run_id"],
+             w["started_at"], w["started_at"], w["order_row"])).fetchone()
+        if later is None:
+            return None
+        kind = _SUCCESSOR_KIND.get(str(later["last_status"] or ""))
+        return (later["run_id"], kind) if kind else None
+
+    @staticmethod
     def _settle_pass(db: sqlite3.Connection, ts: str) -> int:
-        """Settle every unsettled failure whose session moved on (see `settle_failures`)."""
+        """Settle every unsettled failure whose work stream moved on (see `settle_failures`)."""
         rows = db.execute("SELECT id, session_id, run_id FROM events WHERE kind IN ('run_failed','run_lost') "
-                          "AND settled_reason IS NULL AND session_id IS NOT NULL ORDER BY id").fetchall()
+                          "AND settled_reason IS NULL ORDER BY id").fetchall()
         settled = 0
         for r in rows:
-            nxt = db.execute(
-                "SELECT run_id, kind FROM events WHERE origin='watcher' AND session_id=? AND id>? "
-                "AND kind IN ('run_finished','run_failed','run_interrupted','run_cancelled','run_lost') "
-                "AND (run_id IS NULL OR run_id<>?) ORDER BY id DESC LIMIT 1",
-                (r["session_id"], r["id"], r["run_id"])).fetchone()
-            if nxt is None or nxt["kind"] == "run_cancelled":
+            nxt = Inbox._successor(db, r)
+            if nxt is None or nxt[1] == "run_cancelled":
                 continue                # successor still running, or it was cancelled: the failure stays open
-            reason = "superseded_by_completed" if nxt["kind"] == "run_finished" else "superseded_by_failure"
+            run_id, kind = nxt
+            reason = "superseded_by_completed" if kind == "run_finished" else "superseded_by_failure"
             db.execute("UPDATE events SET settled_reason=?, superseded_by=?, settled_at=? WHERE id=?",
-                       (reason, nxt["run_id"], ts, r["id"]))
+                       (reason, run_id, ts, r["id"]))
             settled += 1
         return settled
 
     def settle_failures(self) -> int:
-        """A failed run stops needing attention when its session moved on.
+        """A failed run stops needing attention when its work stream moved on.
 
         Rules (the newest failure of a session is the one that counts):
         - a later run of the SAME session completed -> `superseded_by_completed`, `superseded_by=<run>`
@@ -295,8 +342,12 @@ class Inbox:
         - a later run is still running -> nothing happens, the failure stays visible until it is through
         - a later run was cancelled, or there is no later run -> nothing was achieved, the failure stays open
 
+        A run whose gateway session id was minted from its own run id (the client named no session)
+        is settled by a later terminal run of the same **client session** instead — see `_successor`.
+        Nothing is settled on a guess.
+
         Idempotent: only rows with `settled_reason IS NULL` are touched. Called by the run watcher on
-        every tick and once by the migration, so no read path has to write.
+        every tick that ends a run and once by the migration, so no read path has to write.
         """
         ts = _now().strftime("%Y-%m-%dT%H:%M:%SZ")
         with self._session() as db:
@@ -945,67 +996,108 @@ class Inbox:
     _UNREAD = ("events.acked=0 AND NOT EXISTS (SELECT 1 FROM reads r WHERE r.consumer=? AND r.event_id=events.id)")
     _MY_ACK = "(SELECT acked_at FROM reads r WHERE r.consumer=? AND r.event_id=events.id) AS my_ack"
 
+    @staticmethod
+    def _since(hours: float) -> str:
+        """The start of the attention window, as the UTC string the rows are written with."""
+        return datetime.fromtimestamp(_now().timestamp() - hours * 3600,
+                                      timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @staticmethod
+    def _window_sql(windowed: bool) -> str:
+        """SQL: is this row inside the failure window (`ATTENTION_WINDOW_H`)?
+
+        Only `run_failed`/`run_lost` age out. A waiting approval is work at any age, and a producer's
+        own notice (`hermes_note`, `cron_report`, ...) has no successor to wait for, so both stay
+        until a consumer acks them. `datetime()` reads both timestamp forms in the ledger ("...Z" from
+        the watcher, "+00:00" from hooks); a timestamp it cannot parse never hides a row.
+        """
+        if not windowed:
+            return "1=1"
+        return "(kind NOT IN ('run_failed','run_lost') OR datetime(ts) IS NULL OR datetime(ts) >= datetime(?))"
+
     def poll(self, *, source=None, kind=None, limit=20, after_id=0, profiles: list[str] | None = None,
              consumer: str = "", include_older: bool = False, attention_only: bool = False,
              approval_key: str | None = None, run_id: str | None = None,
              session_key: str | None = None) -> dict[str, Any]:
         sc, sa = self._scope_sql(profiles)
+        # The attention view hands out news, not a growing archive: a failure older than the window is
+        # history (a count in `older_unread`). An explicit `include_older` is a history request and
+        # wins over the window.
+        windowed = attention_only and not include_older
+        att = self._attention_sql(attention_only)
+        win = self._window_sql(windowed)
+        wp = (self._since(ATTENTION_WINDOW_H),) if windowed else ()
         with self._session() as db:
             floor = self._floor(db, consumer)
             lo = after_id if include_older else max(after_id, floor)
-            q, a = f"SELECT events.*, {self._MY_ACK} FROM events WHERE {self._UNREAD} AND id>?" + sc, \
-                [consumer, consumer, lo, *sa]
+            q, a = f"SELECT events.*, {self._MY_ACK} FROM events WHERE {self._UNREAD} AND id>? AND {att} AND {win}" + sc, \
+                [consumer, consumer, lo, *wp, *sa]
             for col, val in (("source", source), ("kind", kind)):
                 if val:
                     q += f" AND {col}=?"
                     a.append(val)
-            if attention_only:
-                q += " AND " + self._attention_sql(True)
             for col, val in (("approval_key", approval_key), ("run_id", run_id), ("session_key", session_key)):
                 if val:
                     q += f" AND {col}=?"
                     a.append(val)
             rows = db.execute(q + " ORDER BY id ASC LIMIT ?", (*a, limit)).fetchall()
-            count = f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id{{op}}?" + sc + \
-                    (" AND " + self._attention_sql(True) if attention_only else "")
-            total = db.execute(count.format(op=">"), (consumer, floor, *sa)).fetchone()[0]
+            count = f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id{{op}}? AND {att}" + sc
+            total = db.execute(count.format(op=">") + f" AND {win}", (consumer, floor, *wp, *sa)).fetchone()[0]
             older = db.execute(count.format(op="<="), (consumer, floor, *sa)).fetchone()[0]
+            if windowed:                    # unread attention that is not news any more, still owed a mention
+                older += db.execute(count.format(op=">") + f" AND NOT {win}",
+                                    (consumer, floor, *wp, *sa)).fetchone()[0]
         out = {"events": [self._row(r) for r in rows], "unread_total": total, "consumer": consumer}
         if attention_only:
-            out["scope"] = ("attention only: approvals still waiting, failed/lost runs, runs waiting for approval; "
+            out["scope"] = ("attention only: approvals still waiting, failed/lost runs (last "
+                            f"{ATTENTION_WINDOW_H:.0f} h), runs waiting for approval; "
                             "pass detail=true for the full history")
         if older and not include_older:
             out["older_unread"] = older
-            out["older_note"] = ("older events from before this consumer's first poll are not delivered; "
-                                 "inbox_poll include_older=true shows them, inbox_ack all=true marks them read")
+            out["older_note"] = ("older attention events are not delivered: events from before this "
+                                 "consumer's first poll, and failures older than "
+                                 f"{ATTENTION_WINDOW_H:.0f} h; inbox_poll include_older=true shows the "
+                                 "backlog, inbox_ack all=true marks everything read")
         return out
 
-    def digest(self, *, profiles: list[str] | None = None, consumer: str = "", hours: float = 24.0,
-               attention_only: bool = True) -> dict[str, Any]:
+    def digest(self, *, profiles: list[str] | None = None, consumer: str = "",
+               hours: float = ATTENTION_WINDOW_H, attention_only: bool = True) -> dict[str, Any]:
         """Counts only (no event text): what this consumer has unread, by kind, and recent failed runs.
 
         Default (`attention_only`) counts only what needs a human: approvals still waiting, failed runs
         and runs waiting for approval. Resolved approvals, the decision protocol and the raw hook pairs
         are noise here -- they stay reachable through inbox_list / approval_detail.
 
+        Failures obey the same `hours` window as `attention_view`; anything older lands in
+        `older_unread` instead of in `unread`. Before that, `unread` counted a week-old failure while
+        `failed_runs_24h` in the same payload counted nothing — one `hermes_status` call contradicting
+        itself (#100).
+
         The two headline numbers come from :meth:`attention_view`, the same call the Ledger page uses,
         so a page badge and this digest cannot disagree about the same data.
         """
         sc, sa = self._scope_sql(profiles)
+        att = self._attention_sql(attention_only)
+        windowed = attention_only
+        win = self._window_sql(windowed)
+        wp = (self._since(hours),) if windowed else ()
         with self._session() as db:
             floor = self._floor(db, consumer)
             kinds = {r[0]: r[1] for r in db.execute(
-                f"SELECT kind, COUNT(*) FROM events WHERE {self._UNREAD} AND id>? AND {self._attention_sql(attention_only)}"
+                f"SELECT kind, COUNT(*) FROM events WHERE {self._UNREAD} AND id>? AND {att} AND {win}"
                 + sc + " GROUP BY kind ORDER BY 2 DESC",
-                (consumer, floor, *sa))}
-            older = db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id<=? AND "
-                               f"{self._attention_sql(attention_only)}" + sc,
+                (consumer, floor, *wp, *sa))}
+            older = db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id<=? AND {att}" + sc,
                                (consumer, floor, *sa)).fetchone()[0]
+            if windowed:
+                older += db.execute(f"SELECT COUNT(*) FROM events WHERE {self._UNREAD} AND id>? AND {att} "
+                                    f"AND NOT {win}" + sc, (consumer, floor, *wp, *sa)).fetchone()[0]
         head = self.attention_view(profiles=profiles, consumer=consumer, hours=hours)["counts"]
         return {"unread": sum(kinds.values()), "unread_by_kind": kinds, "older_unread": older,
                 "failed_runs_24h": head["failed_runs_24h"], "approvals_waiting": head["approvals_waiting"],
-                "counts": "attention only (open approvals, failed runs, runs waiting for approval); "
-                          "pass detail=true or use inbox_list for the full history",
+                "counts": ("attention only (open approvals, failed runs, runs waiting for approval) in the "
+                           f"last {hours:.0f} h; older events and failures are in older_unread, the full "
+                           "history is detail=true / inbox_list"),
                 "consumer": consumer}
 
     def attention_view(self, *, profiles: list[str] | None = None, consumer: str = "", hours: float = 24.0,
@@ -1031,16 +1123,17 @@ class Inbox:
         from . import attention as AT
 
         sc, sa = self._scope_sql(profiles)
-        since = datetime.fromtimestamp(_now().timestamp() - hours * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        since = self._since(hours)
         with self._session() as db:
             waiting = db.execute(
                 "SELECT * FROM events WHERE approval_state='waiting' AND approval_key IS NOT NULL" + sc +
                 " ORDER BY id DESC LIMIT 200", sa).fetchall()
             failures = db.execute(
-                "SELECT * FROM events WHERE kind IN ('run_failed','run_lost') AND ts>=?" + sc +
+                "SELECT * FROM events WHERE kind IN ('run_failed','run_lost') "
+                "AND datetime(ts) >= datetime(?)" + sc +
                 " ORDER BY id DESC LIMIT 200", (since, *sa)).fetchall()
             interrupted = db.execute(
-                "SELECT * FROM events WHERE kind='run_interrupted' AND ts>=?" + sc +
+                "SELECT * FROM events WHERE kind='run_interrupted' AND datetime(ts) >= datetime(?)" + sc +
                 " ORDER BY id DESC LIMIT 100", (since, *sa)).fetchall()
             # An interruption is only "relevant" while its session did not move on: a later terminal
             # run of the same session (finished/failed/also interrupted) makes the older one history.
@@ -1058,7 +1151,7 @@ class Inbox:
                     successors[r["id"]] = (nxt["run_id"], nxt["kind"])
             history = db.execute(
                 "SELECT * FROM events WHERE approval_key IS NOT NULL AND approval_state IN ('approved','denied','expired')"
-                " AND ts>=?" + sc + " ORDER BY id DESC LIMIT ?", (since, *sa, history_limit)).fetchall()
+                " AND datetime(ts) >= datetime(?)" + sc + " ORDER BY id DESC LIMIT ?", (since, *sa, history_limit)).fetchall()
             acked = {r[0] for r in db.execute(
                 "SELECT event_id FROM reads WHERE consumer=?", (consumer,)).fetchall()} if consumer else set()
 

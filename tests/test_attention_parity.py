@@ -49,6 +49,14 @@ def _settle(box, run_id, reason="superseded_by_completed", superseded_by="run_af
                    (reason, iso(0.5), superseded_by, run_id))
 
 
+def _floor_at(box, consumer="k1", floor=0):
+    """Give the consumer a known read floor, so a test about the time window is not about the join
+    window as well (a first poll only adopts events from the last HERMCP_INBOX_JOIN_WINDOW_MIN minutes)."""
+    with box._session() as db:
+        db.execute("INSERT OR REPLACE INTO consumers(consumer,floor_id,first_seen,last_seen) VALUES(?,?,?,?)",
+                   (consumer, floor, iso(0), iso(0)))
+
+
 def _approval(box, key, state, *, profile="default", hours_ago=1.0):
     with box._session() as db:
         db.execute(
@@ -117,6 +125,64 @@ def test_attention_view_separates_settled_from_open(box):
     assert view["history"][0]["protocol"] == []
     assert view["counts"]["failed_runs_24h"] == 1
     assert view["counts"]["approvals_waiting"] == 1
+
+
+def test_an_old_failure_leaves_the_unread_count_and_is_reported_as_backlog(box):
+    """#100: `hermes_status.inbox` said `unread: 7` while `failed_runs_24h` in the same payload said 0.
+
+    `unread` counted every unread failure since the consumer's first poll, the failure counter and the
+    Ledger page only the last 24 h. One window now: an older failure is an `older_unread` count in the
+    digest and in the default poll, and stays reachable through `include_older` / `detail=true`.
+    """
+    _floor_at(box)
+    _event(box, kind="run_failed", run_id="run_old", hours_ago=50)
+    dg = box.digest(consumer="k1")
+    assert dg["unread"] == 0 and dg["unread_by_kind"] == {}
+    assert dg["failed_runs_24h"] == 0
+    assert dg["older_unread"] == 1
+
+    poll = box.poll(consumer="k1", attention_only=True)
+    assert poll["events"] == [] and poll["unread_total"] == 0 and poll["older_unread"] == 1
+    assert "hours" in poll["older_note"] or "h;" in poll["older_note"]
+    # an explicit backlog request still delivers it
+    backlog = box.poll(consumer="k1", attention_only=True, include_older=True)
+    assert [e["run_id"] for e in backlog["events"]] == ["run_old"] and "older_unread" not in backlog
+    # and the history always has it
+    assert [e["run_id"] for e in box.list(kind="run_failed")["events"]] == ["run_old"]
+
+
+def test_a_fresh_failure_is_counted_exactly_as_often_as_it_is_delivered(box):
+    """The count and the list cannot disagree about the same row."""
+    _floor_at(box)
+    _event(box, kind="run_failed", run_id="run_fresh", hours_ago=1)
+    _event(box, kind="run_failed", run_id="run_old", hours_ago=30)
+    _approval(box, "ap-wait", "waiting")
+    dg = box.digest(consumer="k1")
+    poll = box.poll(consumer="k1", attention_only=True, limit=50)
+    assert dg["unread"] == len(poll["events"]) == 2
+    assert dg["unread_by_kind"] == {"run_failed": 1, "approval": 1}
+    assert dg["older_unread"] == poll["older_unread"] == 1
+    assert dg["failed_runs_24h"] == 1
+
+
+def test_an_old_waiting_approval_is_never_windowed_out(box):
+    """An approval that waits is work at any age; only failures age out."""
+    _floor_at(box)
+    _approval(box, "ap-wait", "waiting", hours_ago=200)
+    dg = box.digest(consumer="k1")
+    assert dg["unread"] == 1 and dg["unread_by_kind"] == {"approval": 1} and dg["older_unread"] == 0
+    assert [e["kind"] for e in box.poll(consumer="k1", attention_only=True)["events"]] == ["approval"]
+
+
+def test_an_unreadable_timestamp_never_hides_a_failure(box):
+    """A timestamp the parser cannot read keeps the row visible rather than silently dropping it."""
+    with box._session() as db:
+        db.execute("INSERT INTO events(ts,source,kind,summary,severity,origin,run_id,session_id,profile,"
+                   "dedupe_key) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   ("not-a-timestamp", "hermes", "run_failed", "Run failed.", "error", "watcher", "run_x",
+                    "run_x", "default", "t:run_x"))
+    assert [e["run_id"] for e in box.poll(consumer="k1", attention_only=True)["events"]] == ["run_x"]
+    assert box.digest(consumer="k1")["unread"] == 1
 
 
 def test_digest_and_attention_view_agree(box):

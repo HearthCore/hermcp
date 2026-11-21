@@ -193,18 +193,44 @@ tool signature changes for it now.
 
 A `run_failed` is not a permanent alarm. It leaves the attention view — and only that view; `inbox_list` and
 `inbox_poll detail=true` keep it, with the reason on the row (`settled_reason`, `settled_at`, `superseded_by`) —
-when one of three things happened:
+when one of four things happened:
 
 | route | rule | `settled_reason` |
 |---|---|---|
 | a later run of the same session (`session_id`) completed | the later run's result is the answer | `superseded_by_completed`, `superseded_by=<run_id>` |
 | a later run of the same session also failed | the **newest** failure is the one that counts; the older one is history | `superseded_by_failure`, `superseded_by=<newest run_id>` |
+| a later run of the same **client session** (`watches.client_session`, same key and profile) completed or failed | same rule, for runs whose gateway session id was minted from the run id (see below) | `superseded_by_completed` / `superseded_by_failure` |
 | the consumer acknowledged it (`inbox_ack`) | read state is per consumer (`reads`), so one session's ack never hides the event from another | — (the row stays unsettled, it is just read) |
+
+The client-session route exists because the gateway sets `session_id = body.session_id or run_id`
+(`gateway/platforms/api_server_runs.py`): a client that names no session — Claude cloud, a script posting a
+prompt — gets **one gateway session per run**, so a retry never shares a `session_id` with the run it replaces
+and the session rule alone can never see the takeover. The client session hermcp recorded with the watch is
+then the only identity of the work stream. It is used only when the gateway session really was minted from the
+run id, only for a run started later, and only with a terminal status (`completed`, `failed`, `lost`); a
+running, queued, cancelled or restart-interrupted successor settles nothing. A failure whose run has neither a
+real session nor a client session stays open — there is nothing to prove a takeover from, and hermcp does not
+guess.
 
 Nothing is settled while the successor is still running (the failure stays visible until it is through), and a
 cancelled successor does not settle anything: a cancelled run delivered no result. `run_lost` follows the same rule.
-The check runs in the watcher on every tick (`Inbox.settle_failures`, idempotent: only rows with `settled_reason IS
-NULL` are touched), and once as a one-time backfill on start.
+The check runs in the watcher on every tick that ends a run (`Inbox.settle_failures`, idempotent: only rows with
+`settled_reason IS NULL` are touched), and once as a one-time backfill on start.
+
+#### The attention window: one number, three readers
+
+The failure part of the attention view is bounded: `run_failed` / `run_lost` count as attention for
+`ATTENTION_WINDOW_H` (24 h). The Ledger page, `hermes_status.inbox` and the default `inbox_poll` use that
+same window and the same classification, so a failure cannot be closed for one reader and unread for another.
+Before that, `hermes_status.inbox` reported `unread: 7` next to `failed_runs_24h: 0` in the same payload: the
+digest counted every unread failure since the consumer's first poll, the failure counter counted 24 h (#100).
+
+Rows outside the window are not hidden silently — they are an `older_unread` count, together with the backlog
+from before the consumer's first poll. `inbox_poll include_older=true`, `inbox_poll detail=true` and
+`inbox_list` still deliver them. Only failures age out: a waiting approval is work at any age, and a producer's
+own notice (`hermes_note`, `cron_report`, ...) stays until a consumer acks it. `datetime()` is used for the
+comparison, so both timestamp forms in the ledger (`...Z` from the watcher, `+00:00` from hooks) compare
+correctly, and a timestamp that cannot be parsed never hides a row.
 
 Acknowledgement and settlement are independent on purpose: settlement says "the work is done by another run",
 acknowledgement says "I have seen this". Both take the row out of the attention count of the consumer that asks;

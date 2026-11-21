@@ -34,8 +34,9 @@ class Rig:
         self.clock = [1_000_000.0]
         self.w = RunWatcher(self.settings, fetch=self.src, clock=lambda: self.clock[0])
 
-    def watch(self, run_id="run_a"):
-        self.box.add_watch(run_id=run_id, profile="default", session_id=None, key_id="k1", key_name="claude")
+    def watch(self, run_id="run_a", client_session=None):
+        self.box.add_watch(run_id=run_id, profile="default", session_id=None, key_id="k1", key_name="claude",
+                           client_session=client_session)
 
     def tick(self, dt=3.0):
         self.clock[0] += dt
@@ -144,6 +145,84 @@ def test_interrupted_without_output_stays_a_failure(rig):
     ev = [e for e in rig.events() if e["run_id"] == "run_i"][0]
     assert ev["kind"] == "run_failed" and "before it produced any output" in ev["summary"]
     assert [e["kind"] for e in rig.attention()] == ["run_failed"]
+
+
+# ---------------------------------------------------------------------------
+# a retry the gateway calls a new session (session_id == run_id)
+# ---------------------------------------------------------------------------
+# api_server_runs.py sets `session_id = selected_session_id or run_id` when a request carries no
+# session_id, so a stateless client (Claude cloud, a script) gets ONE GATEWAY SESSION PER RUN and a
+# retry never shares a session_id with the run it replaces. The only thing linking them is the client
+# session the caller registered with hermcp (watches.client_session). Live evidence: 2026-11-21,
+# run_fba1de… / run_0e3909… two seconds apart in client session cw-2ed85ff4, both `run_failed`,
+# neither ever settled (#100).
+
+def test_a_retry_in_the_same_client_session_settles_the_failure(rig):
+    rig.watch("run_a", client_session="cw-1")
+    rig.status("run_a", "failed", "run_a", error="boom")          # gateway minted the session from the run id
+    assert rig.tick() == 1
+    assert [e["kind"] for e in rig.attention()] == ["run_failed"]
+
+    rig.watch("run_b", client_session="cw-1")
+    rig.status("run_b", "completed", "run_b", output="the answer")
+    rig.tick()
+    failed = [e for e in rig.events() if e["kind"] == "run_failed"][0]
+    assert failed["settled_reason"] == "superseded_by_completed"
+    assert failed["superseded_by"] == "run_b"
+    assert rig.attention() == []
+    assert rig.box.digest(consumer="c")["failed_runs_24h"] == 0
+    assert [e["run_id"] for e in rig.events() if e["kind"] == "run_failed"] == ["run_a"]   # history keeps it
+
+
+def test_a_failed_retry_in_the_same_client_session_leaves_only_the_newest(rig):
+    rig.watch("run_a", client_session="cw-1")
+    rig.status("run_a", "failed", "run_a", error="boom")
+    rig.tick()
+    rig.watch("run_b", client_session="cw-1")
+    rig.status("run_b", "failed", "run_b", error="again")
+    rig.tick()
+    by_run = {e["run_id"]: e for e in rig.events() if e["kind"] == "run_failed"}
+    assert by_run["run_a"]["settled_reason"] == "superseded_by_failure"
+    assert by_run["run_a"]["superseded_by"] == "run_b"
+    assert not by_run["run_b"].get("settled_reason")               # the newest failure is the one that counts
+    assert [e["run_id"] for e in rig.attention()] == ["run_b"]
+
+
+def test_a_running_retry_in_the_same_client_session_settles_nothing(rig):
+    rig.watch("run_a", client_session="cw-1")
+    rig.status("run_a", "failed", "run_a", error="boom")
+    rig.tick()
+    rig.watch("run_b", client_session="cw-1")
+    rig.status("run_b", "running", "run_b")
+    rig.tick()
+    assert [e["run_id"] for e in rig.attention()] == ["run_a"]     # visible until the retry is through
+    assert all(not e.get("settled_reason") for e in rig.events())
+
+
+def test_without_a_client_session_a_run_id_session_is_not_settled_on_a_guess(rig):
+    """Nothing links the two runs — the old voxloop-researcher rows look exactly like this."""
+    rig.watch("run_a")
+    rig.status("run_a", "failed", "run_a", error="boom")
+    rig.tick()
+    rig.watch("run_b")
+    rig.status("run_b", "completed", "run_b", output="x")
+    rig.tick()
+    failed = [e for e in rig.events() if e["kind"] == "run_failed"][0]
+    assert not failed.get("settled_reason")
+    assert [e["run_id"] for e in rig.attention()] == ["run_a"]
+
+
+def test_a_named_session_is_authoritative_over_the_client_session(rig):
+    """A client that names its session gets the session rule only: another chat's success settles nothing."""
+    rig.watch("run_a", client_session="cw-1")
+    rig.status("run_a", "failed", "sess-real", error="boom")
+    rig.tick()
+    rig.watch("run_b", client_session="cw-1")
+    rig.status("run_b", "completed", "run_b", output="x")
+    rig.tick()
+    failed = [e for e in rig.events() if e["kind"] == "run_failed"][0]
+    assert not failed.get("settled_reason")
+    assert failed["session_id"] == "sess-real"
 
 
 def test_backfill_settles_old_failures_once(home):
