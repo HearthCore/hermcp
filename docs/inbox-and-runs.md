@@ -173,6 +173,22 @@ from the slim default. An open approval stays visible until it is decided.
 tools, asserted by `tests/test_attention_parity.py`. A settled failure is therefore not hidden: it leaves the attention
 bucket and the counter and appears in `settled` with its reason and the run that took over.
 
+#### Next iteration: fewer commands, three levels (recorded, not built)
+
+Written down from the 2026-11-11 brief so the decision is not lost; **none of this exists yet** and no
+tool signature changes for it now.
+
+- **Three levels instead of many commands.** (1) *Is anything open for me?* — the default, one call.
+  (2) *What exactly?* — one run, one approval, one session, named. (3) *History* — everything,
+  explicitly asked for. Levels 1 and 2 are `hermes_status` / `inbox_poll` and the
+  `approval_key` / `run_id` / `session_key` filters today; level 3 is `detail=true` / `inbox_list`.
+- **The default level becomes a short list, not counts plus a second call.** The last 5–10 entries,
+  open work first, then the most recent decisions. Length as a plugin option
+  (`HERMCP_INBOX_DEFAULT_LIMIT`, sane range 5–10, invalid values fall back and are logged).
+- **"Relevant noise" stays visible for a few minutes.** A decision just taken, a second attempt that
+  lost, an interruption that was resumed: on the short list while it is fresh, gone by itself after a
+  short window — never a second history that has to be maintained.
+
 #### When a failed run stops needing attention
 
 A `run_failed` is not a permanent alarm. It leaves the attention view — and only that view; `inbox_list` and

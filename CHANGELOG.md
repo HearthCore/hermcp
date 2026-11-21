@@ -114,6 +114,7 @@ _Add your entry here, in the same pull request that makes the change._
 
 ### Documentation
 - The approval docs spell out how the two hook signals are correlated (a derived key, because the hook payload carries no `request_id`) and where a second decision attempt is *not* visible to hermcp (a second click inside a Hermes UI)
+- `docs/inbox-and-runs.md` records the next iteration of the default view (three levels, a short 5–10 entry default, briefly visible recent noise) as a decision, not as code, and the README's approval-hook row describes the single-row state model instead of the old pending/resolved pair
 
 ### Added
 - This changelog, backfilled from the first 44 commits, and the rule to update it in every pull request ([#41](https://github.com/HearthCore/hermcp/issues/41))
