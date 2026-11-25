@@ -38,6 +38,9 @@ MAX_MESSAGES = 200
 LIST_PAGE_DEFAULT = 25
 LIST_PAGE_MAX = 100
 SESSIONS_DEEP_MAX = 200      # rows fetched per profile for one page of the sessions list
+SESSION_SORTS = ("last_active", "profile", "agent", "title")
+SESSION_SORT_DEFAULT = "last_active"
+AGENTS_MAX = 50              # distinct started_by values the client filter offers
 RUNS_FETCH = 200             # inbox_list ceiling per call
 CRON_FETCH = 100             # cron_runs ceiling per call
 KIND_LABEL = {
@@ -627,8 +630,10 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
                 "tool_call_count": row.get("tool_call_count") if isinstance(row.get("tool_call_count"), int) else None,
                 "model": clean(row.get("model"), 60),
                 # the standard session fields every list entry carries, taken from the same live row
-                "session_title": clean(redacted(row.get("title")), 120),
-                "started_by": clean(row.get("started_by"), 80),
+                "session_title": clean(redacted(row.get("session_title") or row.get("title")), 120),
+                # the client / external agent that started the session: the resolver's answer when the
+                # row carries it, else the session's own door (`source`), which is what it is derived from
+                "started_by": clean(row.get("started_by") or row.get("source"), 80),
             })
     return rows, errors, capped
 
@@ -636,12 +641,48 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
 def _matches(row: Dict[str, Any], filters: Dict[str, Any]) -> bool:
     q = (filters.get("q") or "").strip().lower()
     if q:
-        hay = " ".join(str(row.get(k) or "") for k in ("title", "profile", "surface", "session_id",
-                                                       "model", "summary", "job_name", "error", "action",
-                                                       "rationale", "state", "decision")).lower()
+        hay = " ".join(str(row.get(k) or "") for k in ("title", "session_title", "profile", "surface",
+                                                       "started_by", "session_id", "model", "summary",
+                                                       "job_name", "error", "action", "rationale", "state",
+                                                       "decision")).lower()
         if q not in hay:
             return False
     return True
+
+
+def agents_of(rows: List[Dict[str, Any]], limit: int = AGENTS_MAX) -> List[str]:
+    """The distinct clients/agents of these rows, sorted case-insensitively (the filter's options).
+
+    Built from the unfiltered window on purpose: a chosen agent must not disappear from its own
+    dropdown, which would leave the user unable to switch to another one.
+    """
+    seen = {str(r.get("started_by")) for r in rows if r.get("started_by")}
+    return sorted(seen, key=str.lower)[:limit]
+
+
+def _session_sort(query: Dict[str, Any]) -> tuple[str, str]:
+    """The requested sort and direction, both whitelisted (`last_active`/`desc` as the fallback)."""
+    sort = clean((query or {}).get("sort"), 20)
+    sort = sort if sort in SESSION_SORTS else SESSION_SORT_DEFAULT
+    direction = clean((query or {}).get("dir"), 4)
+    if direction not in ("asc", "desc"):
+        direction = "desc" if sort == "last_active" else "asc"
+    return sort, direction
+
+
+def sort_sessions(rows: List[Dict[str, Any]], sort: str, direction: str) -> List[Dict[str, Any]]:
+    """Order session rows by last activity, profile, client (`started_by`) or title.
+
+    Strings compare case-insensitively; rows without a value for the sort key go last in either
+    direction, so an unknown client never pushes itself to the top. The sort is stable, so rows of
+    equal rank keep the order they were read in (newest first per profile).
+    """
+    field = {"last_active": "last_active", "profile": "profile",
+             "agent": "started_by", "title": "session_title"}.get(sort, "last_active")
+    present = [r for r in rows if r.get(field)]
+    missing = [r for r in rows if not r.get(field)]
+    present.sort(key=lambda r: str(r.get(field)).lower(), reverse=(direction == "desc"))
+    return present + missing
 
 
 def _since_iso(hours: int) -> str:
@@ -661,6 +702,9 @@ def list_sessions(registry, principal: Principal, settings, hermes_config: Dict[
     want_status = clean(query.get("status"), 20)
     want_profile = clean(query.get("profile"), 40)
     want_surface = clean(query.get("surface"), 30)
+    want_agent = clean(query.get("agent"), 80)
+    sort, direction = _session_sort(query)
+    agents = agents_of(rows)
     since = _since_iso(hours) if hours else None
     out = []
     for row in rows:
@@ -670,19 +714,23 @@ def list_sessions(registry, principal: Principal, settings, hermes_config: Dict[
             continue
         if want_surface and (row.get("source") or "") != want_surface and row["surface"] != want_surface:
             continue
+        if want_agent and want_agent.lower() not in (row.get("started_by") or "").lower():
+            continue
         if since and (row.get("last_active") or "") < since:
             continue
         if not _matches(row, query):
             continue
         out.append({**row, "peek": "session",
                     "url": build_link(targets, row["profile"], row["session_id"])})
-    out.sort(key=lambda r: r.get("last_active") or "", reverse=True)
+    out = sort_sessions(out, sort, direction)
     page = out[offset:offset + limit]
     return {"kind": "sessions", "items": page, "total": len(out), "offset": offset, "limit": limit,
             "has_more": offset + len(page) < len(out), "capped": capped,
             "total_is_bounded": capped,
-            "filters": _filters_echo(query, ("status", "profile", "surface", "hours", "q")),
-            "profiles": profiles, "errors": errors,
+            "filters": _filters_echo(query, ("status", "profile", "surface", "agent", "sort", "dir",
+                                             "hours", "q")),
+            "profiles": profiles, "agents": agents, "sort": {"key": sort, "dir": direction},
+            "errors": errors,
             "links": targets,
             "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")}
 

@@ -187,6 +187,31 @@ test("the list url drops empty filters and keeps the fixed key order", () => {
   assert.equal(H.listUrl("cron", { evil: "x" }), "/ledger/api/list?kind=cron");
 });
 
+test("the client filter and the sort travel in the list url and the page url", () => {
+  const H = load();
+  assert.equal(H.listUrl("sessions", { agent: "claude-ai-cloud", sort: "agent", dir: "asc" }),
+    "/ledger/api/list?kind=sessions&agent=claude-ai-cloud&sort=agent&dir=asc");
+  // the URL state keeps them, so a reload restores the same view
+  const st = H.readUrlState("?agent=telegram&sort=profile&dir=desc&profile=default");
+  assert.deepEqual(j(st.filters), { profile: "default", agent: "telegram", sort: "profile", dir: "desc" });
+  assert.equal(H.buildSearch(st), "?profile=default&agent=telegram&sort=profile&dir=desc");
+});
+
+test("a click on a header sorts a new column ascending and flips the active one", () => {
+  const H = load();
+  // nothing chosen yet: activity is the default, newest first
+  assert.deepEqual(j(H.sortToggle({}, "last_active")), { sort: "last_active", dir: "asc" });
+  assert.deepEqual(j(H.sortToggle({}, "profile")), { sort: "profile", dir: "asc" });
+  assert.deepEqual(j(H.sortToggle({}, "agent")), { sort: "agent", dir: "asc" });
+  // clicking the active column flips the direction
+  assert.deepEqual(j(H.sortToggle({ sort: "agent", dir: "asc" }, "agent")), { sort: "agent", dir: "desc" });
+  assert.deepEqual(j(H.sortToggle({ sort: "agent", dir: "desc" }, "agent")), { sort: "agent", dir: "asc" });
+  // a different column starts its own direction, not the previous one
+  assert.deepEqual(j(H.sortToggle({ sort: "agent", dir: "desc" }, "profile")), { sort: "profile", dir: "asc" });
+  assert.deepEqual(j(H.sortToggle({ sort: "profile", dir: "asc" }, "last_active")),
+    { sort: "last_active", dir: "desc" });
+});
+
 test("truncate cuts at the budget and marks it, and never invents text", () => {
   const H = load();
   assert.equal(H.truncate("abcdef", 4), "abcd…");

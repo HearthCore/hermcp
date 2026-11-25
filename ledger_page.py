@@ -23,11 +23,12 @@ access on a tool simply gets that section reported as unavailable.
 
 Privacy
 -------
-No ``user_id``, no ``chat_context``, no session title, no message preview, no
-approval ``request_id``/``session_key``. Free text (an approval's command, an
-error, an inbox summary) goes through :func:`hermcp.redact.redact_text` and is
-truncated; if that scrubbing is unavailable the text is dropped rather than shown
-raw. The page renders every value with ``textContent`` — never ``innerHTML``.
+No ``user_id``, no ``chat_context``, no message preview, no approval
+``request_id``/``session_key``. Session titles are shown — the page has to say what a session is
+about — but like every other free text they go through :func:`hermcp.redact.redact_text` and are
+truncated; if that scrubbing is unavailable the title is dropped rather than shown raw. Free text
+(an approval's command, an error, an inbox summary) is handled the same way. The page renders every
+value with ``textContent`` — never ``innerHTML``.
 """
 from __future__ import annotations
 
@@ -508,8 +509,14 @@ def _sessions(registry, principal, settings, profiles: List[str], targets, error
         capped = capped or len(found) >= per_profile
         for row in found:
             sid = safe_token(row.get("id"))
+            title = clean(redacted(row.get("session_title") or row.get("title")), 120)
             rows.append({
                 "profile": clean(row.get("profile_name") or profile, 40),
+                # who started it: the resolver's `started_by`, else the door the row came through
+                "started_by": clean(row.get("started_by") or row.get("source"), 80),
+                # the title the session carries right now (read with this very query, never a snapshot)
+                "title": title,
+                "session_title": title,
                 "source": clean(row.get("source"), 30),
                 "status": session_status(row, now),
                 "last_active": iso(row.get("last_active")),

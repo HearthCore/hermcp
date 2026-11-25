@@ -36,15 +36,18 @@ SESSIONS = {
     "default": [
         {"id": "local-aaaa", "title": XSS + " " + SECRET, "source": "desktop", "model": "m",
          "started_at": NOW - 600, "last_active": NOW - 30, "ended_at": None,
-         "message_count": 9, "tool_call_count": 4, "profile_name": "default"},
+         "message_count": 9, "tool_call_count": 4, "profile_name": "default",
+         "started_by": "claude-ai-cloud"},
         {"id": "local-bbbb", "title": "alte Session", "source": "telegram", "model": "m2",
          "started_at": NOW - 90000, "last_active": NOW - 80000, "ended_at": NOW - 80000,
-         "message_count": 3, "tool_call_count": 1, "profile_name": "default"},
+         "message_count": 3, "tool_call_count": 1, "profile_name": "default",
+         "started_by": "telegram"},
     ],
     "developer": [
         {"id": "dev-cccc", "title": "developer session", "source": "cli", "model": "m3",
          "started_at": NOW - 120, "last_active": NOW - 60, "ended_at": None,
-         "message_count": 5, "tool_call_count": 2, "profile_name": "developer"},
+         "message_count": 5, "tool_call_count": 2, "profile_name": "developer",
+         "started_by": "claude-code"},
     ],
 }
 
@@ -319,6 +322,86 @@ def test_sessions_list_pages_and_filters(inbox_seeded):
 def test_sessions_list_free_text_matches_the_title(inbox_seeded):
     d = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"q": "alte"})
     assert [r["session_id"] for r in d["items"]] == ["local-bbbb"]
+
+
+def test_sessions_list_shows_profile_title_and_client(inbox_seeded):
+    d = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {})
+    row = next(r for r in d["items"] if r["session_id"] == "local-aaaa")
+    assert row["profile"] == "default"
+    assert row["session_title"] and row["session_title"] == row["title"]
+    assert row["started_by"] == "claude-ai-cloud"
+    assert SECRET not in json.dumps(d)                   # the title is scrubbed, as before
+    # the filter's options come with the payload, sorted case-insensitively
+    assert d["agents"] == ["claude-ai-cloud", "claude-code", "telegram"]
+
+
+def test_sessions_list_client_falls_back_to_the_door_without_a_resolver_value(inbox_seeded):
+    """A `sessions_list` row from an older build carries no `started_by`; the door is the same thing."""
+    d = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {})
+    row = next(r for r in d["items"] if r["session_id"] == "local-bbbb")
+    assert row["started_by"] == "telegram"
+
+
+def test_sessions_list_filters_by_client(inbox_seeded):
+    claude = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"agent": "claude"})
+    assert {r["session_id"] for r in claude["items"]} == {"local-aaaa", "dev-cccc"}
+    exact = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"agent": "telegram"})
+    assert [r["session_id"] for r in exact["items"]] == ["local-bbbb"]
+    # case does not matter, an unknown client finds nothing instead of everything
+    upper = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"agent": "TELEGRAM"})
+    assert [r["session_id"] for r in upper["items"]] == ["local-bbbb"]
+    none = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"agent": "nobody"})
+    assert none["items"] == [] and none["total"] == 0
+    assert claude["filters"]["agent"] == "claude"
+
+
+def test_sessions_list_sorts_by_profile_and_by_client(inbox_seeded):
+    reg = FakeRegistry()
+    by_profile = LD.list_sessions(reg, make_principal(), inbox_seeded, CONFIG, {"sort": "profile"})
+    assert [r["profile"] for r in by_profile["items"]] == ["default", "default", "developer"]
+    assert by_profile["sort"] == {"key": "profile", "dir": "asc"}
+    desc = LD.list_sessions(reg, make_principal(), inbox_seeded, CONFIG, {"sort": "profile", "dir": "desc"})
+    assert [r["profile"] for r in desc["items"]] == ["developer", "default", "default"]
+    by_client = LD.list_sessions(reg, make_principal(), inbox_seeded, CONFIG, {"sort": "agent"})
+    assert [r["started_by"] for r in by_client["items"]] == ["claude-ai-cloud", "claude-code", "telegram"]
+    # the default stays "newest activity first"; an unknown sort key cannot break the page
+    default = LD.list_sessions(reg, make_principal(), inbox_seeded, CONFIG, {})
+    assert [r["session_id"] for r in default["items"]] == ["local-aaaa", "dev-cccc", "local-bbbb"]
+    junk = LD.list_sessions(reg, make_principal(), inbox_seeded, CONFIG, {"sort": "evil", "dir": "sideways"})
+    assert junk["sort"] == {"key": "last_active", "dir": "desc"}
+    assert [r["session_id"] for r in junk["items"]] == ["local-aaaa", "dev-cccc", "local-bbbb"]
+    # a row without a client is never pushed to the top by an ascending sort
+    nosort = {"id": "x", "session_title": "ohne", "started_by": None}
+    ordered = LD.sort_sessions([nosort, {"id": "y", "started_by": "aa"}], "agent", "desc")
+    assert [r["id"] for r in ordered] == ["y", "x"]
+
+
+def test_sessions_list_title_follows_the_database(inbox_seeded, monkeypatch):
+    """No snapshot: a title renamed in state.db shows up in the very next list call."""
+    first = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {})
+    assert next(r for r in first["items"] if r["session_id"] == "dev-cccc")["session_title"] == "developer session"
+    monkeypatch.setitem(SESSIONS["developer"][0], "title", "umbenannt live")
+    second = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {})
+    row = next(r for r in second["items"] if r["session_id"] == "dev-cccc")
+    assert row["session_title"] == "umbenannt live"
+    assert row["title"] == "umbenannt live"
+
+
+def test_the_list_endpoint_hands_agent_sort_and_dir_to_the_sessions_builder(home, monkeypatch):
+    """The JSON endpoint passes the new filters through instead of keeping its own vocabulary."""
+    app = make_app(home, HERMCP_LEDGER="1", HERMCP_LEDGER_AUTH="none")
+    seen = {}
+
+    def spy(registry, principal, settings, config, query, base=""):
+        seen.update(query)
+        return {"ok": True, "kind": "sessions", "items": [], "total": 0, "agents": ["claude-ai-cloud"]}
+
+    monkeypatch.setattr(LD, "list_sessions", spy)
+    c = TestClient(app.app, client=("127.0.0.1", 51000))
+    d = c.get("/ledger/api/list", params={"kind": "sessions", "agent": "claude", "sort": "profile",
+                                          "dir": "desc"}).json()
+    assert seen["agent"] == "claude" and seen["sort"] == "profile" and seen["dir"] == "desc"
+    assert d["agents"] == ["claude-ai-cloud"]
 
 
 def test_runs_list_carries_the_history_from_the_shared_classification(inbox_seeded):

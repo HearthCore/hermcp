@@ -366,6 +366,22 @@ td.wrap { white-space: normal; overflow-wrap: anywhere; }
 .lrow:focus-visible { outline: 1px solid var(--green); outline-offset: -1px; }
 .lrow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .lhead > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* sortable column labels: the whole header text is the button, the marker says which way */
+.lhead button.sorthead {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.lhead button.sorthead:hover { color: var(--ink); }
+.lhead button.sorthead.on { color: var(--green); }
+.lhead button.sorthead:focus-visible { outline: 1px solid var(--green); outline-offset: 1px; }
 
 /* ---------------------------------------------------------------- controls */
 .btn {

@@ -78,7 +78,7 @@ own network. It is **not** a way to publish the page: see the guard below.
 |---|---|
 | `GET /ledger/overview` | everything the start page draws (sections fail independently) |
 | `GET /ledger/api/peek?kind=&id=` | the pop-up: `kind` is `session`, `run`, `cron` or `approval`; optional `profile`, `job` |
-| `GET /ledger/api/list?kind=` | `sessions`, `runs`, `approvals` or `cron`; `offset`, `limit`, `status`, `profile`, `surface`, `state`, `job`, `hours`, `q` |
+| `GET /ledger/api/list?kind=` | `sessions`, `runs`, `approvals` or `cron`; `offset`, `limit`, `status`, `profile`, `surface`, `state`, `job`, `agent`, `sort`, `dir`, `hours`, `q` |
 | `GET /ledger/api/session/<id>` | the session full view (optional `profile`) |
 | `GET /ledger/api/gateway` | platform state, versions, profiles, keys without secrets |
 | `GET /ledger/jobs` | the cron job configuration (behind the toggle on the start page) |
@@ -188,7 +188,7 @@ Portfolio. Die Regel ist bewusst klein und stabil:
 | Query | Bedeutung |
 |---|---|
 | `peek=<kind>:<id>` | das Pop-up (`session`, `run`, `cron`, `approval`) |
-| `status`, `profile`, `surface`, `state`, `job`, `hours`, `q` | Filter der Unterseiten |
+| `status`, `profile`, `surface`, `state`, `job`, `agent`, `sort`, `dir`, `hours`, `q` | Filter und Sortierung der Unterseiten |
 | `offset` | Seite im Pager (Vielfaches des Limits) |
 | `more=sessions,runs,cron` | aufgeklappte Listen der Startseite („Mehr anzeigen") |
 | `jobs=1` | Cron-Job-Konfiguration eingeblendet |
@@ -335,8 +335,34 @@ Die Zeilen der Session- und Run-Listen tragen bereits die vier Standardfelder je
 (`session_id`, `profile`, `session_title`, `started_by`; siehe
 [tool-surface.md](tool-surface.md#session-fields-on-every-list-entry)): der Titel kommt live aus der
 Session-Datenbank, `started_by` nennt den Client bzw. externen Agenten (oder die Tür: `telegram`,
-`cli`, `api_server`, ...). Die Darstellung wertet sie in einem eigenen Schritt aus — dasselbe Feld für
-`/ledger/api/list` und die Tools.
+`cli`, `api_server`, ...). Dasselbe Feld liefert `/ledger/api/list` wie die Tools.
+
+### Sessions: Profil, Titel, Client — sortiert und gefiltert
+
+`~/sessions` zeigt je Zeile **Titel**, **Profil** und **Client/Agent** (`started_by`); die
+Startseite in Panel 03 ebenso (`Profil · Titel`, darunter der Client). Sortiert wird über die
+Spaltenköpfe — jeder Klick auf denselben Kopf dreht die Richtung, ein anderer Kopf startet neu:
+
+| Spalte | `sort=` | Default-Richtung |
+|---|---|---|
+| zuletzt | `last_active` | absteigend (neueste zuerst) |
+| Session (Titel) | `title` | aufsteigend |
+| Profil | `profile` | aufsteigend |
+| Client / Agent | `agent` | aufsteigend |
+
+Zeilen ohne Wert für die Sortierspalte (z. B. kein Client bekannt) stehen immer am Ende — in beiden
+Richtungen. Ein unbekannter `sort`- oder `dir`-Wert fällt auf `last_active`/`desc` zurück, statt die
+Seite zu brechen.
+
+Gefiltert wird nach Profil (`profile=`), Client/Agent (`agent=`, teilt sich die Trefferliste mit dem
+Freitext, Groß-/Kleinschreibung egal) und weiterhin nach Status, Oberfläche, Zeitraum und Freitext.
+Die Auswahllisten für Profil und Client kommen **aus dem Payload** (`profiles`, `agents`), nie aus
+einer Liste im Browser — ein Filter kann also keinen Namen erfinden. Ein gewählter Client bleibt
+dabei im Dropdown, auch wenn er durch den eigenen Filter gerade keine Zeile mehr hat.
+
+Titel und Client werden mit jeder Abfrage neu gelesen (kein Snapshot). Der HTTP-Cache des Ledgers
+(`HERMCP_LEDGER_CACHE_TTL`, Default 8 s) kann eine Umbenennung in der Session-Datenbank um bis zu
+diese Zeit verzögern — „nächste Abfrage“ heißt: der nächste ungecachte Abruf.
 
 ## Eine Wahrheit für Seite und Tools
 
@@ -407,7 +433,7 @@ seam, not of the buttons. There is no approve, start, stop, retry or config path
 | Session full view | `sessions_get`, `sessions_messages`, inbox run watches and open approvals |
 | Sub-pages (sessions/runs/cron/approvals) | `sessions_list`, `inbox_list` classified with `attention.classify`, `cron_runs`, `approval_detail` |
 | `/ledger/gateway` | `status_gateway`, `hermes_status`, `profiles_list`, `keys_list` (only with an admin view) |
-| Sessions per reachable profile: profile, platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
+| Sessions per reachable profile: profile, title, starting client (`started_by`), platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
 | Clients and sessions: sessions grouped by client with kind, purpose, state, last seen and open runs | hermcp's own session cards and run watches (same data as `clients_overview`) |
 | Cron ledger of the last `HERMCP_LEDGER_WINDOW_HOURS` (default 24): job, status, start, duration, delivery outcome, session id, link for agent runs | `cron_runs` |
 | Attention: waiting approvals, open failures, open interruptions (settled failures and decided approvals stay in the tools only) | `inbox_attention` (the shared classification), `cron_runs status=error` |
