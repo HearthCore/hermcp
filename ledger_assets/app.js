@@ -310,9 +310,11 @@ function countLabel(n, one, many){
 
 // The next sort state after a click on a column header. Clicking the active key flips the
 // direction; a new key starts ascending (except activity, where "newest first" is the default).
+// The server sends its state as {key, dir} and that is what the header hands in; the URL state
+// carries the same pair as {sort, dir}, so both spellings are read here.
 function sortToggle(filters, key){
   filters = filters || {};
-  var cur = filters.sort || "last_active";
+  var cur = filters.key || filters.sort || "last_active";
   var dir = filters.dir || (cur === "last_active" ? "desc" : "asc");
   if(cur === key) return {sort: key, dir: dir === "asc" ? "desc" : "asc"};
   return {sort: key, dir: key === "last_active" ? "desc" : "asc"};
