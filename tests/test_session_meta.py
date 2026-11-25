@@ -69,17 +69,24 @@ def set_title(home: Path, profile: str, session_id: str, title: str) -> None:
     db.close()
 
 
-def make_lease(home: Path, profile: str, session_id: str, pid: int, acquired_at: float) -> None:
+def make_lease(home: Path, profile: str, session_id: str, pid: int, acquired_at: float,
+               pidns: str | None = None) -> None:
     """A `session_turn_leases` row: the pid running that session's turn, and when it took the lease."""
     path = (home if profile == "default" else home / "profiles" / profile) / "state.db"
     db = sqlite3.connect(path)
     db.execute("CREATE TABLE IF NOT EXISTS session_turn_leases (conversation_id TEXT PRIMARY KEY, "
                "holder TEXT NOT NULL, acquired_at REAL NOT NULL, expires_at REAL NOT NULL)")
-    holder = f"pid={pid}:pidns=1:turn={session_id}:token=abc:platform=kanban"
+    holder = f"pid={pid}:pidns={pidns or own_pidns()}:turn={session_id}:token=abc:platform=kanban"
     db.execute("INSERT OR REPLACE INTO session_turn_leases VALUES (?,?,?,?)",
                (session_id, holder, acquired_at, acquired_at + 600))
     db.commit()
     db.close()
+
+
+def own_pidns() -> str:
+    """Our own pid namespace inode as digits -- the lease of a process we can see records exactly this."""
+    raw = SM.self_pidns() or "pid:[0]"
+    return raw.split("[")[1].rstrip("]")
 
 
 class FakeGateway:
@@ -432,6 +439,22 @@ def test_a_gone_process_is_a_contradiction_not_a_silent_match(world, monkeypatch
     monkeypatch.setattr(SM, "proc_started_at", lambda pid: (False, None))     # that pid no longer exists
     row = snapshot_of(world, {"kind": "managed", "session": SID_KANBAN, "pid": 5000})["agents"][0]
     assert row["pid_verified"] is False and row["session_title"] == "Kanban-Arbeit"
+
+
+def test_a_pid_from_a_foreign_namespace_is_uncheckable_not_wrong(world, monkeypatch):
+    """A lease recorded in another pid namespace: its pid numbers mean nothing here, so nothing is claimed."""
+    make_db(world, "default", [(SID_KANBAN, "Kanban-Arbeit", "kanban", None, 1000.0, None)])
+    make_lease(world, "default", SID_KANBAN, 5000, 1010.0, pidns="999999")
+    monkeypatch.setattr(SM, "proc_started_at", lambda pid: (False, None))
+    row = snapshot_of(world, {"kind": "managed", "session": SID_KANBAN, "pid": 5000})["agents"][0]
+    assert row["pid_verified"] is None and row["session_title"] == "Kanban-Arbeit"
+
+
+def test_pidns_helpers_read_the_holder():
+    assert SM.holder_pidns("pid=12:pidns=4026533254:turn=x") == "4026533254"
+    assert SM.holder_pidns("pid=12:turn=x") is None and SM.holder_pidns(None) is None
+    assert SM.foreign_pidns("pid=12:pidns=999999:turn=x") is True
+    assert SM.foreign_pidns(f"pid=12:pidns={own_pidns()}:turn=x") is False
 
 
 def test_a_managed_unit_becomes_attributable_to_its_profile(world):

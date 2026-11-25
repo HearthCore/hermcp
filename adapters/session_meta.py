@@ -155,6 +155,33 @@ def holder_pid(holder: Any) -> int | None:
     return None
 
 
+def holder_pidns(holder: Any) -> str | None:
+    """The pid namespace a lease holder recorded (`pid=…:pidns=4026533254:…`), digits only."""
+    if not isinstance(holder, str):
+        return None
+    for part in holder.split(":"):
+        if part.startswith("pidns=") and part[6:].isdigit():
+            return part[6:]
+    return None
+
+
+def self_pidns() -> str | None:
+    """Our own pid namespace inode (`/proc/self/ns/pid` links to `pid:[4026533254]`), or None.
+
+    Read with `readlink`: the namespace file itself is not readable (EINVAL), only its target name is.
+    """
+    try:
+        return os.readlink("/proc/self/ns/pid").strip()
+    except OSError:
+        return None
+
+
+def foreign_pidns(holder: Any) -> bool:
+    """True when the lease ran in a pid namespace we are not in -- then its pid numbers mean nothing here."""
+    theirs, ours = holder_pidns(holder), self_pidns()
+    return bool(theirs and ours and not ours.endswith(f"[{theirs}]"))
+
+
 def blank() -> dict[str, Any]:
     """The four fields, all None: the stable shape every list entry carries."""
     return dict.fromkeys(FIELDS)
@@ -344,7 +371,8 @@ class Resolver:
         started no later than the lease was taken -- a reused pid would have started *after* it, which is
         exactly the mix-up this guards against. `False` is a contradiction (another pid, the process is
         gone, or it started after the lease), `None` means "cannot be checked" (no lease, no `/proc`, no
-        pid). It is never a guess, and an unflagged `True` is never handed out on a hunch.
+        pid, or a lease from a pid namespace we are not in -- there the pid numbers mean nothing). It is
+        never a guess, and a `True` is never handed out on a hunch.
         """
         lease = self._lease_of(profile, session_id)
         leased = holder_pid((lease or {}).get("holder"))
@@ -358,7 +386,9 @@ class Resolver:
             return False
         exists, started = proc_started_at(given)
         if not exists:
-            return False
+            # a pid we cannot see: gone in our namespace, or a namespace we do not share. In the second
+            # case the number means nothing here, so the answer is "cannot check", not "contradiction".
+            return None if foreign_pidns((lease or {}).get("holder")) else False
         acquired = (lease or {}).get("acquired_at")
         if started is None or not isinstance(acquired, (int, float)):
             return None

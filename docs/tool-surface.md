@@ -182,8 +182,9 @@ Two more fields say how much of that is proven:
 - `pid_verified` — `true` only with positive evidence: the session's turn lease names the same pid **and**
   that process started no later than the lease was taken. `false` is a contradiction (the lease names
   another pid, the process is gone, or it started later — a reused pid). `null` means it cannot be checked
-  (no lease, no `/proc`, no pid). The session fields never depend on the pid: a reused pid cannot point a
-  row at the wrong session, it can only make `pid_verified` false.
+  (no lease, no `/proc`, no pid, or a lease recorded in another pid namespace). The session fields never
+  depend on the pid: a reused pid cannot point a row at the wrong session, it can only make `pid_verified`
+  false.
 
 What the gateway does **not** give, and hermcp therefore cannot show: a language model or tool for a
 managed unit, an elapsed time per unit, and any per-unit detail for `kind=api` / `kind=deferred` (they are
