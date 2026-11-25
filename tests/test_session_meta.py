@@ -8,7 +8,10 @@ What is held down here:
   very next call (nothing is cached across calls);
 * sessions, runs and agents of other clients/agents are listed too -- reading them is normal, the answer
   says who started the work instead of hiding it;
-* `hermes_health` stays the short counters-only answer (the documented exception).
+* `hermes_health` stays the short counters-only answer (the documented exception);
+* a managed unit (kanban / admission worker, `kind=managed`) carries the id of the session it runs, so
+  it is resolved too -- and a pid is only believed when the session's turn lease and the process start
+  time agree, never because the pid happens to be in the answer.
 
 The gateway is faked with a real unix socket, the sessions with a real (if minimal) `state.db`: socket
 paths are limited to ~108 bytes, so the HERMES_HOME lives in a short temp dir.
@@ -62,6 +65,19 @@ def set_title(home: Path, profile: str, session_id: str, title: str) -> None:
     path = (home if profile == "default" else home / "profiles" / profile) / "state.db"
     db = sqlite3.connect(path)
     db.execute("UPDATE sessions SET title=? WHERE id=?", (title, session_id))
+    db.commit()
+    db.close()
+
+
+def make_lease(home: Path, profile: str, session_id: str, pid: int, acquired_at: float) -> None:
+    """A `session_turn_leases` row: the pid running that session's turn, and when it took the lease."""
+    path = (home if profile == "default" else home / "profiles" / profile) / "state.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE IF NOT EXISTS session_turn_leases (conversation_id TEXT PRIMARY KEY, "
+               "holder TEXT NOT NULL, acquired_at REAL NOT NULL, expires_at REAL NOT NULL)")
+    holder = f"pid={pid}:pidns=1:turn={session_id}:token=abc:platform=kanban"
+    db.execute("INSERT OR REPLACE INTO session_turn_leases VALUES (?,?,?,?)",
+               (session_id, holder, acquired_at, acquired_at + 600))
     db.commit()
     db.close()
 
@@ -318,3 +334,151 @@ def test_hermes_health_stays_the_short_counters_answer(app, world):
         assert "gateway" in result and "reachable_profiles" in result
     finally:
         gw.close()
+
+
+# ---------------------------------------------------------------------------
+# managed units: the gateway names a session id, not a chat key
+# ---------------------------------------------------------------------------
+SID_KANBAN = "local-" + "a1" * 32     # local-<64 hex>, the shape the gateway uses for a managed unit
+SID_OTHER = "local-" + "b2" * 32
+
+
+def snapshot_of(world, *entries, allowed_profiles=None):
+    """One `agents_live` answer from a fake gateway that reports exactly these units."""
+    (world / "gateway.sock").unlink(missing_ok=True)      # one fake gateway at a time on the same home
+    gw = FakeGateway(world, agents(*entries))
+    try:
+        return AW.snapshot(allowed_profiles=allowed_profiles,
+                           settings=load_settings({"HERMES_HOME": str(world)}))
+    finally:
+        gw.close()
+
+
+def test_a_chat_key_is_never_read_as_a_session_id():
+    assert SM.gateway_session_id(KEY_DEFAULT) is None
+    assert SM.gateway_session_id(SID_KANBAN) == SID_KANBAN
+    assert SM.gateway_session_id("local-abc") is None      # too short: not a session id
+    assert SM.gateway_session_id(None) is None and SM.gateway_session_id({"a": 1}) is None
+
+
+def test_a_managed_unit_is_resolved_from_the_session_id_the_gateway_names(world):
+    make_db(world, "media-agent", [(SID_KANBAN, "Serie verkleinern", "kanban", None, 1000.0, None)])
+    row = snapshot_of(world, {"kind": "managed", "session": SID_KANBAN, "pid": 1234, "elapsed_s": 30.0})["agents"][0]
+    assert row["kind"] == "managed" and row["pid"] == 1234
+    assert row["session_id"] == SID_KANBAN
+    assert row["profile"] == "media-agent"                 # read in that profile's database, not guessed
+    assert row["session_title"] == "Serie verkleinern"
+    assert row["started_by"] == "kanban"                   # the door the session came through
+    assert row["resolution_source"] == SM.RESOLVED
+    assert row["pid_verified"] is None                     # nothing to check it against: not claimed
+
+
+def test_a_managed_entry_without_a_session_id_stays_null(world):
+    row = snapshot_of(world, {"kind": "managed", "pid": 4321})["agents"][0]
+    for name in SM.FIELDS:
+        assert row[name] is None
+    assert row["resolution_source"] == SM.UNRESOLVED and row["pid_verified"] is None
+
+
+def test_an_unknown_managed_session_id_is_reported_not_invented(world):
+    unknown = "local-" + "c3" * 32
+    row = snapshot_of(world, {"kind": "managed", "session": unknown, "pid": 1})["agents"][0]
+    assert row["session_id"] == unknown
+    assert row["profile"] is None and row["session_title"] is None and row["started_by"] is None
+    assert row["resolution_source"] == SM.UNKNOWN_SESSION and row["pid_verified"] is None
+
+
+def test_the_pid_is_verified_against_the_lease_and_the_process_start(world, monkeypatch):
+    make_db(world, "default", [(SID_KANBAN, "Kanban-Arbeit", "kanban", None, 1000.0, None)])
+    make_lease(world, "default", SID_KANBAN, 5000, 1010.0)
+    # the process took the lease at 1010 and started at 1005: it is that process
+    monkeypatch.setattr(SM, "proc_started_at", lambda pid: (True, 1005.0))
+    row = snapshot_of(world, {"kind": "managed", "session": SID_KANBAN, "pid": 5000})["agents"][0]
+    assert row["pid_verified"] is True and row["session_title"] == "Kanban-Arbeit"
+
+
+def test_a_reused_pid_is_not_believed_even_when_the_unit_names_it(world, monkeypatch):
+    make_db(world, "default", [(SID_KANBAN, "Kanban-Arbeit", "kanban", None, 1000.0, None)])
+    make_lease(world, "default", SID_KANBAN, 5000, 1010.0)
+    # pid 5000 exists, but the process behind it started at 9000 -- long after the lease: reused
+    monkeypatch.setattr(SM, "proc_started_at", lambda pid: (True, 9000.0))
+    row = snapshot_of(world, {"kind": "managed", "session": SID_KANBAN, "pid": 5000})["agents"][0]
+    assert row["pid_verified"] is False
+    # the session context still comes from the id the gateway named, not from the pid
+    assert row["session_title"] == "Kanban-Arbeit" and row["profile"] == "default"
+
+
+def test_a_pid_the_lease_gives_to_another_session_is_a_contradiction(world, monkeypatch):
+    make_db(world, "default", [(SID_KANBAN, "Kanban-Arbeit", "kanban", None, 1000.0, None)])
+    make_db(world, "researcher", [(SID_OTHER, "Fremde Arbeit", "kanban", None, 1000.0, None)])
+    make_lease(world, "default", SID_KANBAN, 5000, 1010.0)
+    make_lease(world, "researcher", SID_OTHER, 6000, 1010.0)
+    monkeypatch.setattr(SM, "proc_started_at", lambda pid: (True, 1005.0))
+    rows = snapshot_of(world,
+                       {"kind": "managed", "session": SID_KANBAN, "pid": 6000},     # lease says 6000 runs SID_OTHER
+                       {"kind": "managed", "session": SID_OTHER, "pid": 6000})["agents"]
+    assert rows[0]["session_title"] == "Kanban-Arbeit" and rows[0]["profile"] == "default"
+    assert rows[0]["pid_verified"] is False
+    assert rows[1]["session_title"] == "Fremde Arbeit" and rows[1]["profile"] == "researcher"
+    assert rows[1]["pid_verified"] is True
+    # never a mixed pair: no row carries one session's title with the other's profile
+    assert {(r["profile"], r["session_title"]) for r in rows} == {
+        ("default", "Kanban-Arbeit"), ("researcher", "Fremde Arbeit")}
+
+
+def test_a_gone_process_is_a_contradiction_not_a_silent_match(world, monkeypatch):
+    make_db(world, "default", [(SID_KANBAN, "Kanban-Arbeit", "kanban", None, 1000.0, None)])
+    make_lease(world, "default", SID_KANBAN, 5000, 1010.0)
+    monkeypatch.setattr(SM, "proc_started_at", lambda pid: (False, None))     # that pid no longer exists
+    row = snapshot_of(world, {"kind": "managed", "session": SID_KANBAN, "pid": 5000})["agents"][0]
+    assert row["pid_verified"] is False and row["session_title"] == "Kanban-Arbeit"
+
+
+def test_a_managed_unit_becomes_attributable_to_its_profile(world):
+    """Before, a profile-scoped key saw no managed unit at all: the gateway names no profile for them."""
+    make_db(world, "researcher", [(SID_OTHER, "Fremde Arbeit", "kanban", None, 1000.0, None)])
+    mine = snapshot_of(world, {"kind": "managed", "session": SID_OTHER, "pid": 1},
+                       allowed_profiles={"researcher"})
+    assert [r["profile"] for r in mine["agents"]] == ["researcher"] and mine["hidden"] == 0
+    foreign = snapshot_of(world, {"kind": "managed", "session": SID_OTHER, "pid": 1},
+                         allowed_profiles={"default"})
+    assert foreign["agents"] == [] and foreign["hidden"] == 1
+
+
+def test_the_managed_list_costs_the_profiles_not_the_units(world, monkeypatch):
+    """One query per profile for sessions and one for leases -- the count must not follow the row count."""
+    make_db(world, "media-agent", [(SID_KANBAN, "Serie verkleinern", "kanban", None, 1000.0, None)])
+    make_db(world, "researcher", [(SID_OTHER, "Fremde Arbeit", "kanban", None, 1000.0, None)])
+    opened: list[str | None] = []
+    real = SM._connect
+
+    def counting(profile):
+        opened.append(profile)
+        return real(profile)
+
+    monkeypatch.setattr(SM, "_connect", counting)
+    meta = SM.Resolver(load_settings({"HERMES_HOME": str(world)}))
+    meta.prime_managed([SID_KANBAN, SID_OTHER, "local-" + "d4" * 32, None, KEY_DEFAULT])
+    assert len(opened) <= 2 * len(meta.profiles())      # sessions + leases, per profile -- never per unit
+    row = meta.managed({}, session_id=SID_KANBAN, pid=None)
+    assert row["profile"] == "media-agent" and row["session_title"] == "Serie verkleinern"
+    assert len(opened) <= 2 * len(meta.profiles())      # the primed lookup opens nothing on top
+
+
+def test_agents_live_shows_managed_units_with_context(app, world):
+    make_db(world, "default", [(SID_KANBAN, "Kanban-Arbeit", "kanban", None, 1000.0, None)])
+    make_lease(world, "default", SID_KANBAN, 5000, 1010.0)
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(SM, "proc_started_at", lambda pid: (True, 1005.0))
+    gw = FakeGateway(world, agents({"kind": "managed", "session": SID_KANBAN, "pid": 5000}))
+    try:
+        r = call(app, "agents_live")
+        assert r["ok"], r
+        row = r["result"]["agents"][0]
+        assert row["profile"] == "default" and row["session_id"] == SID_KANBAN
+        assert row["session_title"] == "Kanban-Arbeit" and row["started_by"] == "kanban"
+        assert row["resolution_source"] == SM.RESOLVED and row["pid_verified"] is True
+    finally:
+        gw.close()
+        monkey.undo()
+

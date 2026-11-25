@@ -11,7 +11,8 @@ line in, one JSON line out, then the server closes; no token, the 0600 socket fi
 Every entry has `kind` (chat | cron | delegation | managed | api | deferred | side_agent); chat entries add
 `session` (key `agent:<profile>:<platform>:<chat_type>:<id>`), `pid`, `elapsed_s`, `model`, `current_tool`, `idle_s`;
 cron entries `job_id`, `elapsed_s`, `pid`, `external`, `wedged`, `restart_safe`; delegation entries a `goal` (cut to
-80 chars by Hermes). managed / api / deferred carry only kind and pid.
+80 chars by Hermes). managed entries add `session` -- the **id** of the session the unit runs (`local-<hex>`, no
+chat identity) -- and `pid`; api / deferred carry only kind and pid.
 
 Nothing here writes, and nothing raises: no socket, a socket of another user, a busy gateway or a malformed
 answer all yield None, and the caller falls back to the plain count from the state file. Session keys contain chat
@@ -126,6 +127,11 @@ def shape(entry: Any) -> dict[str, Any]:
         row.update(profile=s["profile"], source=s["source"], session_ref=s["ref"])
         if s["run_id"]:
             row["run_id"] = s["run_id"]
+        sid = session_meta.gateway_session_id(e.get("session"))
+        if sid:
+            # a managed unit names the id of the session it runs, not a chat key: that id is the one piece
+            # of context the gateway does hand out, so it is kept (the resolver adds profile/title/door)
+            row["session_id"] = sid[:120]
     if kind == "cron":
         row["job_id"] = _text(e.get("job_id"))
         row["source"] = "cron"
@@ -163,10 +169,15 @@ def snapshot(allowed_profiles: set[str] | None = None, profile: str | None = Non
     rows = [shape(e) for e in res["active_work"]]
     if resolve:
         meta = session_meta.Resolver(settings)
-        for entry, row in zip(res["active_work"], rows):
-            e = entry if isinstance(entry, dict) else {}
-            meta.enrich(row, session_key=e.get("session") if isinstance(e.get("session"), str) else None,
-                        run_id=row.get("run_id"))
+        pairs = [(e if isinstance(e, dict) else {}, row) for e, row in zip(res["active_work"], rows)]
+        # one pass over the profile homes for the whole list: a managed unit names its session, not its profile
+        meta.prime_managed([e.get("session") for e, row in pairs if row.get("kind") == "managed"])
+        for e, row in pairs:
+            if row.get("kind") == "managed":
+                meta.managed(row, session_id=e.get("session"), pid=row.get("pid"))
+            else:
+                meta.enrich(row, session_key=e.get("session") if isinstance(e.get("session"), str) else None,
+                            run_id=row.get("run_id"))
     total = res.get("active_agents") if isinstance(res.get("active_agents"), int) else len(rows)
     hidden = 0
     if allowed_profiles is not None:
@@ -188,7 +199,8 @@ def snapshot(allowed_profiles: set[str] | None = None, profile: str | None = Non
         "unlisted": unlisted,
         "note": ("`idle_s` is the time since the agent last reported progress; a high value on a running agent means "
                  "no progress signal, not necessarily a problem. Entries of kind api / managed / deferred carry no "
-                 "session detail from the gateway."),
+                 "session detail from the gateway; a managed unit names only the session id it runs, which is looked "
+                 "up in the session databases -- `resolution_source` and `pid_verified` say how far that went."),
     }
     if allowed_profiles is not None:
         out["scoped_to"] = sorted(allowed_profiles)

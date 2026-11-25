@@ -161,6 +161,34 @@ request, so a session renamed in the database shows the new title in the very ne
 clients' and agents' sessions and runs is normal and stays read-only: what a key may see is decided by its
 profile scope, not by who started the work.
 
+#### Managed units
+
+A managed unit (`kind=managed`: a kanban or admission worker) is started by Hermes itself, so the gateway
+names no chat key for it — only the **id of the session it runs** (`local-<hex>`) and its pid. hermcp turns
+that id into the same four fields:
+
+| field | for a managed unit |
+|---|---|
+| `session_id` | the id the gateway named (`sessions.id`) |
+| `profile` | the home whose `state.db` holds that session — read, not guessed |
+| `session_title` | live from that database, as everywhere else |
+| `started_by` | the door the session came through (`kanban`, `cli`, `cron`, ...) |
+
+Two more fields say how much of that is proven:
+
+- `resolution_source` — `gateway-session-id` (the gateway named a session and a profile database answered),
+  `gateway-session-id-unknown` (named, but no profile database knows that id) or `none` (the gateway named
+  no session id at all, e.g. an older Hermes). The four fields are `null` in the last two cases.
+- `pid_verified` — `true` only with positive evidence: the session's turn lease names the same pid **and**
+  that process started no later than the lease was taken. `false` is a contradiction (the lease names
+  another pid, the process is gone, or it started later — a reused pid). `null` means it cannot be checked
+  (no lease, no `/proc`, no pid). The session fields never depend on the pid: a reused pid cannot point a
+  row at the wrong session, it can only make `pid_verified` false.
+
+What the gateway does **not** give, and hermcp therefore cannot show: a language model or tool for a
+managed unit, an elapsed time per unit, and any per-unit detail for `kind=api` / `kind=deferred` (they are
+bare counters in the gateway's `active-work` answer). Those stay `null`.
+
 ### Cron model routing
 
 `cron_list` / `cron_show` carry a `route` per job: `pinned` (true when the job has its own provider, model or base_url),
@@ -237,7 +265,8 @@ path per run and remove the heuristic. This plugin deliberately does not patch H
 - `chat_run_steer` / `chat_run_cancel` / `chat_session_queue` — change a running run instead of queueing a new one; see [Steering, cancelling and replacing runs](inbox-and-runs.md#steering-cancelling-and-replacing-runs).
 
 - `agents_live` — read. Which agents are running, in one call: one row per unit of work in the gateway (chat turns from
-  Telegram / e-mail / webhook / API, cron jobs, delegations) with `kind`, `profile`, `source`, `elapsed_s`, `idle_s`,
+  Telegram / e-mail / webhook / API, cron jobs, delegations, managed kanban/admission workers) with `kind`, `profile`,
+  `source`, `session_id`, `session_title`, `started_by`, `elapsed_s`, `idle_s`,
   `model`, `current_tool`, `restart_safe` for cron, plus totals (`by_kind`, `by_profile`, `unlisted`). `hermes_health`
   only gives the number `active_agents`. hermcp asks the gateway's local control socket (`gateway.sock`, verb
   `active-work`, read-only, 2 s timeout); without it the answer is `available: false` and the plain count stays in
