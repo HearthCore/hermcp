@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from ..adapters.inbox_store import (is_reserved_kind, MAX_KIND, MAX_REF, MAX_SOURCE, MAX_SUMMARY, NOTICE, SEVERITIES, TOKEN_RE,
                                     get_inbox)
 from ..adapters import session_queue
+from ..adapters import session_meta
 from ..client_id import clean_handle
 from ..registry import ToolError
 from . import reg
@@ -219,23 +220,28 @@ def _iso(epoch):
           description="Runs started with chat_send that are still going: run_id, profile, start time, age, last known "
                       "status and a coarse activity label (queued, thinking, running a tool, between tools, "
                       "waiting for approval, ...) with its age as idle_seconds. Activity is a fixed label, never "
-                      "content. Only runs of your own key are listed (admin keys may pass all_keys). Read the "
-                      "result of a run with chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway's own "
-                      "progress tracking when it lists the run (`gateway_detail: true`); otherwise only the watcher's coarse "
-                      "label is known. Without client_session the answer carries `session_overview`: the sessions of this "
-                      "key, the runs nobody claimed and how to take over or claim (session_card_set). With your handle "
-                      "your own runs are marked `yours`. A run started under a registered session also carries "
-                      "`session`: client, kind and purpose of that session in plain words (`label`).",
-          properties={"all_keys": {"type": "boolean", "default": False,
-                                   "description": "Admin keys only: include runs started by other keys"},
+                      "content. Every run carries the standard session fields (session_id, profile, session_title, "
+                      "started_by): the session with its live title and the client or key that started the run. "
+                      "Runs of other keys and clients are listed too (read-only); `own_only=true` narrows it to your "
+                      "key. Read a run's result with chat_run_status. idle_seconds, running_seconds and "
+                      "current_tool come from the gateway's progress tracking when it lists the run "
+                      "(`gateway_detail: true`), else only the watcher's coarse label is known. Without "
+                      "client_session the answer carries `session_overview`: this key's sessions, the runs nobody "
+                      "claimed and how to take over or claim (session_card_set); with your handle your own runs are "
+                      "marked `yours`. A run started under a registered session also carries `session`: client, kind "
+                      "and purpose in plain words (`label`).",
+          properties={"own_only": {"type": "boolean", "default": False,
+                                   "description": "Only runs started with your own key (default: all keys, read-only)"},
+                      "all_keys": {"type": "boolean", "default": False,
+                                   "description": "Deprecated: listing every key's runs is the default now; kept so "
+                                                  "older clients keep working"},
                       "client_session": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,80}$",
                                          "description": "Your session handle (session_card_set): marks your runs "
                                                         "`yours` and drops the session_overview"}})
-def runs_active(ctx, all_keys=False, client_session=None):
-    if all_keys and ctx.principal.scopes.access != "admin":
-        raise ToolError("forbidden", "all_keys needs access=admin")
+def runs_active(ctx, all_keys=False, client_session=None, own_only=False):
     now = time.time()
-    rows = get_inbox(ctx.settings).running(key_id=None if all_keys else ctx.principal.id, now=now)
+    own = ctx.principal.id if (own_only and not all_keys) else None
+    rows = get_inbox(ctx.settings).running(key_id=own, now=now)
     if ctx.restricted:
         rows = [r for r in rows if ctx.own(r["profile"])]
     runs = [{"run_id": r["run_id"], "profile": r["profile"], "session_id": r["session_id"],
@@ -247,18 +253,20 @@ def runs_active(ctx, all_keys=False, client_session=None):
              **({"client": r["client"]} if r.get("client") else {}),
              **({"client_session": r["client_session"]} if r.get("client_session") else {}),
              **({"steered": r["steer_count"]} if r.get("steer_count") else {}),
-             **({"control": r["control"]} if r.get("control") else {}),
-             **({"started_by": r["key_name"]} if all_keys else {})} for r in rows]
+             **({"control": r["control"]} if r.get("control") else {})} for r in rows]
     _queue_positions(runs)
     _gateway_progress(ctx, runs)
-    briefs = get_inbox(ctx.settings).run_sessions([r["run_id"] for r in runs],
-                                                  key_id=None if all_keys else ctx.principal.id)
+    briefs = get_inbox(ctx.settings).run_sessions([r["run_id"] for r in runs])
+    meta = session_meta.Resolver(ctx.settings)
+    for profile in {r["profile"] for r in runs if r.get("profile")}:      # one read per profile, not per run
+        meta.prime(profile, [r["session_id"] for r in runs if r.get("profile") == profile])
     for r in runs:
         r.pop("_started", None)
         if r["run_id"] in briefs:
             r["session"] = briefs[r["run_id"]]
         if client_session and r.get("client_session") == client_session:
             r["yours"] = True
+        meta.enrich(r, session_id=r["session_id"], run_id=r["run_id"])
     out = {"count": len(runs), "runs": runs,
             "note": "idle_seconds = seconds since the gateway last reported anything for the run; a high value "
                     "on a running run means no progress signal, not necessarily a problem. queue_position: 0 = "

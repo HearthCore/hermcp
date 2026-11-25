@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ..settings import hermes_home
+from . import session_meta
 
 PROTOCOL = 1
 SOCKET_NAME = "gateway.sock"
@@ -147,17 +148,25 @@ def shape(entry: Any) -> dict[str, Any]:
 
 
 def snapshot(allowed_profiles: set[str] | None = None, profile: str | None = None, home: Path | None = None,
-             timeout: float = TIMEOUT_S) -> dict[str, Any]:
+             timeout: float = TIMEOUT_S, settings=None, resolve: bool = True) -> dict[str, Any]:
     """The full answer of `agents_live` (also the restart preview).
 
     allowed_profiles: a profile-restricted key sees only rows it can attribute to one of its profiles; the rest is
-    counted in `hidden`. profile: ask the gateway for one profile's work only."""
+    counted in `hidden`. profile: ask the gateway for one profile's work only. Every row carries the standard
+    session fields (session_id, profile, session_title, started_by); `settings` lets the resolver read the
+    run watch records too, without it only the session database is asked."""
     res = query(profile=profile, home=home, timeout=timeout)
     if res is None:
         return {"available": False, "source": "none", "complete": False, "count": None, "agents": [],
                 "reason": "gateway control socket not reachable (no gateway.sock, foreign owner, busy gateway or an "
                           "older Hermes); only the number `active_agents` in hermes_health is known"}
     rows = [shape(e) for e in res["active_work"]]
+    if resolve:
+        meta = session_meta.Resolver(settings)
+        for entry, row in zip(res["active_work"], rows):
+            e = entry if isinstance(entry, dict) else {}
+            meta.enrich(row, session_key=e.get("session") if isinstance(e.get("session"), str) else None,
+                        run_id=row.get("run_id"))
     total = res.get("active_agents") if isinstance(res.get("active_agents"), int) else len(rows)
     hidden = 0
     if allowed_profiles is not None:
@@ -189,9 +198,10 @@ def snapshot(allowed_profiles: set[str] | None = None, profile: str | None = Non
     return out
 
 
-def restart_preview(allowed_profiles: set[str] | None = None, home: Path | None = None) -> dict[str, Any]:
+def restart_preview(allowed_profiles: set[str] | None = None, home: Path | None = None,
+                    settings=None) -> dict[str, Any]:
     """Compact block for the plan of a restart: who would be cut off, and whether it is knowable at all."""
-    snap = snapshot(allowed_profiles=allowed_profiles, home=home)
+    snap = snapshot(allowed_profiles=allowed_profiles, home=home, settings=settings)
     if not snap["available"]:
         return {"available": False, "reason": snap["reason"]}
     agents = snap["agents"]

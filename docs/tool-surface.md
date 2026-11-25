@@ -139,6 +139,28 @@ cleaning), the audit log (own redaction) and the name-only secret tools (`secret
 recognised; no pattern can find it without destroying normal output. Hermes' own masker (head+tail, last key segment
 only) is not used for output.
 
+### Session fields on every list entry
+
+Every tool that lists single work items names the same four fields, in addition to its own vocabulary
+(`agents_live`, `runs_active`, `sessions_list`, and the Ledger's session and run lists):
+
+| field | meaning |
+|---|---|
+| `session_id` | the Hermes conversation (`state.db` `sessions.id`) — an id, never a chat identity |
+| `profile` | the profile the session belongs to |
+| `session_title` | the session's title |
+| `started_by` | the client or external agent that started it (a hermcp key such as `claude-ai-cloud`, otherwise the door: `telegram`, `cli`, `api_server`, `cron`, ...) |
+
+They are standard, no opt-in parameter; a value nobody knows is `null`, never missing, so the shape of a
+row does not change with the data. `hermes_health` and the other count/overview answers stay as short as
+before — they are the documented exception.
+
+One resolver (`hermcp/adapters/session_meta.py`) produces them. It reads the title **live** from the
+profile's `state.db` on every request (sqlite `mode=ro`) and only remembers it for the lifetime of that one
+request, so a session renamed in the database shows the new title in the very next call. Reading other
+clients' and agents' sessions and runs is normal and stays read-only: what a key may see is decided by its
+profile scope, not by who started the work.
+
 ### Cron model routing
 
 `cron_list` / `cron_show` carry a `route` per job: `pinned` (true when the job has its own provider, model or base_url),
@@ -211,7 +233,7 @@ path per run and remove the heuristic. This plugin deliberately does not patch H
   session id; chat or voice any stable label). hermcp stores it with the run and in the audit log, next to a `client`
   label derived from the request headers (`x-anthropic-client`, else the User-Agent), and `runs_active` shows both.
   Attribution only, never access control, and unrelated to the Hermes `session_id`.
-- `runs_active` — runs of your key that are still going, with age, status, a coarse `activity`, `idle_seconds` and `queue_position` / `queue_length` in its session.
+- `runs_active` — runs that are still going, with age, status, a coarse `activity`, `idle_seconds` and `queue_position` / `queue_length` in its session. Runs of every key are listed (read-only: whoever asks may see what is going on); `own_only=true` narrows it to the caller's key.
 - `chat_run_steer` / `chat_run_cancel` / `chat_session_queue` — change a running run instead of queueing a new one; see [Steering, cancelling and replacing runs](inbox-and-runs.md#steering-cancelling-and-replacing-runs).
 
 - `agents_live` — read. Which agents are running, in one call: one row per unit of work in the gateway (chat turns from

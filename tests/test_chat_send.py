@@ -414,16 +414,18 @@ def test_runs_active_lists_own_running_runs_with_activity(rig):
     box = get_inbox(rig.app.settings)
     box.set_activity(a["run_id"], "running a tool", time.time() - 7)
     box.update_watch(a["run_id"], last_status="running")
+    # every key's runs are listed (read-only): answering "what is going on" is not limited to own work
     ok, r = rig.call(t, "runs_active")
-    assert ok and r["count"] == 1
-    run = r["runs"][0]
-    assert run["run_id"] == a["run_id"] and run["profile"] == "default" and run["status"] == "running"
+    assert ok and r["count"] == 2
+    run = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
+    assert run["profile"] == "default" and run["status"] == "running"
     assert run["activity"] == "running a tool" and 5 <= run["idle_seconds"] <= 12 and run["age_seconds"] >= 0
-    assert run["started_at"].endswith("Z") and run["activity_at"].endswith("Z") and "started_by" not in run
-    ok, e = rig.call(t, "runs_active", all_keys=True)
-    assert not ok and e["code"] == "forbidden"
-    admin = rig.tok("root", access="admin")
-    ok, r = rig.call(admin, "runs_active", all_keys=True)
+    assert run["started_at"].endswith("Z") and run["activity_at"].endswith("Z")
+    assert {x["started_by"] for x in r["runs"]} == {"claude", "other"}
+    # own_only narrows it back to this key; all_keys is the old spelling of the default and stays accepted
+    ok, mine = rig.call(t, "runs_active", own_only=True)
+    assert ok and mine["count"] == 1 and mine["runs"][0]["run_id"] == a["run_id"]
+    ok, r = rig.call(t, "runs_active", all_keys=True)
     assert ok and r["count"] == 2 and {x["started_by"] for x in r["runs"]} == {"claude", "other"}
 
 
