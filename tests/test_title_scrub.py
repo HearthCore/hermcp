@@ -167,7 +167,7 @@ def test_a_backup_taken_while_another_connection_writes_is_consistent(home):
 
     thread = threading.Thread(target=keep_writing, daemon=True)
     thread.start()
-    counts = []
+    rounds = []
     try:
         for _ in range(3):
             rows_before = progress["rows"]
@@ -176,7 +176,7 @@ def test_a_backup_taken_while_another_connection_writes_is_consistent(home):
             assert progress["error"] is None
             assert target is not None
             snapshot = _rows(target)                             # PRAGMA integrity_check inside
-            counts.append(len(snapshot))
+            rounds.append((rows_before, len(snapshot), rows_after))
             # the count belongs to a point in time between the two reads, not to a torn set
             assert rows_before <= len(snapshot) <= rows_after, (rows_before, len(snapshot), rows_after)
             by_id = dict((row[0], row[1]) for row in snapshot)
@@ -187,9 +187,11 @@ def test_a_backup_taken_while_another_connection_writes_is_consistent(home):
         stop.set()
         thread.join(timeout=10)
         writer.close()
-    # the three snapshots were taken while the writer was actually committing, not on an idle file
-    assert progress["rows"] > 10, progress["rows"]
-    assert counts == sorted(counts) and counts[-1] > counts[0], counts
+    # the snapshots were taken while the writer was actually committing, not on an idle file
+    counts = [snapshot for _, snapshot, _ in rounds]
+    assert counts == sorted(counts), counts
+    assert any(after > before for before, _, after in rounds), rounds
+    assert counts[-1] > 1, counts
 
 
 def test_the_snapshot_restores_into_a_working_database(home):
