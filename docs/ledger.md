@@ -78,7 +78,7 @@ own network. It is **not** a way to publish the page: see the guard below.
 |---|---|
 | `GET /ledger/overview` | everything the start page draws (sections fail independently) |
 | `GET /ledger/api/peek?kind=&id=` | the pop-up: `kind` is `session`, `run`, `cron` or `approval`; optional `profile`, `job` |
-| `GET /ledger/api/list?kind=` | `sessions`, `runs`, `approvals` or `cron`; `offset`, `limit`, `status`, `profile`, `surface`, `state`, `job`, `hours`, `q` |
+| `GET /ledger/api/list?kind=` | `sessions`, `runs`, `approvals` or `cron`; `offset`, `limit`, `status`, `profile`, `surface`, `state`, `job`, `agent`, `sort`, `dir`, `hours`, `q` |
 | `GET /ledger/api/session/<id>` | the session full view (optional `profile`) |
 | `GET /ledger/api/gateway` | platform state, versions, profiles, keys without secrets |
 | `GET /ledger/jobs` | the cron job configuration (behind the toggle on the start page) |
@@ -188,7 +188,7 @@ Portfolio. Die Regel ist bewusst klein und stabil:
 | Query | Bedeutung |
 |---|---|
 | `peek=<kind>:<id>` | das Pop-up (`session`, `run`, `cron`, `approval`) |
-| `status`, `profile`, `surface`, `state`, `job`, `hours`, `q` | Filter der Unterseiten |
+| `status`, `profile`, `surface`, `state`, `job`, `agent`, `sort`, `dir`, `hours`, `q` | Filter und Sortierung der Unterseiten |
 | `offset` | Seite im Pager (Vielfaches des Limits) |
 | `more=sessions,runs,cron` | aufgeklappte Listen der Startseite („Mehr anzeigen") |
 | `jobs=1` | Cron-Job-Konfiguration eingeblendet |
@@ -226,6 +226,10 @@ klein:
   Session
 * Fußzeile: „⤢ Vollansicht der Session" (`/ledger/session/<id>`), „↗ In Desktop-App", „↗ In Web-App",
   Hinweis `read-only`
+
+Der „Titel" im Kopf ist das Label aus Struktur (`Tür · Profil · letzte 8 Zeichen der Session-ID`),
+nie der gespeicherte Session-Titel — siehe
+[Warum der Ledger keinen Session-Titel zeigt](#warum-der-ledger-keinen-session-titel-zeigt).
 
 ![Detail-Pop-up einer Session: Symbol, Titel, Art-Chip, vier Eckdaten, drei Aktionen, Fußzeile mit Vollansicht und App-Link](img/ledger-popup.png)
 
@@ -284,7 +288,7 @@ markiert das mit `…`. Ist das Haupt-Template leer, wird der Button gar nicht g
 ## Die Session-Vollansicht
 
 `/ledger/session/<id>` funktioniert für Sessions, für Runs (deren `session_id`) und für Cron-Läufe
-(deren Session) gleichermaßen: Breadcrumb, Titel, ein Stat-Streifen (Zustand, Nachrichten,
+(deren Session) gleichermaßen: Breadcrumb, Titel (das Label aus Struktur, s. o.), ein Stat-Streifen (Zustand, Nachrichten,
 Tool-Aufrufe, Laufzeit, offene Freigaben), links der Verlauf (Zeit, Rolle, Text; Tool-Aufrufe als
 eigene Zeilen, Ergebnisse gekürzt und ausklappbar), rechts Metadaten (Session, Profil, Oberfläche,
 Modell, gestartet, letzte Aktivität, Runs), die Tool-Nutzung als einfache Balken und die Signale
@@ -333,10 +337,67 @@ der Zustand wäre geräteübergreifend. Nicht Teil dieser Version.
 
 Die Zeilen der Session- und Run-Listen tragen bereits die vier Standardfelder jeder Liste
 (`session_id`, `profile`, `session_title`, `started_by`; siehe
-[tool-surface.md](tool-surface.md#session-fields-on-every-list-entry)): der Titel kommt live aus der
-Session-Datenbank, `started_by` nennt den Client bzw. externen Agenten (oder die Tür: `telegram`,
-`cli`, `api_server`, ...). Die Darstellung wertet sie in einem eigenen Schritt aus — dasselbe Feld für
-`/ledger/api/list` und die Tools.
+[tool-surface.md](tool-surface.md#session-fields-on-every-list-entry)). Im Ledger ist
+`session_title` **nicht** der gespeicherte Titel der Session, sondern ein Label aus Struktur — warum,
+steht unter [Warum der Ledger keinen Session-Titel zeigt](#warum-der-ledger-keinen-session-titel-zeigt).
+`started_by` nennt den Client bzw. externen Agenten (oder die Tür: `telegram`, `cli`, `api_server`,
+...). Dasselbe Feld liefert `/ledger/api/list` wie die Tools.
+
+### Warum der Ledger keinen Session-Titel zeigt
+
+Ein Session-Titel ist Freitext: der Titel-Generator nimmt ihn aus dem Gespräch, `sessions_rename`
+aus dem Aufrufer. Bis F7 lief er durch `redact_text` und galt damit als „geschwärzt“ — das ist ein
+Detektor, keine Grenze: ein Titel wie „Passwort im Klartext“ matcht kein Secret-Muster und stand
+wörtlich auf der Seite.
+
+Deshalb zeigt der Ledger Titel **gar nicht** mehr. Er bildet ein Label aus strukturierten Feldern
+(`ledger_page.session_label`):
+
+```
+Desktop · developer · a9c792f6
+```
+
+also Tür (`started_by`, sonst `source`), Profil und die letzten 8 Zeichen der Session-ID — alles
+Werte aus kontrolliertem Vokabular, die nichts über den Inhalt der Session aussagen. Das gilt für
+Startseite, `~/sessions`, `/ledger/api/list`, das Pop-up und die Session-Vollansicht gleichermaßen.
+
+Der Live-Titel bleibt, wo Zugriff ihn regelt: in `sessions_list`/`sessions_meta` (Scopes entscheiden).
+Für Titel, die schon mit Klartext in den Profil-Datenbanken liegen, gibt es den Maintenance-Aufruf
+`hermes hermcp session-titles scrub` (Dry-run per Default, `--apply` schreibt, Backup vorher):
+
+```
+hermes hermcp session-titles scrub                  # was würde ersetzt, in welchem Profil
+hermes hermcp session-titles scrub --apply          # ersetzt, backups unter ~/.hermes/backups/
+```
+
+Der Aufruf gibt nie Titeltexte aus, sondern nur IDs, Grund und Ersatzlabel.
+
+### Sessions: Profil, Label, Client — sortiert und gefiltert
+
+`~/sessions` zeigt je Zeile **Label**, **Profil** und **Client/Agent** (`started_by`); die
+Startseite in Panel 03 ebenso (`Profil · Label`, darunter der Client). Sortiert wird über die
+Spaltenköpfe — jeder Klick auf denselben Kopf dreht die Richtung, ein anderer Kopf startet neu:
+
+| Spalte | `sort=` | Default-Richtung |
+|---|---|---|
+| zuletzt | `last_active` | absteigend (neueste zuerst) |
+| Session (Label) | `title` | aufsteigend |
+| Profil | `profile` | aufsteigend |
+| Client / Agent | `agent` | aufsteigend |
+
+Zeilen ohne Wert für die Sortierspalte (z. B. kein Client bekannt) stehen immer am Ende — in beiden
+Richtungen. Ein unbekannter `sort`- oder `dir`-Wert fällt auf `last_active`/`desc` zurück, statt die
+Seite zu brechen.
+
+Gefiltert wird nach Profil (`profile=`), Client/Agent (`agent=`, teilt sich die Trefferliste mit dem
+Freitext, Groß-/Kleinschreibung egal) und weiterhin nach Status, Oberfläche, Zeitraum und Freitext.
+Die Auswahllisten für Profil und Client kommen **aus dem Payload** (`profiles`, `agents`), nie aus
+einer Liste im Browser — ein Filter kann also keinen Namen erfinden. Ein gewählter Client bleibt
+dabei im Dropdown, auch wenn er durch den eigenen Filter gerade keine Zeile mehr hat.
+
+Label und Client werden mit jeder Abfrage neu gelesen (kein Snapshot); der gespeicherte Titel wird
+gar nicht erst gelesen. Der HTTP-Cache des Ledgers (`HERMCP_LEDGER_CACHE_TTL`, Default 8 s) kann eine
+Änderung um bis zu diese Zeit verzögern — „nächste Abfrage“ heißt: der nächste ungecachte Abruf.
 
 ## Eine Wahrheit für Seite und Tools
 
@@ -407,7 +468,7 @@ seam, not of the buttons. There is no approve, start, stop, retry or config path
 | Session full view | `sessions_get`, `sessions_messages`, inbox run watches and open approvals |
 | Sub-pages (sessions/runs/cron/approvals) | `sessions_list`, `inbox_list` classified with `attention.classify`, `cron_runs`, `approval_detail` |
 | `/ledger/gateway` | `status_gateway`, `hermes_status`, `profiles_list`, `keys_list` (only with an admin view) |
-| Sessions per reachable profile: profile, platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
+| Sessions per reachable profile: profile, title, starting client (`started_by`), platform, derived status, last activity, session id, model, link | `profiles_list`, `sessions_list` |
 | Clients and sessions: sessions grouped by client with kind, purpose, state, last seen and open runs | hermcp's own session cards and run watches (same data as `clients_overview`) |
 | Cron ledger of the last `HERMCP_LEDGER_WINDOW_HOURS` (default 24): job, status, start, duration, delivery outcome, session id, link for agent runs | `cron_runs` |
 | Attention: waiting approvals, open failures, open interruptions (settled failures and decided approvals stay in the tools only) | `inbox_attention` (the shared classification), `cron_runs status=error` |
@@ -478,10 +539,13 @@ Why those shapes:
 
 ## Privacy
 
-- The start page and the list endpoints carry no message bodies and no session titles: profile,
-  surface, state, counts, ids. The **session full view and the pop-up** do show a title and the last
-  messages of the one session a reader opened — that is their purpose, it is a deliberate widening
-  and it stays single-session (no cross-session previews).
+- The page carries no message bodies and no session titles: profile, surface, state, counts, ids, and
+  a label built from structure (`type · profile · last 8 of the id`). The **session full view and the
+  pop-up** show the last messages of the one session a reader opened — that is their purpose, it is a
+  deliberate widening and it stays single-session (no cross-session previews) — but their title is the
+  same structural label, never the stored title (see „Warum der Ledger keinen Session-Titel zeigt").
+  A title is free text and `redact_text` is a detector, not a boundary; titles that already sit in a
+  profile database with a plaintext secret are replaced by `hermes hermcp session-titles scrub`.
 - No `user_id`, no `chat_context`, no approval `request_id` or `session_key` anywhere. The page
   renders every value with `textContent`, never `innerHTML`, so a hostile title or message body is
   data, not markup.

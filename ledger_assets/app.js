@@ -145,7 +145,8 @@ function peekUrl(kind, id, opts){
 }
 
 // Query string for a sub-page list. Empty values are dropped, keys are fixed.
-var LIST_KEYS = ["status", "profile", "surface", "state", "job", "hours", "q", "offset", "limit"];
+var LIST_KEYS = ["status", "profile", "surface", "state", "job", "agent", "sort", "dir",
+                 "hours", "q", "offset", "limit"];
 function listUrl(kind, filters){
   var q = ["kind=" + encodeURIComponent(kind)];
   filters = filters || {};
@@ -163,7 +164,7 @@ function listUrl(kind, filters){
 // further down. Only whitelisted keys ever reach the URL — ids and filters, never content.
 
 var PEEK_KINDS = ["session", "run", "cron", "approval"];
-var FILTER_KEYS = ["status", "profile", "surface", "state", "job", "hours", "q"];
+var FILTER_KEYS = ["status", "profile", "surface", "state", "job", "agent", "sort", "dir", "hours", "q"];
 var URL_ORDER = ["peek"].concat(FILTER_KEYS, ["offset", "more", "jobs"]);
 var ID_RE = /^[A-Za-z0-9_.:-]{1,160}$/;
 var NAME_RE = /^[A-Za-z0-9_.:@-]{1,64}$/;
@@ -307,6 +308,18 @@ function countLabel(n, one, many){
   return n + " " + (n === 1 ? one : many);
 }
 
+// The next sort state after a click on a column header. Clicking the active key flips the
+// direction; a new key starts ascending (except activity, where "newest first" is the default).
+// The server sends its state as {key, dir} and that is what the header hands in; the URL state
+// carries the same pair as {sort, dir}, so both spellings are read here.
+function sortToggle(filters, key){
+  filters = filters || {};
+  var cur = filters.key || filters.sort || "last_active";
+  var dir = filters.dir || (cur === "last_active" ? "desc" : "asc");
+  if(cur === key) return {sort: key, dir: dir === "asc" ? "desc" : "asc"};
+  return {sort: key, dir: key === "last_active" ? "desc" : "asc"};
+}
+
 var HELPERS = {
   DISMISS_KEY: DISMISS_KEY, idOf: idOf, store: store, loadDismissed: loadDismissed,
   saveDismissed: saveDismissed, pruneDismissed: pruneDismissed, splitFailures: splitFailures,
@@ -314,6 +327,7 @@ var HELPERS = {
   sessionPath: sessionPath, peekUrl: peekUrl, listUrl: listUrl, LIST_KEYS: LIST_KEYS,
   parseQuery: parseQuery, parsePeek: parsePeek, buildPeek: buildPeek, readUrlState: readUrlState,
   buildSearch: buildSearch, mergeUrlState: mergeUrlState, URL_ORDER: URL_ORDER, FILTER_KEYS: FILTER_KEYS,
+  sortToggle: sortToggle,
   clock: clock, dayClock: dayClock, ago: ago, dur: dur, tone: tone, symbolFor: symbolFor,
   askLink: askLink, askButtons: askButtons, askUrl: askUrl, copyLinkButton: copyLinkButton,
   truncate: truncate, countLabel: countLabel
@@ -974,20 +988,22 @@ function renderAttention(d){
   var sBody = s.body;
   if(sessions.length){
     var head3 = el("div", "lhead");
-    head3.style.gridTemplateColumns = "1fr 92px 84px 74px";
-    ["Profil / Session", "Plattform", "Status", "zuletzt"].forEach(function(t){ head3.appendChild(el("span", null, t)); });
+    head3.style.gridTemplateColumns = "1fr 118px 84px 74px 70px";
+    ["Profil · Titel", "Client", "Plattform", "Status", "zuletzt"].forEach(function(t){ head3.appendChild(el("span", null, t)); });
     sBody.appendChild(head3);
     sessions.forEach(function(x){
-      var label = (x.profile || "?") + " · " + (x.session_id || "—");
+      var title = x.session_title || x.title || x.session_id || "—";
+      var label = (x.profile || "?") + " · " + title;
       var b = rowButton([
         label,
+        x.started_by || "—",
         x.source || "—",
         "",
         ago(x.last_active) || "—"
-      ], "1fr 92px 84px 74px", function(ev){
+      ], "1fr 118px 84px 74px 70px", function(ev){
         openPeek("session", x.session_id, {profile: x.profile}, ev.currentTarget);
-      }, x.session_id || "");
-      var st = b.children[2];
+      }, label + (x.started_by ? " · " + x.started_by : ""));
+      var st = b.children[3];
       st.textContent = "";
       st.appendChild(el("span", "sym " + tone(x.status), symbolFor(tone(x.status))));
       st.appendChild(document.createTextNode(" " + (x.status || "—")));
@@ -1133,6 +1149,20 @@ function filterBar(kind, options, state, onChange){
     psel.onchange = function(){ onChange("profile", psel.value); };
     field("Profil", psel);
   }
+  if(options.agents && options.agents.length){
+    var asel = el("select");
+    var aall = el("option", null, "alle Clients");
+    aall.value = "";
+    asel.appendChild(aall);
+    options.agents.forEach(function(a){
+      var o = el("option", null, a);
+      o.value = a;
+      if(state.filters.agent === a) o.selected = true;
+      asel.appendChild(o);
+    });
+    asel.onchange = function(){ onChange("agent", asel.value); };
+    field("Client", asel);
+  }
   if(options.surfaces){
     var ssel = el("select");
     var sall = el("option", null, "alle Oberflächen");
@@ -1210,10 +1240,7 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
       holder.textContent = "";
       var err = errorBox(d.errors);
       if(err) holder.appendChild(err);
-      // the profile list comes from the payload, so a filter never invents a profile name
-      opts.options = opts.options || {};
-      if(Array.isArray(d.profiles) && d.profiles.length) opts.options.profiles = d.profiles;
-      holder.appendChild(filterBar(kind, opts.options || {}, listState, function(key, value){
+      function onChange(key, value){
         var mode = key === "q" ? "replace" : "push";     // typing replaces, a choice is a step
         if(key === "__reset"){
           listState.filters = {};
@@ -1227,12 +1254,41 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
           listState.offset = 0;
         }
         loadPage();
-      }));
+      }
+      // the option lists come from the payload, so a filter never invents a profile or a client name
+      opts.options = opts.options || {};
+      if(Array.isArray(d.profiles) && d.profiles.length) opts.options.profiles = d.profiles;
+      if(Array.isArray(d.agents) && d.agents.length) opts.options.agents = d.agents;
+      holder.appendChild(filterBar(kind, opts.options || {}, listState, onChange));
       var p = panel("01", title.toLowerCase(), "api/list?kind=" + kind, {flush: true});
       if(d.items && d.items.length){
+        var sorting = d.sort || {};
         var h = el("div", "lhead");
         h.style.gridTemplateColumns = widths;
-        columns.forEach(function(c){ h.appendChild(el("span", null, c)); });
+        columns.forEach(function(c){
+          var spec = typeof c === "string" ? {label: c} : c;
+          var cell = el("span");
+          if(spec.sort){
+            var b = el("button", "sorthead", spec.label);
+            b.type = "button";
+            b.setAttribute("aria-label", spec.label + " sortieren");
+            if(sorting.key === spec.sort){
+              b.className += " on";
+              b.appendChild(document.createTextNode(sorting.dir === "asc" ? " ↑" : " ↓"));
+            }
+            b.onclick = function(){
+              var next = sortToggle(sorting, spec.sort);
+              syncUrl({filters: {sort: next.sort, dir: next.dir}, offset: 0}, "push");
+              listState.filters = urlState.filters;
+              listState.offset = 0;
+              loadPage();
+            };
+            cell.appendChild(b);
+          } else {
+            cell.textContent = spec.label;
+          }
+          h.appendChild(cell);
+        });
         p.body.appendChild(h);
         d.items.forEach(function(item){ p.body.appendChild(drawRow(item)); });
       } else {
@@ -1261,20 +1317,23 @@ function listPage(title, subtitle, kind, columns, widths, drawRow, opts){
 }
 
 function renderSessions(){
-  listPage("Sessions", "alle Sessions, nach Aktivität", "sessions",
-    ["Session", "Profil", "Oberfläche", "Status", "Nachrichten", "zuletzt"],
-    "1fr 110px 110px 92px 92px 92px",
+  listPage("Sessions", "alle Sessions, nach Aktivität — Profil, Titel und Client sortier- und filterbar", "sessions",
+    [{label: "Session", sort: "title"}, {label: "Profil", sort: "profile"}, {label: "Client / Agent", sort: "agent"},
+     "Oberfläche", "Status", "Nachrichten", {label: "zuletzt", sort: "last_active"}],
+    "1fr 100px 140px 100px 92px 92px 92px",
     function(item){
       return rowButton([
-        item.title || item.session_id || "—",
+        item.session_title || item.title || item.session_id || "—",
         item.profile || "—",
+        item.started_by || "—",
         item.surface || "—",
         item.status || "—",
         item.message_count === null || item.message_count === undefined ? "—" : String(item.message_count),
         ago(item.last_active) || "—"
-      ], "1fr 110px 110px 92px 92px 92px", function(ev){
+      ], "1fr 100px 140px 100px 92px 92px 92px", function(ev){
         openPeek("session", item.session_id, {profile: item.profile}, ev.currentTarget);
-      }, item.title || item.session_id);
+      }, (item.session_title || item.title || item.session_id) +
+         (item.started_by ? " · " + item.started_by : ""));
     },
     {options: {status: ["aktiv", "offen", "beendet"]}});
 }

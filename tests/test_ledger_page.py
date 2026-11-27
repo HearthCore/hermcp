@@ -95,11 +95,12 @@ class FakeRegistry:
         if principal.scopes.access != "read":
             return {"ok": False, "error": {"code": "forbidden", "message": "read only"}}
         if name == "sessions_list":
-            rows = [{"id": "local-abc123", "source": "desktop", "model": "m",
+            rows = [{"id": "local-abc123", "title": "Ledger-Session", "started_by": "claude-ai-cloud",
+                     "source": "desktop", "model": "m",
                      "started_at": NOW - 60, "ended_at": None, "last_active": NOW - 30,
                      "message_count": 4, "preview": "GEHEIMER CHAT-INHALT", "user_id": "u-1",
                      "chat_context": {"x": 1}, "profile_name": args.get("profile")},
-                    {"id": "run_dead", "source": "api_server", "model": "m",
+                    {"id": "run_dead", "title": "API-Session", "source": "api_server", "model": "m",
                      "started_at": NOW - 9000, "ended_at": NOW - 8000, "last_active": NOW - 8000,
                      "message_count": 2, "profile_name": args.get("profile")}]
             rows = rows[:1] if args.get("profile") == "default" else rows[1:]
@@ -246,6 +247,45 @@ def test_sessions_carry_a_desktop_link_and_a_derived_status():
     assert items[0]["status"] == "aktiv"
     assert items[0]["url"] == "https://desktop.example.dev/?profile=default#/local-abc123"
     assert items[1]["status"] == "beendet"
+
+
+def test_sessions_carry_title_and_the_starting_client():
+    """The overview's sessions panel labels a session from structure and says who started it.
+
+    The label is built from the door, the profile and the session id -- the session's free-text title
+    is never shown (see `ledger_page.session_label`).
+    """
+    payload = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)
+    items = payload["sections"]["sessions"]["items"]
+    assert items[0]["session_title"] == LB.session_label("default", "local-abc123", "claude-ai-cloud", "desktop")
+    assert items[0]["title"] == items[0]["session_title"]
+    assert "Ledger-Session" not in json.dumps(items)
+    assert items[0]["started_by"] == "claude-ai-cloud"
+    # a row without a resolver value falls back to the door it came through
+    assert items[1]["started_by"] == "api_server"
+    assert items[1]["title"] == LB.session_label("developer", "run_dead", "api_server", "api_server")
+
+
+def test_the_session_title_in_the_overview_never_shows_free_text():
+    """A title renamed in the database does not reach the page -- and neither does its content."""
+    class Live(FakeRegistry):
+        title = "Ledger-Session"
+
+        def invoke(self, name, args, principal, settings, audit, via=""):
+            res = super().invoke(name, args, principal, settings, audit, via)
+            if name == "sessions_list":
+                for row in res["result"]["sessions"]:
+                    if row["id"] == "local-abc123":
+                        row["title"] = row["session_title"] = self.title
+            return res
+
+    registry = Live()
+    before = LB.build_overview(registry, make_principal(), make_settings(), CONFIG)
+    registry.title = "Passwort im Klartext"
+    after = LB.build_overview(registry, make_principal(), make_settings(), CONFIG)
+    first = after["sections"]["sessions"]["items"][0]
+    assert first["title"] == before["sections"]["sessions"]["items"][0]["title"]
+    assert "Passwort im Klartext" not in json.dumps(after)
 
 
 def test_cron_runs_link_only_agent_runs_with_a_session():
