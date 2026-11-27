@@ -84,7 +84,7 @@ def gateway_restart(ctx, unit="hermes-gateway.service", confirm=False):
     from ..adapters import active_work as AW
     scope = _scope(ctx.settings)
     cmd = " ".join(["systemctl", *_manager_flags(scope), "restart", unit])
-    agents = AW.restart_preview()          # taken BEFORE anything happens: who is running
+    agents = AW.restart_preview(settings=ctx.settings)          # taken BEFORE anything happens: who is running
     if ctx.dry_run or not confirm:
         return ctx.plan(
             f"would run: {cmd}",
@@ -228,7 +228,7 @@ def hermcp_restart(ctx, confirm=False):
                       "_meta.hermcp_older_than_hermes_build == false"}
     if ctx.dry_run or not confirm:
         from ..adapters import active_work as AW
-        prev = AW.restart_preview()
+        prev = AW.restart_preview(settings=ctx.settings)
         base["running_agents"] = ({"available": True, "active_agents": prev["active_agents"],
                                    "by_kind": prev["by_kind"], "by_profile": prev["by_profile"],
                                    "interrupted_by_this_restart": 0,

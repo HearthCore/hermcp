@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from .adapters import attention as AT
+from .adapters import session_meta
 from . import ledger_ask as ASK
 from .adapters.inbox_store import get_inbox
 from .ledger_page import (WINDOW_HOURS_DEFAULT, call, clean, dashboard_url, desktop_url,
@@ -625,6 +626,9 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
                 "message_count": row.get("message_count") if isinstance(row.get("message_count"), int) else None,
                 "tool_call_count": row.get("tool_call_count") if isinstance(row.get("tool_call_count"), int) else None,
                 "model": clean(row.get("model"), 60),
+                # the standard session fields every list entry carries, taken from the same live row
+                "session_title": clean(redacted(row.get("title")), 120),
+                "started_by": clean(row.get("started_by"), 80),
             })
     return rows, errors, capped
 
@@ -697,7 +701,7 @@ def _events(settings, profiles: Optional[List[str]], limit: int = RUNS_FETCH) ->
     return rows, {}
 
 
-def _run_row(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
+def _run_row(event: Dict[str, Any], targets: Dict[str, Any], meta=None) -> Dict[str, Any]:
     bucket = str(event.get("_bucket") or "")
     settled = event.get("settled_reason")
     state = {"waiting": "Freigabe wartet", "attention": "offen", "interrupted": "unterbrochen",
@@ -706,7 +710,7 @@ def _run_row(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
             "settled": "muted", "history": "ok"}.get(bucket, "muted")
     profile = clean(event.get("profile"), 40)
     sid = safe_token(event.get("session_id"))
-    return {
+    row = {
         "id": safe_token(event.get("run_id")) or safe_token(event.get("id")),
         "peek": "run", "kind": "run", "bucket": bucket, "state": state, "tone": tone,
         "symbol": sym(tone),
@@ -719,7 +723,15 @@ def _run_row(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
         "url": build_link(targets, profile or "default", sid),
         "settled_reason": clean(settled, 60),
         "settled_text": AT.settled_text(event) if settled else None,
+        "session_title": None,
+        "started_by": None,
     }
+    if meta is not None:
+        # session title live from the database, started_by from the run's watch record / the session's door
+        meta.enrich(row, profile=profile or None, session_id=sid, run_id=event.get("run_id"))
+        row["session_title"] = clean(redacted(row.get("session_title")), 120)
+        row["started_by"] = clean(row.get("started_by"), 80)
+    return row
 
 
 def _approval_row(event: Dict[str, Any], targets: Dict[str, Any]) -> Dict[str, Any]:
@@ -752,6 +764,9 @@ def list_runs(registry, principal: Principal, settings, hermes_config: Dict[str,
     targets = _links(settings, hermes_config, request_base)
     events, ev_errors = _events(settings, profiles if profiles != ["*"] else None)
     errors.update(ev_errors)
+    meta = session_meta.Resolver(settings)
+    for prof in {e.get("profile") for e in events if e.get("profile")}:
+        meta.prime(prof, [e.get("session_id") for e in events if e.get("profile") == prof])
     want_status = clean(query.get("status"), 20)
     want_profile = clean(query.get("profile"), 40)
     want_surface = clean(query.get("surface"), 30)
@@ -760,7 +775,7 @@ def list_runs(registry, principal: Principal, settings, hermes_config: Dict[str,
     for event in events:
         if event.get("_bucket") not in ("attention", "interrupted", "settled"):
             continue
-        row = _run_row(event, targets)
+        row = _run_row(event, targets, meta)
         if since and (row.get("at") or "") < since:
             continue
         if want_status and row["bucket"] != want_status:

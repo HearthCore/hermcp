@@ -190,7 +190,8 @@ def hermes_status(ctx, consumer=None):
             allr = get_inbox(ctx.settings).running(key_id=None)
             out["runs"]["other_keys"] = max(0, len(allr) - len(mine))
         out["gateway_agents"] = AW.health_digest(
-            AW.snapshot(allowed_profiles=set(ctx.principal.scopes.profiles) if ctx.restricted else None))
+            AW.snapshot(allowed_profiles=set(ctx.principal.scopes.profiles) if ctx.restricted else None,
+                        settings=ctx.settings, resolve=False))     # counts only: no per-row metadata
     except Exception as exc:  # noqa: BLE001
         out["runs"] = {"error": f"{type(exc).__name__}"}
     appr = approvals_overview(ctx, names, info)

@@ -27,8 +27,14 @@ LIST_FIELDS = ("id", "title", "source", "model", "started_at", "ended_at", "last
                "tool_call_count", "archived", "pinned", "preview", "estimated_cost_usd", "chat_type", "profile_name")
 
 
-def brief(row: dict[str, Any]) -> dict[str, Any]:
-    return slim({k: row[k] for k in LIST_FIELDS if k in row}, 160)
+def brief(row: dict[str, Any], profile: str | None = None) -> dict[str, Any]:
+    """One row for `sessions_list`: the tool's own vocabulary plus the standard session fields
+    (session_id, profile, session_title, started_by) every list entry carries.
+
+    No extra read: the title in `row` comes from the query that just ran, so a renamed session shows the
+    new title immediately."""
+    from .session_meta import from_session_row
+    return {**slim({k: row[k] for k in LIST_FIELDS if k in row}, 160), **from_session_row(row, profile)}
 
 
 @contextlib.contextmanager

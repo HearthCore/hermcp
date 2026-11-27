@@ -41,7 +41,7 @@ Regenerate with `python -m hermcp docs-bound-keys` (or `hermcp keys policy` for 
 | `inbox_list` | read | filtered | only run-watcher events of runs on the key's profile(s) |
 | `inbox_poll` | read | filtered | only run-watcher events of runs on the key's profile(s) |
 | `inbox_push` | read | no | producer scope for global events |
-| `runs_active` | read | filtered | only runs of this key on its profile(s) |
+| `runs_active` | read | filtered | runs of every key, only those on the key's profile(s); `own_only` narrows to the key. Free text (`client`, `client_session`, `session_title`, the session card) and what the run is doing (`activity`, `current_tool`) only for the key's own runs and for admin keys, a foreign run carries `started_by` and `redacted: true` with those fields `null` |
 | `kanban_archive` | admin | no | admin |
 | `kanban_assign` | write | filtered | only to the key's own profile (no hand-off to other profiles) |
 | `kanban_assignees` | read | no | lists all profiles with task counts |

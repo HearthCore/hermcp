@@ -414,17 +414,48 @@ def test_runs_active_lists_own_running_runs_with_activity(rig):
     box = get_inbox(rig.app.settings)
     box.set_activity(a["run_id"], "running a tool", time.time() - 7)
     box.update_watch(a["run_id"], last_status="running")
+    # every key's runs are listed (read-only): answering "what is going on" is not limited to own work
     ok, r = rig.call(t, "runs_active")
-    assert ok and r["count"] == 1
-    run = r["runs"][0]
-    assert run["run_id"] == a["run_id"] and run["profile"] == "default" and run["status"] == "running"
+    assert ok and r["count"] == 2
+    run = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
+    assert run["profile"] == "default" and run["status"] == "running"
     assert run["activity"] == "running a tool" and 5 <= run["idle_seconds"] <= 12 and run["age_seconds"] >= 0
-    assert run["started_at"].endswith("Z") and run["activity_at"].endswith("Z") and "started_by" not in run
-    ok, e = rig.call(t, "runs_active", all_keys=True)
-    assert not ok and e["code"] == "forbidden"
-    admin = rig.tok("root", access="admin")
-    ok, r = rig.call(admin, "runs_active", all_keys=True)
+    assert run["started_at"].endswith("Z") and run["activity_at"].endswith("Z")
+    assert {x["started_by"] for x in r["runs"]} == {"claude", "other"}
+    # own_only narrows it back to this key; all_keys is the old spelling of the default and stays accepted
+    ok, mine = rig.call(t, "runs_active", own_only=True)
+    assert ok and mine["count"] == 1 and mine["runs"][0]["run_id"] == a["run_id"]
+    ok, r = rig.call(t, "runs_active", all_keys=True)
     assert ok and r["count"] == 2 and {x["started_by"] for x in r["runs"]} == {"claude", "other"}
+
+
+def test_runs_active_foreign_run_keeps_its_free_text_for_its_key_and_admins(rig):
+    t = rig.tok("claude-ai-cloud")
+    other = rig.tok("vibe-cli")
+    admin = rig.tok("owner", access="admin")
+    ok, card = rig.call(other, "session_card_set", kind="code", purpose="Managed units bauen")
+    assert ok, card
+    hi = card["card"]["client_session"]
+    ok, a = rig.call(other, "chat_send", message="secret plan", client_session=hi)
+    assert ok, a
+    get_inbox(rig.app.settings).set_activity(a["run_id"], "running a tool", time.time() - 5)
+
+    # another key sees that the run exists, who started it and how long it runs — none of its free text,
+    # and not what it is doing either: activity and current_tool are there, both null
+    ok, r = rig.call(t, "runs_active")
+    row = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
+    assert row["started_by"] == "vibe-cli" and row["redacted"] is True
+    assert row["client"] is None and row["client_session"] is None and row["session_title"] is None
+    assert row["activity"] is None and row["current_tool"] is None
+    assert "session" not in row and r["redacted_runs"] >= 1
+
+    # the key that started it and an admin key read client_session (the free text of the run) and its activity
+    for tok in (other, admin):
+        ok, r = rig.call(tok, "runs_active")
+        row = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
+        assert "redacted" not in row, tok
+        assert row["client_session"] == hi and row["started_by"] == "vibe-cli"
+        assert row["activity"] == "running a tool", tok
 
 
 def test_runs_active_new_run_and_finished_run(rig):

@@ -331,6 +331,13 @@ Liste, 200 Fehlschläge im Attention-Teil) liefert auch das Ausklappen nicht; da
 serverseitiges Quittieren pro User und Eintrag dazukommen — dann würde das Ledger selbst aufräumen und
 der Zustand wäre geräteübergreifend. Nicht Teil dieser Version.
 
+Die Zeilen der Session- und Run-Listen tragen bereits die vier Standardfelder jeder Liste
+(`session_id`, `profile`, `session_title`, `started_by`; siehe
+[tool-surface.md](tool-surface.md#session-fields-on-every-list-entry)): der Titel kommt live aus der
+Session-Datenbank, `started_by` nennt den Client bzw. externen Agenten (oder die Tür: `telegram`,
+`cli`, `api_server`, ...). Die Darstellung wertet sie in einem eigenen Schritt aus — dasselbe Feld für
+`/ledger/api/list` und die Tools.
+
 ## Eine Wahrheit für Seite und Tools
 
 Der Ledger entscheidet **nicht selbst**, was Aufmerksamkeit ist. Diese Entscheidung liegt an genau
