@@ -197,19 +197,46 @@ test("the client filter and the sort travel in the list url and the page url", (
   assert.equal(H.buildSearch(st), "?profile=default&agent=telegram&sort=profile&dir=desc");
 });
 
-test("a click on a header sorts a new column ascending and flips the active one", () => {
+test("a click on a header sorts a new column ascending, flips the active one, and the dir survives a reload", () => {
   const H = load();
-  // nothing chosen yet: activity is the default, newest first
+  // The server answers with `sort: {key, dir}` and the header hands exactly that payload in.
+  // After every click the URL carries `sort=<key>&dir=<dir>` and the *next* payload is rebuilt
+  // from that answer — so this test feeds `{key, dir}` on every click, never the helper's own
+  // `{sort, dir}` return value, which would prove nothing about the caller's input shape.
+  const answer = (st) => ({ key: st.sort, dir: st.dir });
+  // nothing chosen yet: activity is the default, newest first, so its own click flips to ascending
   assert.deepEqual(j(H.sortToggle({}, "last_active")), { sort: "last_active", dir: "asc" });
-  assert.deepEqual(j(H.sortToggle({}, "profile")), { sort: "profile", dir: "asc" });
-  assert.deepEqual(j(H.sortToggle({}, "agent")), { sort: "agent", dir: "asc" });
-  // clicking the active column flips the direction
-  assert.deepEqual(j(H.sortToggle({ sort: "agent", dir: "asc" }, "agent")), { sort: "agent", dir: "desc" });
-  assert.deepEqual(j(H.sortToggle({ sort: "agent", dir: "desc" }, "agent")), { sort: "agent", dir: "asc" });
-  // a different column starts its own direction, not the previous one
-  assert.deepEqual(j(H.sortToggle({ sort: "agent", dir: "desc" }, "profile")), { sort: "profile", dir: "asc" });
-  assert.deepEqual(j(H.sortToggle({ sort: "profile", dir: "asc" }, "last_active")),
+  assert.deepEqual(j(H.sortToggle({ key: "last_active", dir: "desc" }, "last_active")),
+    { sort: "last_active", dir: "asc" });
+  // a new column starts ascending
+  assert.deepEqual(j(H.sortToggle({ key: "last_active", dir: "desc" }, "profile")),
+    { sort: "profile", dir: "asc" });
+  // second click flips, third flips back — for every sortable column fed the payload shape
+  for (const key of ["agent", "profile", "title"]) {
+    let payload = { key: "last_active", dir: "desc" };
+    const dirs = [];
+    for (let i = 0; i < 3; i++) {
+      const next = H.sortToggle(payload, key);
+      assert.equal(next.sort, key);
+      dirs.push(next.dir);
+      payload = answer(next); // what the server returns for the url after this click
+    }
+    assert.deepEqual(dirs, ["asc", "desc", "asc"], key + " flips on every click");
+  }
+  // activity as a fresh key means newest first
+  assert.deepEqual(j(H.sortToggle({ key: "title", dir: "asc" }, "last_active")),
     { sort: "last_active", dir: "desc" });
+  // the URL state spells the same pair as {sort, dir}, so a reload keeps the view...
+  assert.deepEqual(j(H.sortToggle({ sort: "title", dir: "asc" }, "title")), { sort: "title", dir: "desc" });
+  const next = H.sortToggle({ key: "title", dir: "desc" }, "title");
+  const reloaded = H.readUrlState(H.buildSearch(H.mergeUrlState(H.readUrlState(""),
+    { filters: { sort: next.sort, dir: next.dir }, offset: 0 })));
+  assert.deepEqual(j(reloaded.filters), { sort: "title", dir: "asc" });
+  assert.equal(H.buildSearch(reloaded), "?sort=title&dir=asc");
+  // ...and the click after the reload gets the payload shape built from the restored url, flipping again
+  const afterReload = H.sortToggle(
+    { key: j(reloaded.filters).sort, dir: j(reloaded.filters).dir }, "title");
+  assert.deepEqual(j(afterReload), { sort: "title", dir: "desc" });
 });
 
 test("truncate cuts at the budget and marks it, and never invents text", () => {
