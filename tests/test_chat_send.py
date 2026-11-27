@@ -429,6 +429,31 @@ def test_runs_active_lists_own_running_runs_with_activity(rig):
     assert ok and r["count"] == 2 and {x["started_by"] for x in r["runs"]} == {"claude", "other"}
 
 
+def test_runs_active_foreign_run_keeps_its_free_text_for_its_key_and_admins(rig):
+    t = rig.tok("claude-ai-cloud")
+    other = rig.tok("vibe-cli")
+    admin = rig.tok("owner", access="admin")
+    ok, card = rig.call(other, "session_card_set", kind="code", purpose="Managed units bauen")
+    assert ok, card
+    hi = card["card"]["client_session"]
+    ok, a = rig.call(other, "chat_send", message="secret plan", client_session=hi)
+    assert ok, a
+
+    # another key sees that the run exists, who started it and how long it runs — none of its free text
+    ok, r = rig.call(t, "runs_active")
+    row = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
+    assert row["started_by"] == "vibe-cli" and row["redacted"] is True
+    assert row["client"] is None and row["client_session"] is None and row["session_title"] is None
+    assert "session" not in row and r["redacted_runs"] >= 1
+
+    # the key that started it and an admin key read client_session (the free text of the run)
+    for tok in (other, admin):
+        ok, r = rig.call(tok, "runs_active")
+        row = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
+        assert "redacted" not in row, tok
+        assert row["client_session"] == hi and row["started_by"] == "vibe-cli"
+
+
 def test_runs_active_new_run_and_finished_run(rig):
     t = rig.tok()
     ok, a = rig.call(t, "chat_send", message="one")

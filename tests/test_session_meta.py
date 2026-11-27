@@ -6,8 +6,10 @@ What is held down here:
   present even when unknown, then `null`, so the shape never changes;
 * the title comes from the session database **per request**: a rename in the database is visible in the
   very next call (nothing is cached across calls);
-* sessions, runs and agents of other clients/agents are listed too -- reading them is normal, the answer
-  says who started the work instead of hiding it;
+* sessions, runs and agents of other clients/agents are listed too -- reading them is normal, and the answer
+  says who started the work instead of hiding it. Free text (client, session handle, title, the session card)
+  belongs to the key that owns the work: `runs_active` shows it for the caller's own runs and to admin keys,
+  and carries identity and timing only for everybody else's;
 * `hermes_health` stays the short counters-only answer (the documented exception);
 * a managed unit (kanban / admission worker, `kind=managed`) carries the id of the session it runs, so
   it is resolved too -- and a pid is only believed when the session's turn lease and the process start
@@ -257,13 +259,17 @@ def test_title_change_in_the_database_lands_in_the_next_agents_live_call(app, wo
 # runs
 # ---------------------------------------------------------------------------
 
-def test_runs_active_lists_foreign_runs_with_session_and_client(app, world):
+def test_runs_active_lists_foreign_runs_with_identity_and_timing_only(app, world):
     box = get_inbox(app.settings)
-    box.add_watch(run_id="run_mine", profile="default", session_id="local-abc", key_id="k-claude",
-                  key_name="claude-ai-cloud", client="claude.ai")
-    # a run of another key/agent, started without any session id: the watch record names the session
+    box.session_register(key_id="k1", key_name="test key", client="Cowork", kind="code", purpose="Ledger bauen",
+                         role=None, native_id=None, handle_factory=lambda: "cw-1")
+    box.session_register(key_id="k-other", key_name="vibe-cli", client="Claude Code", kind="code",
+                         purpose="Managed units bauen", role=None, native_id=None, handle_factory=lambda: "vibe-1")
+    box.add_watch(run_id="run_mine", profile="default", session_id="local-abc", key_id="k1", key_name="test key",
+                  client="claude.ai", client_session="cw-1")
+    # a run of another key/agent: listed, but its free text is not the caller's to read
     box.add_watch(run_id="run_foreign", profile="researcher", session_id="local-res", key_id="k-other",
-                  key_name="vibe-cli", client="claude-code")
+                  key_name="vibe-cli", client="claude-code", client_session="vibe-1")
 
     r = call(app, "runs_active")
     assert r["ok"], r
@@ -271,14 +277,36 @@ def test_runs_active_lists_foreign_runs_with_session_and_client(app, world):
     assert set(rows) == {"run_mine", "run_foreign"}          # nothing filtered to the caller's own key
     mine = rows["run_mine"]
     assert mine["session_id"] == "local-abc" and mine["profile"] == "default"
-    assert mine["session_title"] == "Deploy prüfen" and mine["started_by"] == "claude-ai-cloud"
-    assert mine["client"] == "claude.ai"                      # the detected client stays next to it
+    assert mine["session_title"] == "Deploy prüfen" and mine["started_by"] == "test key"
+    assert mine["client"] == "claude.ai" and mine["client_session"] == "cw-1"
+    assert mine["session"]["label"] == "Cowork · code · Ledger bauen" and "redacted" not in mine
     foreign = rows["run_foreign"]
-    assert foreign["session_title"] == "Recherche zu Ledger" and foreign["started_by"] == "vibe-cli"
+    assert foreign["session_id"] == "local-res" and foreign["profile"] == "researcher"
+    assert foreign["started_by"] == "vibe-cli"                # who it is and when, nothing else
+    assert foreign["redacted"] is True and r["result"]["redacted_runs"] == 1
+    for name in ("client", "client_session", "session_title", "control"):
+        assert foreign[name] is None
+    assert foreign.get("session") is None                     # no session card (kind, purpose) of another key
 
     # opt-in narrowing still works
     own = call(app, "runs_active", {"own_only": True})
-    assert own["ok"] and own["result"]["runs"] == []
+    assert own["ok"] and [x["run_id"] for x in own["result"]["runs"]] == ["run_mine"]
+
+
+def test_runs_active_admin_reads_the_free_text_of_foreign_runs(app, world):
+    box = get_inbox(app.settings)
+    box.session_register(key_id="k-other", key_name="vibe-cli", client="Claude Code", kind="code",
+                         purpose="Managed units bauen", role=None, native_id=None, handle_factory=lambda: "vibe-1")
+    box.add_watch(run_id="run_foreign", profile="researcher", session_id="local-res", key_id="k-other",
+                  key_name="vibe-cli", client="claude-code", client_session="vibe-1")
+
+    r = call(app, "runs_active", scopes=Scopes(access="admin"))
+    assert r["ok"], r
+    row = r["result"]["runs"][0]
+    assert row["client"] == "claude-code" and row["client_session"] == "vibe-1"
+    assert row["session_title"] == "Recherche zu Ledger" and row["started_by"] == "vibe-cli"
+    assert row["session"]["label"] == "Claude Code · code · Managed units bauen"
+    assert "redacted" not in row and "redacted_runs" not in r["result"]
 
 
 def test_runs_active_title_is_read_again_on_every_call(app, world):
