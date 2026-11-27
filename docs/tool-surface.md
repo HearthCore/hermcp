@@ -156,10 +156,11 @@ row does not change with the data. `hermes_health` and the other count/overview 
 before — they are the documented exception.
 
 The free text of a work item — the session title, a run's `client` and `client_session`, the session card
-behind it (kind, purpose) — belongs to the key that owns it. `runs_active` lists every key's runs, but a
-foreign run is identity and timing only: `started_by` names the key, `redacted: true` says the rest is not
-the caller's to read, and `client`, `client_session`, `session_title` and `session` are `null`. Own runs and
-admin keys get the full row.
+behind it (kind, purpose), and what the run is doing (`activity`, `current_tool`) — belongs to the key that
+owns it. `runs_active` lists every key's runs, but a foreign run is identity and timing only: `started_by`
+names the key, `redacted: true` says the rest is not the caller's to read, and `client`, `client_session`,
+`session_title`, `session`, `activity` and `current_tool` are `null` — the fields are there, their value is
+not. Own runs and admin keys get the full row.
 
 One resolver (`hermcp/adapters/session_meta.py`) produces them. It reads the title **live** from the
 profile's `state.db` on every request (sqlite `mode=ro`) and only remembers it for the lifetime of that one
@@ -239,7 +240,7 @@ path per run and remove the heuristic. This plugin deliberately does not patch H
   session id; chat or voice any stable label). hermcp stores it with the run and in the audit log, next to a `client`
   label derived from the request headers (`x-anthropic-client`, else the User-Agent), and `runs_active` shows both.
   Attribution only, never access control, and unrelated to the Hermes `session_id`.
-- `runs_active` — runs that are still going, with age, status, a coarse `activity`, `idle_seconds` and `queue_position` / `queue_length` in its session. Runs of every key are listed (read-only: whoever asks may see that work is going on); `own_only=true` narrows it to the caller's key. Free text belongs to the key that owns the run: `client`, `client_session`, `session_title` and the session card (`session`: kind, purpose) are shown for the caller's own runs and to an admin key; another key's run carries its identity and timing (`run_id`, `profile`, `session_id`, times, `started_by` = key name) and `redacted: true`, with those fields `null` — hidden, not unknown.
+- `runs_active` — runs that are still going, with age, status, a coarse `activity`, `idle_seconds` and `queue_position` / `queue_length` in its session. Runs of every key are listed (read-only: whoever asks may see that work is going on); `own_only=true` narrows it to the caller's key. Free text belongs to the key that owns the run: `client`, `client_session`, `session_title`, the session card (`session`: kind, purpose) and what the run is doing (`activity`, `current_tool`) are shown for the caller's own runs and to an admin key; another key's run carries its identity and timing (`run_id`, `profile`, `session_id`, times, `started_by` = key name) and `redacted: true`, with those fields `null` — hidden, not unknown.
 - `chat_run_steer` / `chat_run_cancel` / `chat_session_queue` — change a running run instead of queueing a new one; see [Steering, cancelling and replacing runs](inbox-and-runs.md#steering-cancelling-and-replacing-runs).
 
 - `agents_live` — read. Which agents are running, in one call: one row per unit of work in the gateway (chat turns from
