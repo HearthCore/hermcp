@@ -24,6 +24,7 @@ import socket
 import sqlite3
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -257,17 +258,57 @@ def test_runs_active_lists_foreign_runs_with_identity_and_timing_only(app, world
     assert mine["session_title"] == "Deploy prüfen" and mine["started_by"] == "test key"
     assert mine["client"] == "claude.ai" and mine["client_session"] == "cw-1"
     assert mine["session"]["label"] == "Cowork · code · Ledger bauen" and "redacted" not in mine
+    assert mine["activity"] == "starting" and mine["current_tool"] is None   # own row: the fields are the run's
     foreign = rows["run_foreign"]
     assert foreign["session_id"] == "local-res" and foreign["profile"] == "researcher"
     assert foreign["started_by"] == "vibe-cli"                # who it is and when, nothing else
     assert foreign["redacted"] is True and r["result"]["redacted_runs"] == 1
-    for name in ("client", "client_session", "session_title", "control"):
-        assert foreign[name] is None
+    for name in ("client", "client_session", "session_title", "control", "activity", "current_tool"):
+        assert foreign[name] is None                          # present, never a value
     assert foreign.get("session") is None                     # no session card (kind, purpose) of another key
 
     # opt-in narrowing still works
     own = call(app, "runs_active", {"own_only": True})
     assert own["ok"] and [x["run_id"] for x in own["result"]["runs"]] == ["run_mine"]
+
+
+def test_runs_active_hides_activity_and_current_tool_of_foreign_runs(app, world):
+    """`activity` and `current_tool` say what a run is *doing*, not which run it is.
+
+    Both survive for the caller's own run and for an admin key -- including `current_tool` from the gateway's
+    progress tracking, which is joined by run_id after the row is built. A foreign row keeps both fields and
+    carries null, exactly like its free text; the timing next to them stays.
+    """
+    box = get_inbox(app.settings)
+    box.add_watch(run_id="run_mine", profile="default", session_id="local-abc", key_id="k1", key_name="test key")
+    box.add_watch(run_id="run_foreign", profile="researcher", session_id="local-res", key_id="k-other",
+                  key_name="vibe-cli")
+    box.set_activity("run_mine", "running a tool", time.time() - 3)
+    box.set_activity("run_foreign", "waiting for approval", time.time() - 4)
+    gw = FakeGateway(world, agents(
+        {"kind": "chat", "session": "agent:main:api:run:run_mine", "pid": 1, "elapsed_s": 10.0, "idle_s": 1.0,
+         "current_tool": "terminal"},
+        {"kind": "chat", "session": "agent:researcher:api:run:run_foreign", "pid": 2, "elapsed_s": 20.0,
+         "idle_s": 2.0, "current_tool": "curl"},
+    ))
+    try:
+        r = call(app, "runs_active")
+        assert r["ok"], r
+        rows = {row["run_id"]: row for row in r["result"]["runs"]}
+        mine, foreign = rows["run_mine"], rows["run_foreign"]
+        assert "redacted" not in mine
+        assert mine["activity"] == "running a tool" and mine["current_tool"] == "terminal"
+        assert foreign["redacted"] is True
+        assert "activity" in foreign and foreign["activity"] is None             # the label is not the caller's
+        assert "current_tool" in foreign and foreign["current_tool"] is None     # nor is the tool it runs
+        assert foreign["idle_seconds"] == 2 and foreign["running_seconds"] == 20  # timing stays
+
+        adm = call(app, "runs_active", scopes=Scopes(access="admin"))
+        assert adm["ok"], adm
+        admin_row = {row["run_id"]: row for row in adm["result"]["runs"]}["run_foreign"]
+        assert admin_row["activity"] == "waiting for approval" and admin_row["current_tool"] == "curl"
+    finally:
+        gw.close()
 
 
 def test_runs_active_admin_reads_the_free_text_of_foreign_runs(app, world):
@@ -276,6 +317,7 @@ def test_runs_active_admin_reads_the_free_text_of_foreign_runs(app, world):
                          purpose="Managed units bauen", role=None, native_id=None, handle_factory=lambda: "vibe-1")
     box.add_watch(run_id="run_foreign", profile="researcher", session_id="local-res", key_id="k-other",
                   key_name="vibe-cli", client="claude-code", client_session="vibe-1")
+    box.set_activity("run_foreign", "between tools", time.time() - 2)
 
     r = call(app, "runs_active", scopes=Scopes(access="admin"))
     assert r["ok"], r
@@ -283,6 +325,7 @@ def test_runs_active_admin_reads_the_free_text_of_foreign_runs(app, world):
     assert row["client"] == "claude-code" and row["client_session"] == "vibe-1"
     assert row["session_title"] == "Recherche zu Ledger" and row["started_by"] == "vibe-cli"
     assert row["session"]["label"] == "Claude Code · code · Managed units bauen"
+    assert row["activity"] == "between tools"                 # admin sees what the run is doing, too
     assert "redacted" not in row and "redacted_runs" not in r["result"]
 
 

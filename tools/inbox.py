@@ -222,7 +222,8 @@ def _iso(epoch):
                       "idle_seconds — a fixed label, never content. Every run carries session_id, profile, "
                       "session_title and started_by. Every key's runs are listed (read-only); a foreign run is "
                       "identity and timing only — started_by names its key, redacted: true, while client, "
-                      "client_session, session_title and the session card stay null. Free text is yours for your "
+                      "client_session, session_title, the session card, activity and current_tool stay null "
+                      "(present, not unknown). Free text is yours for your "
                       "own runs, and for admins everywhere. own_only=true narrows to your key. Read a result with "
                       "chat_run_status. idle_seconds, running_seconds and current_tool come from the gateway's "
                       "progress tracking (gateway_detail: true). Without client_session the answer carries "
@@ -247,14 +248,19 @@ def runs_active(ctx, all_keys=False, client_session=None, own_only=False):
     runs: list[dict] = []
     revealed: set[str] = set()          # runs whose free text (client, session card, title) this caller may read
     for r in rows:
+        allowed = r.get("key_id") == ctx.principal.id or admin
         run = {"run_id": r["run_id"], "profile": r["profile"], "session_id": r["session_id"],
                "session_title": None, "started_by": r["key_name"],
                "started_at": _iso(r["started_at"]), "age_seconds": int(now - r["started_at"]),
-               "status": r["last_status"] or "queued", "activity": r["activity"] or "starting",
+               "status": r["last_status"] or "queued",
+               # activity and current_tool say what the work is doing, not which run it is: a foreign row keeps
+               # both fields (the shape never changes with the viewer) and never their value
+               "activity": (r["activity"] or "starting") if allowed else None,
+               "current_tool": None,
                "activity_at": _iso(r["activity_at"]),
                "idle_seconds": int(now - r["activity_at"]) if r["activity_at"] else None,
                "_started": r["started_at"]}
-        if r.get("key_id") == ctx.principal.id or admin:
+        if allowed:
             revealed.add(r["run_id"])
             run.update({k: r[k] for k in ("client", "client_session") if r.get(k)})
             if r.get("steer_count"):
@@ -289,8 +295,9 @@ def runs_active(ctx, all_keys=False, client_session=None, own_only=False):
     redacted = sum(1 for r in runs if r.get("redacted"))
     if redacted:
         out["redacted_runs"] = redacted
-        out["note"] += (" Runs of other keys carry `redacted: true`: identity, timing and the coarse activity, "
-                        "no free text (client, session handle, title, session card).")
+        out["note"] += (" Runs of other keys carry `redacted: true`: identity (run_id, profile, session_id, "
+                        "started_by) and timing, no free text (client, session handle, title, session card) and "
+                        "no activity or current_tool — those two fields are present but null.")
     if not clean_handle(client_session):
         overview = _session_overview(ctx, runs)
         if overview:
@@ -349,7 +356,8 @@ def _gateway_progress(ctx, runs: list[dict]) -> None:
             r["idle_seconds"] = int(g["idle_s"])
         if isinstance(g.get("elapsed_s"), (int, float)):
             r["running_seconds"] = int(g["elapsed_s"])
-        if g.get("current_tool"):
+        if g.get("current_tool") and not r.get("redacted"):
+            # what the run is doing is its key's to read; timing above stays for every row
             r["current_tool"] = g["current_tool"]
 
 

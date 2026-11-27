@@ -438,20 +438,24 @@ def test_runs_active_foreign_run_keeps_its_free_text_for_its_key_and_admins(rig)
     hi = card["card"]["client_session"]
     ok, a = rig.call(other, "chat_send", message="secret plan", client_session=hi)
     assert ok, a
+    get_inbox(rig.app.settings).set_activity(a["run_id"], "running a tool", time.time() - 5)
 
-    # another key sees that the run exists, who started it and how long it runs — none of its free text
+    # another key sees that the run exists, who started it and how long it runs — none of its free text,
+    # and not what it is doing either: activity and current_tool are there, both null
     ok, r = rig.call(t, "runs_active")
     row = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
     assert row["started_by"] == "vibe-cli" and row["redacted"] is True
     assert row["client"] is None and row["client_session"] is None and row["session_title"] is None
+    assert row["activity"] is None and row["current_tool"] is None
     assert "session" not in row and r["redacted_runs"] >= 1
 
-    # the key that started it and an admin key read client_session (the free text of the run)
+    # the key that started it and an admin key read client_session (the free text of the run) and its activity
     for tok in (other, admin):
         ok, r = rig.call(tok, "runs_active")
         row = next(x for x in r["runs"] if x["run_id"] == a["run_id"])
         assert "redacted" not in row, tok
         assert row["client_session"] == hi and row["started_by"] == "vibe-cli"
+        assert row["activity"] == "running a tool", tok
 
 
 def test_runs_active_new_run_and_finished_run(rig):
