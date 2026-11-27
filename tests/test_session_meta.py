@@ -386,7 +386,9 @@ def test_ledger_run_rows_carry_title_and_started_by(world):
              "profile": "default", "run_id": "run_x", "session_id": "local-abc", "summary": "kaputt",
              "_bucket": "attention"}
     row = LD._run_row(event, {}, meta)
-    assert row["session_title"] == "Deploy prüfen" and row["started_by"] == "telegram"
+    # the Ledger labels the session from structure: the stored title ("Deploy prüfen") stays out
+    assert row["session_title"] == LD.session_label("default", "local-abc", "telegram", None)
+    assert row["started_by"] == "telegram"
 
     # a run without any session data keeps the four fields, empty
     bare = LD._run_row({**event, "session_id": None, "run_id": "run_o"}, {}, meta)

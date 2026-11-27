@@ -27,7 +27,7 @@ from . import ledger_ask as ASK
 from .adapters.inbox_store import get_inbox
 from .ledger_page import (WINDOW_HOURS_DEFAULT, call, clean, dashboard_url, desktop_url,
                           iso, link_targets, build_link, read_only_principal, redacted, safe_token,
-                          session_status, _read_reachable_profiles, _gateway)
+                          session_label, session_status, _read_reachable_profiles, _gateway)
 from .registry import Principal
 
 PEEK_ACTIONS = 3
@@ -38,6 +38,9 @@ MAX_MESSAGES = 200
 LIST_PAGE_DEFAULT = 25
 LIST_PAGE_MAX = 100
 SESSIONS_DEEP_MAX = 200      # rows fetched per profile for one page of the sessions list
+SESSION_SORTS = ("last_active", "profile", "agent", "title")
+SESSION_SORT_DEFAULT = "last_active"
+AGENTS_MAX = 50              # distinct started_by values the client filter offers
 RUNS_FETCH = 200             # inbox_list ceiling per call
 CRON_FETCH = 100             # cron_runs ceiling per call
 KIND_LABEL = {
@@ -347,7 +350,7 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
         out["facts"].update(surface="Cron", last_active=iso(row.get("started_at")))
         sid = safe_token(row.get("session_id"))
         if sid:
-            _peek_session(registry, ro, settings, prof, sid, targets, out, title_fallback=out["title"])
+            _peek_session(registry, ro, settings, prof, sid, targets, out)
         _attach_ask(out, settings, "cron" if tone != "bad" else "cron_error", {
             "job_name": row.get("job_name"), "job_id": row.get("job_id"), "run_id": ident,
             "profile": prof, "at": out["facts"]["last_active"], "state": status,
@@ -384,8 +387,7 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
     sid = safe_token(approval.get("session_id"))
     out["session_id"] = sid
     if sid:
-        _peek_session(registry, ro, settings, out["facts"]["profile"], sid, targets, out,
-                      title_fallback=out["title"], silent=True)
+        _peek_session(registry, ro, settings, out["facts"]["profile"], sid, targets, out, silent=True)
     out["links"].update(session=f"/ledger/session/{quote(sid, safe='')}" if sid else None,
                         **app_links(settings, targets, out["facts"]["profile"], sid))
     _attach_ask(out, settings, "approval", {
@@ -410,7 +412,7 @@ def _protocol(rows: Any) -> List[Dict[str, Any]]:
 
 
 def _peek_session(registry, principal, settings, profile: str, session_id: str,
-                  targets: Dict[str, Any], out: Dict[str, Any], title_fallback: str = "",
+                  targets: Dict[str, Any], out: Dict[str, Any],
                   silent: bool = False) -> Dict[str, Any]:
     """Fill ``out`` from one session: four facts, the last three actions, links. Read-only."""
     sid = safe_token(session_id)
@@ -424,7 +426,7 @@ def _peek_session(registry, principal, settings, profile: str, session_id: str,
             out["errors"]["peek"] = str(exc)
             return {}
         return {"ok": False, "error": clean(str(exc), 200)}
-    title = clean(redacted(meta.get("title")), PEEK_TEXT) or title_fallback
+    title = session_label(meta.get("profile_name") or profile, sid, None, meta.get("source"))
     state = session_status(meta, _now())
     out.update(session_id=sid, title=title or out.get("title") or sid,
                live=state == "aktiv")
@@ -542,7 +544,8 @@ def build_session(registry, principal: Principal, settings, hermes_config: Dict[
         "ok": True,
         "session": {
             "id": safe_token(meta.get("id")) or sid,
-            "title": clean(redacted(meta.get("title")), 200) or sid,
+            "title": session_label(clean(meta.get("profile_name"), 40) or used_profile,
+                                   safe_token(meta.get("id")) or sid, None, meta.get("source")) or sid,
             "profile": clean(meta.get("profile_name"), 40) or used_profile,
             "surface": surface_label(meta.get("source")),
             "model": clean(meta.get("model"), 60),
@@ -614,10 +617,14 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
         if len(got) >= per_profile:
             capped = True
         for row in got:
+            prof_name = clean(row.get("profile_name"), 40) or prof
+            who = clean(row.get("started_by") or row.get("source"), 80)
+            label = session_label(prof_name, safe_token(row.get("id")), who, row.get("source"))
             rows.append({
                 "session_id": safe_token(row.get("id")),
-                "title": clean(redacted(row.get("title")), 120),
-                "profile": clean(row.get("profile_name"), 40) or prof,
+                # built from structured fields, never from the session's free-text title
+                "title": label,
+                "profile": prof_name,
                 "surface": surface_label(row.get("source")),
                 "source": clean(row.get("source"), 30),
                 "status": session_status(row, _now()),
@@ -627,8 +634,10 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
                 "tool_call_count": row.get("tool_call_count") if isinstance(row.get("tool_call_count"), int) else None,
                 "model": clean(row.get("model"), 60),
                 # the standard session fields every list entry carries, taken from the same live row
-                "session_title": clean(redacted(row.get("title")), 120),
-                "started_by": clean(row.get("started_by"), 80),
+                "session_title": label,
+                # the client / external agent that started the session: the resolver's answer when the
+                # row carries it, else the session's own door (`source`), which is what it is derived from
+                "started_by": who,
             })
     return rows, errors, capped
 
@@ -636,12 +645,48 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
 def _matches(row: Dict[str, Any], filters: Dict[str, Any]) -> bool:
     q = (filters.get("q") or "").strip().lower()
     if q:
-        hay = " ".join(str(row.get(k) or "") for k in ("title", "profile", "surface", "session_id",
-                                                       "model", "summary", "job_name", "error", "action",
-                                                       "rationale", "state", "decision")).lower()
+        hay = " ".join(str(row.get(k) or "") for k in ("title", "session_title", "profile", "surface",
+                                                       "started_by", "session_id", "model", "summary",
+                                                       "job_name", "error", "action", "rationale", "state",
+                                                       "decision")).lower()
         if q not in hay:
             return False
     return True
+
+
+def agents_of(rows: List[Dict[str, Any]], limit: int = AGENTS_MAX) -> List[str]:
+    """The distinct clients/agents of these rows, sorted case-insensitively (the filter's options).
+
+    Built from the unfiltered window on purpose: a chosen agent must not disappear from its own
+    dropdown, which would leave the user unable to switch to another one.
+    """
+    seen = {str(r.get("started_by")) for r in rows if r.get("started_by")}
+    return sorted(seen, key=str.lower)[:limit]
+
+
+def _session_sort(query: Dict[str, Any]) -> tuple[str, str]:
+    """The requested sort and direction, both whitelisted (`last_active`/`desc` as the fallback)."""
+    sort = clean((query or {}).get("sort"), 20)
+    sort = sort if sort in SESSION_SORTS else SESSION_SORT_DEFAULT
+    direction = clean((query or {}).get("dir"), 4)
+    if direction not in ("asc", "desc"):
+        direction = "desc" if sort == "last_active" else "asc"
+    return sort, direction
+
+
+def sort_sessions(rows: List[Dict[str, Any]], sort: str, direction: str) -> List[Dict[str, Any]]:
+    """Order session rows by last activity, profile, client (`started_by`) or title.
+
+    Strings compare case-insensitively; rows without a value for the sort key go last in either
+    direction, so an unknown client never pushes itself to the top. The sort is stable, so rows of
+    equal rank keep the order they were read in (newest first per profile).
+    """
+    field = {"last_active": "last_active", "profile": "profile",
+             "agent": "started_by", "title": "session_title"}.get(sort, "last_active")
+    present = [r for r in rows if r.get(field)]
+    missing = [r for r in rows if not r.get(field)]
+    present.sort(key=lambda r: str(r.get(field)).lower(), reverse=(direction == "desc"))
+    return present + missing
 
 
 def _since_iso(hours: int) -> str:
@@ -661,6 +706,9 @@ def list_sessions(registry, principal: Principal, settings, hermes_config: Dict[
     want_status = clean(query.get("status"), 20)
     want_profile = clean(query.get("profile"), 40)
     want_surface = clean(query.get("surface"), 30)
+    want_agent = clean(query.get("agent"), 80)
+    sort, direction = _session_sort(query)
+    agents = agents_of(rows)
     since = _since_iso(hours) if hours else None
     out = []
     for row in rows:
@@ -670,19 +718,23 @@ def list_sessions(registry, principal: Principal, settings, hermes_config: Dict[
             continue
         if want_surface and (row.get("source") or "") != want_surface and row["surface"] != want_surface:
             continue
+        if want_agent and want_agent.lower() not in (row.get("started_by") or "").lower():
+            continue
         if since and (row.get("last_active") or "") < since:
             continue
         if not _matches(row, query):
             continue
         out.append({**row, "peek": "session",
                     "url": build_link(targets, row["profile"], row["session_id"])})
-    out.sort(key=lambda r: r.get("last_active") or "", reverse=True)
+    out = sort_sessions(out, sort, direction)
     page = out[offset:offset + limit]
     return {"kind": "sessions", "items": page, "total": len(out), "offset": offset, "limit": limit,
             "has_more": offset + len(page) < len(out), "capped": capped,
             "total_is_bounded": capped,
-            "filters": _filters_echo(query, ("status", "profile", "surface", "hours", "q")),
-            "profiles": profiles, "errors": errors,
+            "filters": _filters_echo(query, ("status", "profile", "surface", "agent", "sort", "dir",
+                                             "hours", "q")),
+            "profiles": profiles, "agents": agents, "sort": {"key": sort, "dir": direction},
+            "errors": errors,
             "links": targets,
             "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")}
 
@@ -727,10 +779,12 @@ def _run_row(event: Dict[str, Any], targets: Dict[str, Any], meta=None) -> Dict[
         "started_by": None,
     }
     if meta is not None:
-        # session title live from the database, started_by from the run's watch record / the session's door
+        # started_by from the run's watch record / the session's door; the label is built from
+        # structured fields, and the free-text session title the resolver read is dropped here
         meta.enrich(row, profile=profile or None, session_id=sid, run_id=event.get("run_id"))
-        row["session_title"] = clean(redacted(row.get("session_title")), 120)
         row["started_by"] = clean(row.get("started_by"), 80)
+        row["session_title"] = (session_label(profile, sid, row["started_by"], event.get("source"))
+                                if sid else None)
     return row
 
 

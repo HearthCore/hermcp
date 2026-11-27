@@ -104,6 +104,15 @@ def setup_parser(p: argparse.ArgumentParser) -> None:
     pt.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
     pt.add_argument("--no-probe", action="store_true", help="skip the live probe")
 
+    tt = sub.add_parser("session-titles",
+                        help="session titles: find and replace titles carrying a plaintext secret")
+    tts = tt.add_subparsers(dest="session_titles_cmd")
+    tsc = tts.add_parser("scrub", help="report (or with --apply: replace) titles that look like a secret")
+    tsc.add_argument("--profiles", help="comma list (default: every profile)")
+    tsc.add_argument("--apply", action="store_true",
+                     help="write the replacement titles (a backup of each state.db is written first)")
+    tsc.add_argument("--json", action="store_true", help="machine-readable output")
+
 
 def _fmt_ts(t) -> str:
     return "-" if not t else time.strftime("%Y-%m-%d %H:%M", time.localtime(t))
@@ -449,6 +458,43 @@ def _stop(args) -> int:
     return 1
 
 
+def _session_titles(args) -> int:
+    """`session-titles scrub`: report titles that look like they carry a secret, or replace them.
+
+    Dry run unless ``--apply``. Never prints a title's text, only its id, the reason and the
+    replacement label -- a maintenance log must not become the next leak.
+    """
+    from . import title_scrub
+    sub = getattr(args, "session_titles_cmd", None)
+    if sub != "scrub":
+        print("usage: hermes hermcp session-titles scrub [--profiles a,b] [--apply] [--json]",
+              file=sys.stderr)
+        return 2
+    profiles = _csv(args.profiles, []) or None
+    plan = title_scrub.scan(profiles)
+    if args.json:
+        print(json.dumps({"apply": bool(args.apply), "plan": plan}, indent=2))
+    if not args.apply:
+        if not args.json:
+            print("session titles that look like a plaintext secret (dry run, nothing written):")
+            print(title_scrub.render(plan))
+            print("re-run with --apply to replace them (each state.db is backed up first)")
+        return 0
+    done = title_scrub.apply_plan(plan)
+    if args.json:
+        print(json.dumps({"applied": done}, indent=2))
+    else:
+        for entry in done:
+            line = f"  {entry['profile']:<16} replaced {entry['replaced']}"
+            if entry.get("backup"):
+                line += f"  backup: {entry['backup']}"
+            print(line)
+            for failure in entry.get("failed") or []:
+                print(f"      {failure['session_id']}  failed: {failure['error']}")
+        print("  (the same scan now reports 0: the replacement labels match no detector)")
+    return 1 if any(e.get("failed") for e in done) else 0
+
+
 def dispatch(args) -> int:
     cmd = getattr(args, "hermcp_cmd", None)
     try:
@@ -461,6 +507,8 @@ def dispatch(args) -> int:
         if cmd == "profile-keys":
             from .profile_keys import cli_profile_keys
             return cli_profile_keys(args)
+        if cmd == "session-titles":
+            return _session_titles(args)
         if cmd == "doctor":
             from .doctor import run
             return run()
@@ -481,8 +529,8 @@ def dispatch(args) -> int:
     except ConfigError as exc:
         print(f"error: invalid configuration: {exc}\nrun `hermes hermcp doctor` for the full check", file=sys.stderr)
         return EX_CONFIG
-    print("usage: hermes hermcp {serve,keys,oauth,profile-keys,doctor,selftest,docs,status,stop,install-service}",
-          file=sys.stderr)
+    print("usage: hermes hermcp {serve,keys,oauth,profile-keys,session-titles,doctor,selftest,docs,status,stop,"
+          "install-service}", file=sys.stderr)
     return 2
 
 
