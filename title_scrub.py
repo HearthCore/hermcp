@@ -16,16 +16,16 @@ What it does
 ------------
 ``hermes hermcp session-titles scrub`` walks the profiles (or ``--profiles a,b``), reads the session
 rows of each ``state.db`` **read-only** and reports how many titles match and why -- never the title
-text itself. Without ``--apply`` nothing is written (dry run, the default). With ``--apply`` it copies
-``state.db`` (plus its ``-wal``/``-shm``) into ``~/.hermes/backups/hermcp-session-titles-<ts>/``
-first, then rewrites the matched titles through Hermes' own session store, and reports what it did.
+text itself. Without ``--apply`` nothing is written (dry run, the default). With ``--apply`` it takes
+one consistent snapshot of ``state.db`` (SQLite's backup API, so no stray ``-wal``/``-shm`` sidecar)
+into ``~/.hermes/backups/hermcp-session-titles-<ts>/`` first, then rewrites the matched titles through
+Hermes' own session store, and reports what it did.
 Running it twice is safe: the replacement label matches no detector, so the second run finds nothing.
 """
 from __future__ import annotations
 
 import os
 import re
-import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -123,18 +123,53 @@ def backup_root() -> Path:
 
 
 def backup_db(profile: str, root: Path | None = None) -> Path | None:
-    """Copy one profile's ``state.db`` (with its ``-wal``/``-shm``) before it is written."""
+    """Take one consistent snapshot of a profile's ``state.db`` before it is written.
+
+    The database is opened **read-only** and copied through SQLite's own backup API instead of
+    copying ``state.db``/``-wal``/``-shm`` side by side: three file copies are not a snapshot. A
+    writer committing between them leaves a torn set, and a ``-wal`` that is copied without the
+    matching ``-shm``/header state does not restore. ``Connection.backup`` copies committed pages
+    under the source's lock (a concurrent commit restarts the copy, it never tears it), and folds
+    the source's write-ahead log into the target, so the result is a single self-contained file.
+    """
     path = _db_path(profile)
     if path is None:
         return None
     root = root or backup_root()
     root.mkdir(parents=True, exist_ok=True)
     target = root / f"{profile or 'default'}-state.db"
-    shutil.copyfile(path, target)
-    for suffix in ("-wal", "-shm"):
-        side = path.with_name(path.name + suffix)
-        if side.is_file():
-            shutil.copyfile(side, target.with_name(target.name + suffix))
+    # A leftover sidecar from an older copy would be restored *on top of* the fresh snapshot.
+    for stale in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+    # Create it 0600 from the start: a backup of a session store must not be umask-readable, not
+    # even for the moment between creating it and a later chmod.
+    os.close(os.open(target, os.O_CREAT | os.O_WRONLY, 0o600))
+    try:
+        source = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            dest = sqlite3.connect(target)
+            try:
+                source.backup(dest)
+                # The source's header says WAL. Keep that out of the backup: a restore that drops the
+                # file next to the *old* ``-wal`` would replay a foreign log on top of it, and a reader
+                # would recreate a ``-shm`` next to what is supposed to be one self-contained file.
+                mode = dest.execute("PRAGMA journal_mode=delete").fetchone()
+                if not mode or str(mode[0]).lower() != "delete":
+                    raise sqlite3.OperationalError(f"backup stays in journal mode {mode!r}")
+            finally:
+                dest.close()
+        finally:
+            source.close()
+    except sqlite3.Error:
+        # Half a snapshot is worse than none: a later restore would take it for a real backup.
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise
     os.chmod(target, 0o600)
     return target
 
