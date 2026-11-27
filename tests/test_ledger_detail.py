@@ -232,10 +232,13 @@ def test_peek_text_is_redacted_and_truncated(inbox_seeded):
 
 
 def test_peek_never_emits_markup_and_keeps_the_title_as_plain_text(inbox_seeded):
+    """The pop-up's title is the structural label: the session's own title text never reaches it."""
     d = LD.build_peek(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, "session", "local-aaaa")
-    assert XSS in (d["title"] or "")          # the data is there …
+    assert d["title"] == LB.session_label("default", "local-aaaa", None, "desktop")
+    blob = json.dumps(d)
+    assert XSS not in blob and SECRET not in blob    # the stored title and its content stay out
     page = LB.page_html(15)
-    assert XSS not in page                    # … but the shell interpolates no title at all
+    assert XSS not in page                    # … and the shell interpolates no title at all
 
 
 def test_peek_of_a_missing_session_is_a_readable_error(inbox_seeded):
@@ -319,9 +322,13 @@ def test_sessions_list_pages_and_filters(inbox_seeded):
     assert {r["session_id"] for r in active["items"]} == {"local-aaaa", "dev-cccc"}
 
 
-def test_sessions_list_free_text_matches_the_title(inbox_seeded):
-    d = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"q": "alte"})
+def test_sessions_list_free_text_query_matches_the_structured_fields(inbox_seeded):
+    """`q` searches what the list shows: the label, the profile, the client -- not the stored title."""
+    d = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"q": "telegram"})
     assert [r["session_id"] for r in d["items"]] == ["local-bbbb"]
+    # the old free-text titles are not part of the answer any more
+    gone = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {"q": "alte"})
+    assert gone["items"] == []
 
 
 def test_sessions_list_shows_profile_title_and_client(inbox_seeded):
@@ -376,15 +383,72 @@ def test_sessions_list_sorts_by_profile_and_by_client(inbox_seeded):
     assert [r["id"] for r in ordered] == ["y", "x"]
 
 
-def test_sessions_list_title_follows_the_database(inbox_seeded, monkeypatch):
-    """No snapshot: a title renamed in state.db shows up in the very next list call."""
+def test_sessions_list_label_ignores_a_renamed_title(inbox_seeded, monkeypatch):
+    """The label is built from structure: renaming the session in state.db changes nothing here."""
     first = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {})
-    assert next(r for r in first["items"] if r["session_id"] == "dev-cccc")["session_title"] == "developer session"
-    monkeypatch.setitem(SESSIONS["developer"][0], "title", "umbenannt live")
+    row = next(r for r in first["items"] if r["session_id"] == "dev-cccc")
+    assert row["session_title"] == LB.session_label("developer", "dev-cccc", "claude-code", "cli")
+    monkeypatch.setitem(SESSIONS["developer"][0], "title", "Passwort im Klartext")
     second = LD.list_sessions(FakeRegistry(), make_principal(), inbox_seeded, CONFIG, {})
-    row = next(r for r in second["items"] if r["session_id"] == "dev-cccc")
-    assert row["session_title"] == "umbenannt live"
-    assert row["title"] == "umbenannt live"
+    again = next(r for r in second["items"] if r["session_id"] == "dev-cccc")
+    assert again["session_title"] == row["session_title"] and again["title"] == row["title"]
+    assert "Passwort im Klartext" not in json.dumps(second)
+
+
+# ---------------------------------------------------------------------------
+# the Ledger never shows a session's free text
+# ---------------------------------------------------------------------------
+
+PLAINTEXT_SECRETS = (
+    "Passwort im Klartext",
+    "mein Passwort ist hunter2",
+    "api_key=sk-live-9f8e7d6c5b4a3210",
+    "Token: " + SECRET,
+)
+
+
+def test_no_plaintext_secret_from_a_session_title_reaches_any_ledger_surface(inbox_seeded, monkeypatch):
+    """F7: redaction is a detector, not a boundary -- so the title never leaves the database.
+
+    Every surface a reader can reach is walked: the overview, the session list and its JSON endpoint,
+    the pop-up, the full session view and the runs list. None of them may contain a title's text.
+    """
+    for index, title in enumerate(PLAINTEXT_SECRETS):
+        for rows in SESSIONS.values():
+            for row in rows:
+                monkeypatch.setitem(row, "title", title)
+                monkeypatch.setitem(row, "session_title", title)
+
+    registry = FakeRegistry()
+    principal = make_principal()
+    surfaces = {
+        "overview": LB.build_overview(registry, principal, inbox_seeded, CONFIG),
+        "list_sessions": LD.list_sessions(registry, principal, inbox_seeded, CONFIG, {}),
+        "list_runs": LD.list_runs(registry, principal, inbox_seeded, CONFIG, {}),
+        "peek_session": LD.build_peek(registry, principal, inbox_seeded, CONFIG, "session", "local-aaaa"),
+        "peek_run": LD.build_peek(registry, principal, inbox_seeded, CONFIG, "run", "run_int"),
+        "session_view": LD.build_session(registry, principal, inbox_seeded, CONFIG, "local-aaaa"),
+    }
+    for name, payload in surfaces.items():
+        blob = json.dumps(payload)
+        for title in PLAINTEXT_SECRETS:
+            assert title not in blob, f"{name} leaked {title!r} from a session title"
+    # the labels are still there: the page keeps saying who and where, just not what about
+    rows = {r["session_id"]: r for r in surfaces["list_sessions"]["items"]}
+    assert rows["dev-cccc"]["session_title"].startswith("claude-code · developer · ")
+    assert "· local-aaaa" not in json.dumps(surfaces["peek_session"])     # no id suffix leak either
+
+
+def test_session_label_is_built_only_from_structured_fields():
+    """The label carries the door, the profile and the last 8 of the id -- nothing else."""
+    assert LB.session_label("developer", "local-0123456789abcdef", "claude-code", "cli") == \
+        "claude-code · developer · 89abcdef"
+    # no started_by: the session's own door is the fallback, never nothing
+    assert LB.session_label("default", "local-abc", None, "telegram") == "telegram · default · ocal-abc"
+    # a multi-line value is flattened, never allowed to break the row it sits in
+    assert LB.session_label("default", "local-abc", "zeile1\nzeile2", "cli") == \
+        "zeile1 zeile2 · default · ocal-abc"
+    assert LB.session_label(None, None) == "Session"
 
 
 def test_the_list_endpoint_hands_agent_sort_and_dir_to_the_sessions_builder(home, monkeypatch):

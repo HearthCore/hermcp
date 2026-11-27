@@ -27,7 +27,7 @@ from . import ledger_ask as ASK
 from .adapters.inbox_store import get_inbox
 from .ledger_page import (WINDOW_HOURS_DEFAULT, call, clean, dashboard_url, desktop_url,
                           iso, link_targets, build_link, read_only_principal, redacted, safe_token,
-                          session_status, _read_reachable_profiles, _gateway)
+                          session_label, session_status, _read_reachable_profiles, _gateway)
 from .registry import Principal
 
 PEEK_ACTIONS = 3
@@ -350,7 +350,7 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
         out["facts"].update(surface="Cron", last_active=iso(row.get("started_at")))
         sid = safe_token(row.get("session_id"))
         if sid:
-            _peek_session(registry, ro, settings, prof, sid, targets, out, title_fallback=out["title"])
+            _peek_session(registry, ro, settings, prof, sid, targets, out)
         _attach_ask(out, settings, "cron" if tone != "bad" else "cron_error", {
             "job_name": row.get("job_name"), "job_id": row.get("job_id"), "run_id": ident,
             "profile": prof, "at": out["facts"]["last_active"], "state": status,
@@ -387,8 +387,7 @@ def build_peek(registry, principal: Principal, settings, hermes_config: Dict[str
     sid = safe_token(approval.get("session_id"))
     out["session_id"] = sid
     if sid:
-        _peek_session(registry, ro, settings, out["facts"]["profile"], sid, targets, out,
-                      title_fallback=out["title"], silent=True)
+        _peek_session(registry, ro, settings, out["facts"]["profile"], sid, targets, out, silent=True)
     out["links"].update(session=f"/ledger/session/{quote(sid, safe='')}" if sid else None,
                         **app_links(settings, targets, out["facts"]["profile"], sid))
     _attach_ask(out, settings, "approval", {
@@ -413,7 +412,7 @@ def _protocol(rows: Any) -> List[Dict[str, Any]]:
 
 
 def _peek_session(registry, principal, settings, profile: str, session_id: str,
-                  targets: Dict[str, Any], out: Dict[str, Any], title_fallback: str = "",
+                  targets: Dict[str, Any], out: Dict[str, Any],
                   silent: bool = False) -> Dict[str, Any]:
     """Fill ``out`` from one session: four facts, the last three actions, links. Read-only."""
     sid = safe_token(session_id)
@@ -427,7 +426,7 @@ def _peek_session(registry, principal, settings, profile: str, session_id: str,
             out["errors"]["peek"] = str(exc)
             return {}
         return {"ok": False, "error": clean(str(exc), 200)}
-    title = clean(redacted(meta.get("title")), PEEK_TEXT) or title_fallback
+    title = session_label(meta.get("profile_name") or profile, sid, None, meta.get("source"))
     state = session_status(meta, _now())
     out.update(session_id=sid, title=title or out.get("title") or sid,
                live=state == "aktiv")
@@ -545,7 +544,8 @@ def build_session(registry, principal: Principal, settings, hermes_config: Dict[
         "ok": True,
         "session": {
             "id": safe_token(meta.get("id")) or sid,
-            "title": clean(redacted(meta.get("title")), 200) or sid,
+            "title": session_label(clean(meta.get("profile_name"), 40) or used_profile,
+                                   safe_token(meta.get("id")) or sid, None, meta.get("source")) or sid,
             "profile": clean(meta.get("profile_name"), 40) or used_profile,
             "surface": surface_label(meta.get("source")),
             "model": clean(meta.get("model"), 60),
@@ -617,10 +617,14 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
         if len(got) >= per_profile:
             capped = True
         for row in got:
+            prof_name = clean(row.get("profile_name"), 40) or prof
+            who = clean(row.get("started_by") or row.get("source"), 80)
+            label = session_label(prof_name, safe_token(row.get("id")), who, row.get("source"))
             rows.append({
                 "session_id": safe_token(row.get("id")),
-                "title": clean(redacted(row.get("title")), 120),
-                "profile": clean(row.get("profile_name"), 40) or prof,
+                # built from structured fields, never from the session's free-text title
+                "title": label,
+                "profile": prof_name,
                 "surface": surface_label(row.get("source")),
                 "source": clean(row.get("source"), 30),
                 "status": session_status(row, _now()),
@@ -630,10 +634,10 @@ def _fetch_sessions(registry, principal, settings, profiles: List[str], need: in
                 "tool_call_count": row.get("tool_call_count") if isinstance(row.get("tool_call_count"), int) else None,
                 "model": clean(row.get("model"), 60),
                 # the standard session fields every list entry carries, taken from the same live row
-                "session_title": clean(redacted(row.get("session_title") or row.get("title")), 120),
+                "session_title": label,
                 # the client / external agent that started the session: the resolver's answer when the
                 # row carries it, else the session's own door (`source`), which is what it is derived from
-                "started_by": clean(row.get("started_by") or row.get("source"), 80),
+                "started_by": who,
             })
     return rows, errors, capped
 
@@ -775,10 +779,12 @@ def _run_row(event: Dict[str, Any], targets: Dict[str, Any], meta=None) -> Dict[
         "started_by": None,
     }
     if meta is not None:
-        # session title live from the database, started_by from the run's watch record / the session's door
+        # started_by from the run's watch record / the session's door; the label is built from
+        # structured fields, and the free-text session title the resolver read is dropped here
         meta.enrich(row, profile=profile or None, session_id=sid, run_id=event.get("run_id"))
-        row["session_title"] = clean(redacted(row.get("session_title")), 120)
         row["started_by"] = clean(row.get("started_by"), 80)
+        row["session_title"] = (session_label(profile, sid, row["started_by"], event.get("source"))
+                                if sid else None)
     return row
 
 

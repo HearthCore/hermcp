@@ -24,11 +24,15 @@ access on a tool simply gets that section reported as unavailable.
 Privacy
 -------
 No ``user_id``, no ``chat_context``, no message preview, no approval
-``request_id``/``session_key``. Session titles are shown — the page has to say what a session is
-about — but like every other free text they go through :func:`hermcp.redact.redact_text` and are
-truncated; if that scrubbing is unavailable the title is dropped rather than shown raw. Free text
-(an approval's command, an error, an inbox summary) is handled the same way. The page renders every
-value with ``textContent`` — never ``innerHTML``.
+``request_id``/``session_key``. A session is labelled from structure -- door, profile, last 8 of the
+id (:func:`session_label`) -- and its stored title is never shown: a title is free text and
+:func:`hermcp.redact.redact_text` is a detector, not a boundary (a title like "Passwort im Klartext"
+matches no secret pattern). The live title stays in ``sessions_list``/``sessions_meta`` where a key's
+scopes decide who reads it; titles already stored with a plaintext secret are cleaned up by
+``hermes hermcp session-titles scrub``. Other free text (an approval's command, an error, an inbox
+summary) goes through :func:`hermcp.redact.redact_text` and is truncated; if that scrubbing is
+unavailable the text is dropped rather than shown raw. The page renders every value with
+``textContent`` -- never ``innerHTML``.
 """
 from __future__ import annotations
 
@@ -98,6 +102,36 @@ def clean(value: Any, limit: int = MAX_TEXT) -> Optional[str]:
 
 def safe_token(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and SAFE_TOKEN.match(value) else None
+
+
+SESSION_LABEL_CAP = 120
+
+
+def session_label(profile: Any, session_id: Any, started_by: Any = None,
+                  source: Any = None) -> str:
+    """The Ledger's session label: built from structured fields, never from the session's free text.
+
+    A session title is free text written by whoever used the session (the title generator takes it
+    from the conversation, ``sessions_rename`` takes it from the caller). Scrubbing it with
+    :func:`hermcp.redact.redact_text` is a detector, not a boundary: a phrase like "Passwort im
+    Klartext" matches no secret pattern and would be shown verbatim. So the Ledger does not show the
+    title at all. It labels a session with what is fixed and attributable -- the door it came through
+    (``started_by``: the hermcp key name or the detected client, else the session's own ``source``),
+    the profile and the session id -- and nothing else::
+
+        Desktop · developer · 3f9a1c2b
+
+    Every part is a token from a whitelisted vocabulary and goes through :func:`safe_token` /
+    :func:`clean`, so the label cannot carry arbitrary text. The live title stays available where it
+    belongs: in ``sessions_list``/``sessions_meta``, where a key's scopes decide who may read it.
+    """
+    who = clean(started_by, 40) or clean(source, 40)
+    prof = clean(profile, 40)
+    sid = safe_token(session_id)
+    parts = [part for part in (who, prof) if part]
+    if sid:
+        parts.append(sid[-8:])
+    return clean(" · ".join(parts), SESSION_LABEL_CAP) or "Session"
 
 
 def iso(value: Any) -> Optional[str]:
@@ -509,12 +543,14 @@ def _sessions(registry, principal, settings, profiles: List[str], targets, error
         capped = capped or len(found) >= per_profile
         for row in found:
             sid = safe_token(row.get("id"))
-            title = clean(redacted(row.get("session_title") or row.get("title")), 120)
+            # who started it: the resolver's `started_by`, else the door the row came through
+            who = clean(row.get("started_by") or row.get("source"), 80)
+            # the label is built from structured fields only -- the session's free-text title never
+            # reaches this page (see `session_label`)
+            title = session_label(row.get("profile_name") or profile, sid, who, row.get("source"))
             rows.append({
                 "profile": clean(row.get("profile_name") or profile, 40),
-                # who started it: the resolver's `started_by`, else the door the row came through
-                "started_by": clean(row.get("started_by") or row.get("source"), 80),
-                # the title the session carries right now (read with this very query, never a snapshot)
+                "started_by": who,
                 "title": title,
                 "session_title": title,
                 "source": clean(row.get("source"), 30),

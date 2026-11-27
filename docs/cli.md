@@ -40,6 +40,7 @@ hermes hermcp keys scopes --help
 | `hermes hermcp profile-keys status [--profiles a,b] [--no-probe] [--json]` | Which api_server key each profile resolves and whether the api_server accepts it. |
 | `hermes hermcp profile-keys setup [--dry-run] [--yes --generate] [--copy-from SRC]` | Give profiles their own `API_SERVER_KEY` (interactive; writes the profile `.env`). |
 | `hermes hermcp profile-keys rotate <profile> --yes` / `--all --yes` | Replace a profile's api_server key (timestamped backup first, re-probe). |
+| `hermes hermcp session-titles scrub [--profiles a,b] [--apply] [--json]` | Find session titles that look like a plaintext secret and replace them with the Ledger's structural label. Dry run unless `--apply`; never prints a title, only id, reason and replacement; each `state.db` is backed up before a write; a second run finds nothing. |
 
 Day-to-day, that comes down to a handful:
 

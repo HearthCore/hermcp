@@ -227,6 +227,10 @@ klein:
 * Fußzeile: „⤢ Vollansicht der Session" (`/ledger/session/<id>`), „↗ In Desktop-App", „↗ In Web-App",
   Hinweis `read-only`
 
+Der „Titel" im Kopf ist das Label aus Struktur (`Tür · Profil · letzte 8 Zeichen der Session-ID`),
+nie der gespeicherte Session-Titel — siehe
+[Warum der Ledger keinen Session-Titel zeigt](#warum-der-ledger-keinen-session-titel-zeigt).
+
 ![Detail-Pop-up einer Session: Symbol, Titel, Art-Chip, vier Eckdaten, drei Aktionen, Fußzeile mit Vollansicht und App-Link](img/ledger-popup.png)
 
 *Das Pop-up: bewusst klein — vier Eckdaten, die letzten drei Aktionen, Links. `Esc` und Klick auf den
@@ -284,7 +288,7 @@ markiert das mit `…`. Ist das Haupt-Template leer, wird der Button gar nicht g
 ## Die Session-Vollansicht
 
 `/ledger/session/<id>` funktioniert für Sessions, für Runs (deren `session_id`) und für Cron-Läufe
-(deren Session) gleichermaßen: Breadcrumb, Titel, ein Stat-Streifen (Zustand, Nachrichten,
+(deren Session) gleichermaßen: Breadcrumb, Titel (das Label aus Struktur, s. o.), ein Stat-Streifen (Zustand, Nachrichten,
 Tool-Aufrufe, Laufzeit, offene Freigaben), links der Verlauf (Zeit, Rolle, Text; Tool-Aufrufe als
 eigene Zeilen, Ergebnisse gekürzt und ausklappbar), rechts Metadaten (Session, Profil, Oberfläche,
 Modell, gestartet, letzte Aktivität, Runs), die Tool-Nutzung als einfache Balken und die Signale
@@ -333,20 +337,51 @@ der Zustand wäre geräteübergreifend. Nicht Teil dieser Version.
 
 Die Zeilen der Session- und Run-Listen tragen bereits die vier Standardfelder jeder Liste
 (`session_id`, `profile`, `session_title`, `started_by`; siehe
-[tool-surface.md](tool-surface.md#session-fields-on-every-list-entry)): der Titel kommt live aus der
-Session-Datenbank, `started_by` nennt den Client bzw. externen Agenten (oder die Tür: `telegram`,
-`cli`, `api_server`, ...). Dasselbe Feld liefert `/ledger/api/list` wie die Tools.
+[tool-surface.md](tool-surface.md#session-fields-on-every-list-entry)). Im Ledger ist
+`session_title` **nicht** der gespeicherte Titel der Session, sondern ein Label aus Struktur — warum,
+steht unter [Warum der Ledger keinen Session-Titel zeigt](#warum-der-ledger-keinen-session-titel-zeigt).
+`started_by` nennt den Client bzw. externen Agenten (oder die Tür: `telegram`, `cli`, `api_server`,
+...). Dasselbe Feld liefert `/ledger/api/list` wie die Tools.
 
-### Sessions: Profil, Titel, Client — sortiert und gefiltert
+### Warum der Ledger keinen Session-Titel zeigt
 
-`~/sessions` zeigt je Zeile **Titel**, **Profil** und **Client/Agent** (`started_by`); die
-Startseite in Panel 03 ebenso (`Profil · Titel`, darunter der Client). Sortiert wird über die
+Ein Session-Titel ist Freitext: der Titel-Generator nimmt ihn aus dem Gespräch, `sessions_rename`
+aus dem Aufrufer. Bis F7 lief er durch `redact_text` und galt damit als „geschwärzt“ — das ist ein
+Detektor, keine Grenze: ein Titel wie „Passwort im Klartext“ matcht kein Secret-Muster und stand
+wörtlich auf der Seite.
+
+Deshalb zeigt der Ledger Titel **gar nicht** mehr. Er bildet ein Label aus strukturierten Feldern
+(`ledger_page.session_label`):
+
+```
+Desktop · developer · a9c792f6
+```
+
+also Tür (`started_by`, sonst `source`), Profil und die letzten 8 Zeichen der Session-ID — alles
+Werte aus kontrolliertem Vokabular, die nichts über den Inhalt der Session aussagen. Das gilt für
+Startseite, `~/sessions`, `/ledger/api/list`, das Pop-up und die Session-Vollansicht gleichermaßen.
+
+Der Live-Titel bleibt, wo Zugriff ihn regelt: in `sessions_list`/`sessions_meta` (Scopes entscheiden).
+Für Titel, die schon mit Klartext in den Profil-Datenbanken liegen, gibt es den Maintenance-Aufruf
+`hermes hermcp session-titles scrub` (Dry-run per Default, `--apply` schreibt, Backup vorher):
+
+```
+hermes hermcp session-titles scrub                  # was würde ersetzt, in welchem Profil
+hermes hermcp session-titles scrub --apply          # ersetzt, backups unter ~/.hermes/backups/
+```
+
+Der Aufruf gibt nie Titeltexte aus, sondern nur IDs, Grund und Ersatzlabel.
+
+### Sessions: Profil, Label, Client — sortiert und gefiltert
+
+`~/sessions` zeigt je Zeile **Label**, **Profil** und **Client/Agent** (`started_by`); die
+Startseite in Panel 03 ebenso (`Profil · Label`, darunter der Client). Sortiert wird über die
 Spaltenköpfe — jeder Klick auf denselben Kopf dreht die Richtung, ein anderer Kopf startet neu:
 
 | Spalte | `sort=` | Default-Richtung |
 |---|---|---|
 | zuletzt | `last_active` | absteigend (neueste zuerst) |
-| Session (Titel) | `title` | aufsteigend |
+| Session (Label) | `title` | aufsteigend |
 | Profil | `profile` | aufsteigend |
 | Client / Agent | `agent` | aufsteigend |
 
@@ -360,9 +395,9 @@ Die Auswahllisten für Profil und Client kommen **aus dem Payload** (`profiles`,
 einer Liste im Browser — ein Filter kann also keinen Namen erfinden. Ein gewählter Client bleibt
 dabei im Dropdown, auch wenn er durch den eigenen Filter gerade keine Zeile mehr hat.
 
-Titel und Client werden mit jeder Abfrage neu gelesen (kein Snapshot). Der HTTP-Cache des Ledgers
-(`HERMCP_LEDGER_CACHE_TTL`, Default 8 s) kann eine Umbenennung in der Session-Datenbank um bis zu
-diese Zeit verzögern — „nächste Abfrage“ heißt: der nächste ungecachte Abruf.
+Label und Client werden mit jeder Abfrage neu gelesen (kein Snapshot); der gespeicherte Titel wird
+gar nicht erst gelesen. Der HTTP-Cache des Ledgers (`HERMCP_LEDGER_CACHE_TTL`, Default 8 s) kann eine
+Änderung um bis zu diese Zeit verzögern — „nächste Abfrage“ heißt: der nächste ungecachte Abruf.
 
 ## Eine Wahrheit für Seite und Tools
 
@@ -504,10 +539,13 @@ Why those shapes:
 
 ## Privacy
 
-- The start page and the list endpoints carry no message bodies and no session titles: profile,
-  surface, state, counts, ids. The **session full view and the pop-up** do show a title and the last
-  messages of the one session a reader opened — that is their purpose, it is a deliberate widening
-  and it stays single-session (no cross-session previews).
+- The page carries no message bodies and no session titles: profile, surface, state, counts, ids, and
+  a label built from structure (`type · profile · last 8 of the id`). The **session full view and the
+  pop-up** show the last messages of the one session a reader opened — that is their purpose, it is a
+  deliberate widening and it stays single-session (no cross-session previews) — but their title is the
+  same structural label, never the stored title (see „Warum der Ledger keinen Session-Titel zeigt").
+  A title is free text and `redact_text` is a detector, not a boundary; titles that already sit in a
+  profile database with a plaintext secret are replaced by `hermes hermcp session-titles scrub`.
 - No `user_id`, no `chat_context`, no approval `request_id` or `session_key` anywhere. The page
   renders every value with `textContent`, never `innerHTML`, so a hostile title or message body is
   data, not markup.

@@ -250,18 +250,24 @@ def test_sessions_carry_a_desktop_link_and_a_derived_status():
 
 
 def test_sessions_carry_title_and_the_starting_client():
-    """The overview's sessions panel says what a session is and who started it."""
+    """The overview's sessions panel labels a session from structure and says who started it.
+
+    The label is built from the door, the profile and the session id -- the session's free-text title
+    is never shown (see `ledger_page.session_label`).
+    """
     payload = LB.build_overview(FakeRegistry(), make_principal(), make_settings(), CONFIG)
     items = payload["sections"]["sessions"]["items"]
-    assert items[0]["session_title"] == "Ledger-Session"
-    assert items[0]["title"] == "Ledger-Session"
+    assert items[0]["session_title"] == LB.session_label("default", "local-abc123", "claude-ai-cloud", "desktop")
+    assert items[0]["title"] == items[0]["session_title"]
+    assert "Ledger-Session" not in json.dumps(items)
     assert items[0]["started_by"] == "claude-ai-cloud"
     # a row without a resolver value falls back to the door it came through
     assert items[1]["started_by"] == "api_server"
+    assert items[1]["title"] == LB.session_label("developer", "run_dead", "api_server", "api_server")
 
 
-def test_the_session_title_in_the_overview_follows_the_database():
-    """No snapshot: the title is read with the list query, so a rename is in the next payload."""
+def test_the_session_title_in_the_overview_never_shows_free_text():
+    """A title renamed in the database does not reach the page -- and neither does its content."""
     class Live(FakeRegistry):
         title = "Ledger-Session"
 
@@ -270,16 +276,16 @@ def test_the_session_title_in_the_overview_follows_the_database():
             if name == "sessions_list":
                 for row in res["result"]["sessions"]:
                     if row["id"] == "local-abc123":
-                        row["title"] = self.title
+                        row["title"] = row["session_title"] = self.title
             return res
 
     registry = Live()
     before = LB.build_overview(registry, make_principal(), make_settings(), CONFIG)
-    assert before["sections"]["sessions"]["items"][0]["title"] == "Ledger-Session"
-    registry.title = "umbenannt im Ledger"
+    registry.title = "Passwort im Klartext"
     after = LB.build_overview(registry, make_principal(), make_settings(), CONFIG)
     first = after["sections"]["sessions"]["items"][0]
-    assert first["title"] == "umbenannt im Ledger" and first["session_title"] == "umbenannt im Ledger"
+    assert first["title"] == before["sections"]["sessions"]["items"][0]["title"]
+    assert "Passwort im Klartext" not in json.dumps(after)
 
 
 def test_cron_runs_link_only_agent_runs_with_a_session():
