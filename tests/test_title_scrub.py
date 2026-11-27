@@ -5,6 +5,8 @@ import contextlib
 import json
 import shutil
 import sqlite3
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -232,8 +234,28 @@ def test_a_stale_sidecar_next_to_an_older_copy_does_not_survive_the_next_backup(
     assert _rows(target) == [("local-aaaa", "Ledger-Session", "cli")]
 
 
-def test_a_snapshot_of_a_wal_database_is_one_plain_file_and_restores_beside_a_leftover_log(home):
-    """The live databases run in WAL mode: the snapshot must not inherit that and then replay it."""
+def _a_wal_left_by_an_abrupt_exit(path: Path, ids: list[str]) -> None:
+    """Create ``path`` in WAL mode and leave its ``-wal`` behind.
+
+    A closing connection checkpoints the log away, so the leftover has to come from a process that
+    never got to close -- which is the state a killed gateway leaves on disk.
+    """
+    code = (
+        "import os, sqlite3, sys\n"
+        "db = sqlite3.connect(sys.argv[1])\n"
+        "db.execute('PRAGMA journal_mode=WAL')\n"
+        "db.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY)')\n"
+        "db.executemany('INSERT INTO sessions VALUES (?)', [(i,) for i in sys.argv[2:]])\n"
+        "db.commit()\n"
+        "os._exit(0)\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([sys.executable, "-c", code, str(path), *ids], check=True)
+    assert path.with_name(path.name + "-wal").is_file()
+
+
+def _snapshot_of_a_wal_store(home) -> tuple[Path, list[tuple]]:
+    """A profile store in WAL mode with one row still in the log, and the snapshot taken of it."""
     db_path = _state_db(home, "developer", {"local-aaaa": "Passwort im Klartext"})
     writer = sqlite3.connect(db_path)
     try:
@@ -243,21 +265,78 @@ def test_a_snapshot_of_a_wal_database_is_one_plain_file_and_restores_beside_a_le
         assert db_path.with_name(db_path.name + "-wal").exists()   # still in the log, not in the file
         before = _rows(db_path)
         target = TS.backup_db("developer", home / "backups" / "wal")
-        db = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
-        try:
-            assert db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
-        finally:
-            db.close()
     finally:
         writer.close()
-    assert _rows(target) == before                                # the WAL content is in the snapshot
+    assert target is not None and target.is_file()
+    return target, before
 
-    # the restore an operator runs after --apply: the file goes back, the live -wal is still there
+
+def test_a_snapshot_of_a_wal_database_is_one_plain_file(home):
+    """The live databases run in WAL mode: the snapshot folds the log in and carries no sidecar."""
+    target, before = _snapshot_of_a_wal_store(home)
+    assert _rows(target) == before                                # the WAL content is in the snapshot
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]
+    db = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+    finally:
+        db.close()
+
+
+def _restore_beside_a_real_leftover_log(home, target: Path) -> Path:
+    """Put the snapshot back where the replaced store's real ``-wal``/``-shm`` still lies."""
     restore = home / "restore"
     restore.mkdir()
-    (restore / "state.db").write_bytes(target.read_bytes())
-    (restore / "state.db-wal").write_bytes(b"a leftover log from the replaced database\n")
-    assert _rows(restore / "state.db") == before
+    shutil.copyfile(target, restore / "state.db")
+    old = home / "old" / "state.db"                               # the log a killed writer left
+    _a_wal_left_by_an_abrupt_exit(old, ["y-9", "y-10"])
+    for suffix in ("-wal", "-shm"):
+        shutil.copyfile(old.with_name(old.name + suffix), restore / ("state.db" + suffix))
+    return restore / "state.db"
+
+
+def _ids(path: Path) -> list[str]:
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return [str(row[0]) for row in db.execute("SELECT id FROM sessions ORDER BY id")]
+    finally:
+        db.close()
+
+
+def test_a_restore_beside_the_replaced_stores_log_serves_that_log(home):
+    """``journal_mode=delete`` does not shield a restore: a real old ``-wal`` wins over the file.
+
+    Measured, not assumed: SQLite accepts a self-consistent foreign log, serves its rows and
+    checkpoints them into the snapshot on the first read-write open.
+    """
+    target, before = _snapshot_of_a_wal_store(home)
+    restored = _restore_beside_a_real_leftover_log(home, target)
+    assert restored.read_bytes()[18:20] == b"\x01\x01"            # the snapshot's own header
+    assert set(_ids(restored)) == {"y-9", "y-10"}                 # the old database, not the snapshot
+    db = sqlite3.connect(restored)                                # what the gateway does on start
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert set(row[0] for row in db.execute("SELECT id FROM sessions")) == {"y-9", "y-10"}
+    finally:
+        db.close()
+    assert restored.read_bytes()[18:20] == b"\x02\x02"            # the snapshot file itself is rewritten
+    assert not restored.with_name(restored.name + "-wal").exists()  # the foreign log was checkpointed in
+    assert set(_ids(restored)) == {"y-9", "y-10"}                 # the loss is in the file now
+    assert set(_ids(restored)) != {row[0] for row in before}
+
+
+def test_deleting_the_old_sidecars_before_the_restore_gives_the_snapshot_back(home):
+    """The restore precondition the docstring names: without the old log, the snapshot is itself."""
+    target, before = _snapshot_of_a_wal_store(home)
+    restored = _restore_beside_a_real_leftover_log(home, target)
+    for suffix in ("-wal", "-shm"):
+        restored.with_name(restored.name + suffix).unlink()
+    assert _ids(restored) == [row[0] for row in before]
+    db = sqlite3.connect(f"file:{restored}?mode=ro", uri=True)
+    try:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+    finally:
+        db.close()
 
 
 def test_a_profile_without_a_state_db_is_simply_skipped(home):

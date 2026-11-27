@@ -17,10 +17,16 @@ What it does
 ``hermes hermcp session-titles scrub`` walks the profiles (or ``--profiles a,b``), reads the session
 rows of each ``state.db`` **read-only** and reports how many titles match and why -- never the title
 text itself. Without ``--apply`` nothing is written (dry run, the default). With ``--apply`` it takes
-one consistent snapshot of ``state.db`` (SQLite's backup API, so no stray ``-wal``/``-shm`` sidecar)
-into ``~/.hermes/backups/hermcp-session-titles-<ts>/`` first, then rewrites the matched titles through
+one consistent snapshot of ``state.db`` (SQLite's backup API: the write-ahead log is folded in, the
+result is a single file that carries no ``-wal``/``-shm`` of its own) into
+``~/.hermes/backups/hermcp-session-titles-<ts>/`` first, then rewrites the matched titles through
 Hermes' own session store, and reports what it did.
 Running it twice is safe: the replacement label matches no detector, so the second run finds nothing.
+
+Restoring that snapshot is only safe against a stopped database: an old ``state.db-wal`` left beside
+the restored file is replayed *on top of* it (SQLite then serves the replaced database's rows and
+writes them into the snapshot), and a clean stop removes those sidecars. Without one, delete
+``state.db-wal`` and ``state.db-shm`` before the file goes back.
 """
 from __future__ import annotations
 
@@ -126,11 +132,17 @@ def backup_db(profile: str, root: Path | None = None) -> Path | None:
     """Take one consistent snapshot of a profile's ``state.db`` before it is written.
 
     The database is opened **read-only** and copied through SQLite's own backup API instead of
-    copying ``state.db``/``-wal``/``-shm`` side by side: three file copies are not a snapshot. A
-    writer committing between them leaves a torn set, and a ``-wal`` that is copied without the
-    matching ``-shm``/header state does not restore. ``Connection.backup`` copies committed pages
-    under the source's lock (a concurrent commit restarts the copy, it never tears it), and folds
-    the source's write-ahead log into the target, so the result is a single self-contained file.
+    copying ``state.db``/``-wal``/``-shm`` side by side: three file copies taken one after the other
+    are not a snapshot, and a writer committing between them leaves a torn set. ``Connection.backup``
+    copies committed pages under the source's lock (a concurrent commit restarts the copy, it never
+    tears it) and folds the source's write-ahead log into the target, so the result is a single
+    self-contained file that needs no ``-wal``/``-shm`` to be read.
+
+    The target is put in ``journal_mode=delete``, so a reader does not attach a ``-shm`` to it. That
+    is not protection against a stale log: drop this file where an old ``state.db-wal`` still lies
+    beside it and SQLite replays *that* log -- it serves the replaced database's rows and checkpoints
+    them into the file. A restore is only a restore after a clean stop (which removes the sidecars)
+    or after ``state.db-wal``/``state.db-shm`` have been deleted.
     """
     path = _db_path(profile)
     if path is None:
@@ -153,9 +165,9 @@ def backup_db(profile: str, root: Path | None = None) -> Path | None:
             dest = sqlite3.connect(target)
             try:
                 source.backup(dest)
-                # The source's header says WAL. Keep that out of the backup: a restore that drops the
-                # file next to the *old* ``-wal`` would replay a foreign log on top of it, and a reader
-                # would recreate a ``-shm`` next to what is supposed to be one self-contained file.
+                # The source's header says WAL. The target must not need a log to be read and a
+                # reader must not create a -shm next to it. This does not make a naive restore safe:
+                # a -wal left beside the restored file is still replayed, see the module docstring.
                 mode = dest.execute("PRAGMA journal_mode=delete").fetchone()
                 if not mode or str(mode[0]).lower() != "delete":
                     raise sqlite3.OperationalError(f"backup stays in journal mode {mode!r}")
