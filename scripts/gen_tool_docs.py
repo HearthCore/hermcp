@@ -118,6 +118,75 @@ def _esc(v: object) -> str:
     return html.escape(str(v), quote=True)
 
 
+def render_annotations(out: Path) -> Path:
+    """Render docs/tool-annotations.md: every tool's class and hints, and where they disagree
+    with the registry tier (the audit list). Derived from the same table `descriptor()` serves."""
+    from hermcp import annotations as A
+
+    reg = build_registry()
+    tools = sorted(reg.tools.values(), key=lambda t: (t.toolset, t.name))
+    parts: list[str] = []
+    A_ = parts.append
+    A_("# Tool annotations\n")
+    A_("Generated from the live registry by `python -m hermcp docs` — do not edit by hand.\n")
+    A_("Every tool carries a `title` and the four MCP `ToolAnnotations` hints "
+       "(`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). A client sees "
+       "them at `tools/list`, and for the tools that are not advertised directly through "
+       "`hermes_search_tools` / `hermes_describe_tool`.\n")
+    A_("**Hints are advisory; scopes enforce.** The hints tell a client what kind of prompt to "
+       "show before it calls a tool. What a key may actually call is decided by its scopes "
+       "(`access`, `toolsets`, `deny_tools`, plus the explicit `approvals`, `dangerous`, "
+       "`secrets_write`, `inbox_push` flags), and `tools/list` only advertises what that key may "
+       "use. Never read a permission out of a hint.\n")
+    A_("Class codes (the four booleans, so they cannot drift apart):\n")
+    A_("| code | readOnly | destructive | idempotent | openWorld | meaning |")
+    A_("|---|---|---|---|---|---|")
+    meaning = {
+        "R": "read-only, idempotent, own network",
+        "R-o": "read-only, idempotent, reaches the internet",
+        "C": "additive write (create/send/queue)",
+        "C-i": "additive write, repeating it changes nothing",
+        "C-o": "additive write that talks to the internet",
+        "D": "destructive write (delete/overwrite/abort)",
+        "D-i": "destructive write, repeating it is a no-op",
+        "G": "generic dispatcher: conservative union of everything it can reach",
+    }
+    for code, (ro, dest, idem, ow) in A.CLASSES.items():
+        A_(f"| `{code}` | {'yes' if ro else 'no'} | {'yes' if dest else 'no'} | "
+           f"{'yes' if idem else 'no'} | {'yes' if ow else 'no'} | {meaning[code]} |")
+    A_("")
+    A_("## Where the hints disagree with the declared access\n")
+    A_("The registry tags a tool `read` / `write` / `admin`; the hint says what the call really "
+       "does. These are the tools where the two disagree — each one is deliberate, and each is "
+       "gated by a scope (never by the annotation):\n")
+    A_("| tool | declared access | class | why the hint differs |")
+    A_("|---|---|---|---|")
+    why = {
+        "hermes_call": "access=read, but it dispatches any tool in the caller's scope, admin included",
+        "inbox_push": "access=read, but it appends an event to another consumer's inbox (inbox_push scope)",
+        "inbox_ack": "access=read, but it marks this consumer's inbox events read",
+        "session_card_set": "access=read, but it registers or updates a session card",
+        "audit_tail": "access=admin, but the call only reads the audit log",
+        "keys_list": "access=admin, but the call only lists key names and scopes",
+    }
+    for t in tools:
+        if (t.access == "read") != t.annotations.read_only:
+            A_(f"| `{t.name}` | {t.access} | `{t.annotations.code}` | {why.get(t.name, '')} |")
+    A_("")
+    A_("## Every tool\n")
+    A_("| tool | toolset | access | class | readOnly | destructive | idempotent | openWorld | title |")
+    A_("|---|---|---|---|---|---|---|---|---|")
+    for t in tools:
+        a = t.annotations
+        yes = lambda v: "yes" if v else "no"  # noqa: E731
+        A_(f"| `{t.name}` | {t.toolset} | {t.access} | `{a.code}` | {yes(a.read_only)} | "
+           f"{yes(a.destructive)} | {yes(a.idempotent)} | {yes(a.open_world)} | {a.title} |")
+    A_("")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(parts), encoding="utf-8")
+    return out
+
+
 def render(out: Path) -> Path:
     reg = build_registry()
     stats = catalog_stats(reg)
@@ -244,5 +313,7 @@ if __name__ == "__main__":
         target = Path(sys.argv[sys.argv.index("--out") + 1])
     path = render(target)
     print(f"wrote {path} ({path.stat().st_size} bytes)")
+    ann = render_annotations(ROOT / "docs" / "tool-annotations.md")
+    print(f"wrote {ann} ({ann.stat().st_size} bytes)")
     for changed_path in sync_counts():
         print(f"updated catalog counts in {changed_path.relative_to(ROOT.parent)}")

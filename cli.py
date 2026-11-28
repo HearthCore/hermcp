@@ -128,6 +128,7 @@ def _docs(args) -> int:
     spec.loader.exec_module(mod)
     target = Path(args.out) if args.out else Path(__file__).resolve().parent / "docs" / "tools.html"
     print(f"wrote {mod.render(target)}")
+    print(f"wrote {mod.render_annotations(Path(__file__).resolve().parent / 'docs' / 'tool-annotations.md')}")
     for changed in mod.sync_counts():
         print(f"updated catalog counts in {changed}")
     return 0
