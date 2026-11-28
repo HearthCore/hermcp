@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from . import annotations as _annotations
 from .audit import AuditLog
 from .client_id import clean_handle
 from .scopes import Scopes
@@ -83,6 +84,7 @@ class Tool:
     requires_approvals: bool = False  # needs the explicit `approvals` scope (never implied by '*')
     dangerous: bool = False        # exfiltration/irreversible: needs the explicit `dangerous` scope
     requires_inbox_push: bool = False  # needs the explicit `inbox_push` scope (never implied by '*')
+    annotations: "_annotations.ToolAnnotations | None" = None  # title + MCP hints; filled in Registry.add
 
     def input_schema(self) -> dict[str, Any]:
         props = dict(self.properties)
@@ -103,7 +105,9 @@ class Tool:
         tag = {"read": "", "write": " [write]", "admin": " [admin]"}[self.access]
         if self.dangerous:
             tag += " [dangerous]"
-        return {"name": self.name, "description": f"{self.description}{tag}", "inputSchema": self.input_schema()}
+        ann = self.annotations or _annotations.annotations_for(self)
+        return {"name": self.name, "title": ann.title, "description": f"{self.description}{tag}",
+                "inputSchema": self.input_schema(), "annotations": ann.as_dict()}
 
 
 class Registry:
@@ -114,6 +118,9 @@ class Registry:
     def add(self, t: Tool) -> Tool:
         if t.name in self.tools:
             raise ValueError(f"duplicate tool {t.name}")
+        if t.annotations is None:
+            # derived from the registry tier plus annotations.OVERRIDES — see that module
+            t.annotations = _annotations.annotations_for(t)
         self.tools[t.name] = t
         return t
 
@@ -287,7 +294,9 @@ def install_meta_tools(reg: Registry) -> None:
                 out.append((sc, t))
         out.sort(key=lambda p: (-p[0], p[1].name))
         res = {"count": len(out), "tools": [
-            {"name": t.name, "toolset": t.toolset, "access": t.access, "description": t.description}
+            {"name": t.name, "title": (t.annotations or _annotations.annotations_for(t)).title,
+             "toolset": t.toolset, "access": t.access, "description": t.description,
+             "annotations": (t.annotations or _annotations.annotations_for(t)).as_dict()}
             for _, t in out[:limit]], "toolsets": ctx.registry.toolsets(ctx.principal.scopes)}
         if not out:
             res["hint"] = ("no tool in your scope matches; try a single word, or pass one of `toolsets` as toolset "
